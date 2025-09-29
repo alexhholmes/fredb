@@ -159,17 +159,18 @@ func (p *Page) ReadBranchFirstChild() PageID {
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1
-// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][TxnID: 8][NumPages: 8][Checksum: 4]
-// Total: 44 bytes
+// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxnID: 8][NumPages: 8][Checksum: 4]
+// Total: 52 bytes
 type MetaPage struct {
-	Magic      uint32 // 4 bytes: 0x66726462 ("frdb")
-	Version    uint16 // 2 bytes: format version (1)
-	PageSize   uint16 // 2 bytes: page size (4096)
-	RootPageID PageID // 8 bytes: root of B-tree
-	FreelistID PageID // 8 bytes: start of freelist
-	TxnID      uint64 // 8 bytes: transaction counter
-	NumPages   uint64 // 8 bytes: total pages allocated
-	Checksum   uint32 // 4 bytes: CRC32 of above fields
+	Magic          uint32 // 4 bytes: 0x66726462 ("frdb")
+	Version        uint16 // 2 bytes: format version (1)
+	PageSize       uint16 // 2 bytes: page size (4096)
+	RootPageID     PageID // 8 bytes: root of B-tree
+	FreelistID     PageID // 8 bytes: start of freelist
+	FreelistPages  uint64 // 8 bytes: number of contiguous freelist pages
+	TxnID          uint64 // 8 bytes: transaction counter
+	NumPages       uint64 // 8 bytes: total pages allocated
+	Checksum       uint32 // 4 bytes: CRC32 of above fields
 }
 
 // WriteMeta writes metadata to the page starting at PageHeaderSize
@@ -189,8 +190,8 @@ func (p *Page) ReadMeta() *MetaPage {
 // CalculateChecksum computes CRC32 checksum of all fields except Checksum itself
 func (m *MetaPage) CalculateChecksum() uint32 {
 	// Create byte slice of all fields except Checksum
-	// MetaPage is 44 bytes, Checksum is last 4 bytes, so we hash first 40 bytes
-	data := make([]byte, 40)
+	// MetaPage is 52 bytes, Checksum is last 4 bytes, so we hash first 48 bytes
+	data := make([]byte, 48)
 	offset := 0
 
 	// Magic (4 bytes)
@@ -219,6 +220,12 @@ func (m *MetaPage) CalculateChecksum() uint32 {
 	// FreelistID (8 bytes)
 	for i := 0; i < 8; i++ {
 		data[offset+i] = byte(m.FreelistID >> (i * 8))
+	}
+	offset += 8
+
+	// FreelistPages (8 bytes)
+	for i := 0; i < 8; i++ {
+		data[offset+i] = byte(m.FreelistPages >> (i * 8))
 	}
 	offset += 8
 
@@ -252,4 +259,102 @@ func (m *MetaPage) Validate() error {
 		return ErrInvalidChecksum
 	}
 	return nil
+}
+
+const (
+	// FreeListPageCapacity is max number of PageIDs per freelist page
+	// (PageSize - 8 bytes for count) / 8 bytes per PageID
+	FreeListPageCapacity = (PageSize - 8) / 8
+)
+
+// FreeList tracks free pages for reuse
+type FreeList struct {
+	ids []PageID // sorted array of free page IDs
+}
+
+// NewFreeList creates an empty freelist
+func NewFreeList() *FreeList {
+	return &FreeList{
+		ids: make([]PageID, 0),
+	}
+}
+
+// Allocate returns a free page ID, or 0 if none available
+func (f *FreeList) Allocate() PageID {
+	if len(f.ids) == 0 {
+		return 0
+	}
+	// Pop from end
+	id := f.ids[len(f.ids)-1]
+	f.ids = f.ids[:len(f.ids)-1]
+	return id
+}
+
+// Free adds a page ID to the free list
+func (f *FreeList) Free(id PageID) {
+	f.ids = append(f.ids, id)
+	// Keep sorted for deterministic behavior
+	for i := len(f.ids) - 1; i > 0; i-- {
+		if f.ids[i] < f.ids[i-1] {
+			f.ids[i], f.ids[i-1] = f.ids[i-1], f.ids[i]
+		} else {
+			break
+		}
+	}
+}
+
+// Size returns number of free pages
+func (f *FreeList) Size() int {
+	return len(f.ids)
+}
+
+// PagesNeeded returns number of pages needed to serialize this freelist
+func (f *FreeList) PagesNeeded() int {
+	if len(f.ids) == 0 {
+		return 1
+	}
+	return (len(f.ids) + FreeListPageCapacity - 1) / FreeListPageCapacity
+}
+
+// Serialize writes freelist to pages starting at given slice
+func (f *FreeList) Serialize(pages []*Page) {
+	offset := 0
+	for pageIdx := 0; pageIdx < len(pages); pageIdx++ {
+		page := pages[pageIdx]
+
+		// How many IDs can fit in this page?
+		remaining := len(f.ids) - offset
+		count := remaining
+		if count > FreeListPageCapacity {
+			count = FreeListPageCapacity
+		}
+
+		// Write count at start of page
+		*(*uint64)(unsafe.Pointer(&page.data[0])) = uint64(count)
+
+		// Write PageID array
+		for i := 0; i < count; i++ {
+			dataOffset := 8 + i*8
+			*(*PageID)(unsafe.Pointer(&page.data[dataOffset])) = f.ids[offset+i]
+		}
+
+		offset += count
+	}
+}
+
+// Deserialize reads freelist from pages
+func (f *FreeList) Deserialize(pages []*Page) {
+	f.ids = make([]PageID, 0)
+
+	for _, page := range pages {
+		// Read count from start of page
+		count := *(*uint64)(unsafe.Pointer(&page.data[0]))
+
+		// Read PageID array
+		for i := 0; i < int(count); i++ {
+			dataOffset := 8 + i*8
+			id := *(*PageID)(unsafe.Pointer(&page.data[dataOffset]))
+			f.ids = append(f.ids, id)
+		}
+	}
 }

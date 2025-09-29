@@ -15,6 +15,8 @@ type PageManager interface {
 	WritePage(id PageID, page *Page) error
 	AllocatePage() (PageID, error)
 	FreePage(id PageID) error
+	GetMeta() *MetaPage
+	PutMeta(meta *MetaPage) error
 }
 
 // Node wraps a Page with BTree operations
@@ -68,6 +70,13 @@ func NewBTree(pager PageManager) (*BTree, error) {
 		pager:     pager,
 		root:      root,
 		pageCache: make(map[PageID]*Node),
+	}
+
+	// Update meta with root page ID
+	meta := pager.GetMeta()
+	meta.RootPageID = rootPageID
+	if err := pager.PutMeta(meta); err != nil {
+		return nil, err
 	}
 
 	return bt, nil
