@@ -17,6 +17,7 @@ type PageManager interface {
 	FreePage(id PageID) error
 	GetMeta() *MetaPage
 	PutMeta(meta *MetaPage) error
+	Close() error
 }
 
 // Node wraps a Page with BTree operations
@@ -42,7 +43,27 @@ type BTree struct {
 
 // NewBTree creates a new BTree with the given PageManager
 func NewBTree(pager PageManager) (*BTree, error) {
-	// Allocate root page
+	meta := pager.GetMeta()
+
+	bt := &BTree{
+		pager:     pager,
+		pageCache: make(map[PageID]*Node),
+	}
+
+	// Check if existing root exists
+	if meta.RootPageID != 0 {
+		// Load existing root
+		root, err := bt.loadNode(meta.RootPageID)
+		if err != nil {
+			return nil, err
+		}
+		bt.root = root
+		// Remove from cache since it's root
+		delete(bt.pageCache, meta.RootPageID)
+		return bt, nil
+	}
+
+	// No existing root - allocate new one
 	rootPageID, err := pager.AllocatePage()
 	if err != nil {
 		return nil, err
@@ -66,14 +87,9 @@ func NewBTree(pager PageManager) (*BTree, error) {
 		children: make([]PageID, 0),
 	}
 
-	bt := &BTree{
-		pager:     pager,
-		root:      root,
-		pageCache: make(map[PageID]*Node),
-	}
+	bt.root = root
 
 	// Update meta with root page ID
-	meta := pager.GetMeta()
 	meta.RootPageID = rootPageID
 	if err := pager.PutMeta(meta); err != nil {
 		return nil, err
@@ -195,7 +211,8 @@ func (bt *BTree) Close() error {
 	bt.pageCache = nil
 	bt.root = nil
 
-	return nil
+	// Close pager (writes meta page and frees resources)
+	return bt.pager.Close()
 }
 
 // searchNode recursively searches for a key in the tree

@@ -2,6 +2,7 @@ package src
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -10,7 +11,10 @@ import (
 // Basic DB Interface Tests
 
 func TestDBBasicOperations(t *testing.T) {
-	db, err := NewDB("")
+	tmpfile := "/tmp/test_db_basic.db"
+	defer os.Remove(tmpfile)
+
+	db, err := NewDB(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -62,7 +66,10 @@ func TestDBBasicOperations(t *testing.T) {
 }
 
 func TestDBErrors(t *testing.T) {
-	db, err := NewDB("")
+	tmpfile := "/tmp/test_db_errors.db"
+	defer os.Remove(tmpfile)
+
+	db, err := NewDB(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -82,7 +89,10 @@ func TestDBErrors(t *testing.T) {
 }
 
 func TestDBClose(t *testing.T) {
-	db, err := NewDB("")
+	tmpfile := "/tmp/test_db_close.db"
+	defer os.Remove(tmpfile)
+
+	db, err := NewDB(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -114,7 +124,10 @@ func TestDBConcurrency(t *testing.T) {
 	// - Mix of Get/Set operations
 	// - Verify no races or corruption
 	// - Check final state consistency
-	db, err := NewDB("")
+	tmpfile := "/tmp/test_db_concurrency.db"
+	defer os.Remove(tmpfile)
+
+	db, err := NewDB(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -196,7 +209,10 @@ func TestDBConcurrentReads(t *testing.T) {
 	// - Insert test data
 	// - Launch multiple reader goroutines
 	// - Verify all complete successfully
-	db, err := NewDB("")
+	tmpfile := "/tmp/test_db_concurrent_reads.db"
+	defer os.Remove(tmpfile)
+
+	db, err := NewDB(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -273,7 +289,10 @@ func TestDBConcurrentWrites(t *testing.T) {
 	// - Launch multiple writer goroutines
 	// - Each writes unique keys
 	// - Verify all keys present at end
-	db, err := NewDB("")
+	tmpfile := "/tmp/test_db_concurrent_writes.db"
+	defer os.Remove(tmpfile)
+
+	db, err := NewDB(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}

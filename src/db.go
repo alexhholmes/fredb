@@ -6,13 +6,13 @@ import (
 )
 
 var (
-	ErrKeyNotFound         = errors.New("key not found")
-	ErrPageOverflow        = errors.New("page overflow: serialized data exceeds page size")
-	ErrInvalidOffset       = errors.New("invalid offset: out of bounds")
-	ErrInvalidMagicNumber  = errors.New("invalid magic number")
-	ErrInvalidVersion      = errors.New("invalid format version")
-	ErrInvalidPageSize     = errors.New("invalid page size")
-	ErrInvalidChecksum     = errors.New("invalid checksum")
+	ErrKeyNotFound        = errors.New("key not found")
+	ErrPageOverflow       = errors.New("page overflow: serialized data exceeds page size")
+	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
+	ErrInvalidMagicNumber = errors.New("invalid magic number")
+	ErrInvalidVersion     = errors.New("invalid format version")
+	ErrInvalidPageSize    = errors.New("invalid page size")
+	ErrInvalidChecksum    = errors.New("invalid checksum")
 )
 
 type DB interface {
@@ -30,8 +30,10 @@ type db struct {
 }
 
 func NewDB(path string) (DB, error) {
-	// For now, use in-memory pager (path ignored)
-	pager := NewInMemoryPageManager()
+	pager, err := NewDiskPageManager(path)
+	if err != nil {
+		return nil, err
+	}
 
 	btree, err := NewBTree(pager)
 	if err != nil {
