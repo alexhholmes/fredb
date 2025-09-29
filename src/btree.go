@@ -8,6 +8,7 @@ const (
 	PageSize       = 4096
 	PageHeaderSize = 16
 	MaxKeysPerNode = 256 // Simplified for in-memory version
+	MinKeysPerNode = MaxKeysPerNode / 2 // Minimum keys for non-root nodes
 )
 
 type PageID uint32
@@ -129,7 +130,39 @@ func (bt *BTree) Set(key, value []byte) error {
 
 // Delete removes a key from the B-tree
 func (bt *BTree) Delete(key []byte) error {
-	panic("not implemented")
+	if bt.root == nil || bt.root.numKeys == 0 {
+		return ErrKeyNotFound
+	}
+
+	// Delete from root
+	err := bt.deleteFromNode(bt.root, key)
+	if err != nil {
+		return err
+	}
+
+	// If root is empty after deletion, make its only child the new root
+	if bt.root.numKeys == 0 {
+		if !bt.root.isLeaf && len(bt.root.children) > 0 {
+			// Free old root
+			oldRootID := bt.root.pageID
+
+			// Load new root
+			newRoot, err := bt.loadNode(bt.root.children[0])
+			if err != nil {
+				return err
+			}
+
+			bt.root = newRoot
+			delete(bt.pageCache, newRoot.pageID) // Remove from cache since it's now root
+
+			// Free old root page
+			if err := bt.pager.FreePage(oldRootID); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // Close flushes any dirty pages and closes the B-tree
@@ -362,4 +395,322 @@ func insertAt(slice [][]byte, index int, value []byte) [][]byte {
 func insertChildAt(slice []PageID, index int, value PageID) []PageID {
 	slice = append(slice[:index], append([]PageID{value}, slice[index:]...)...)
 	return slice
+}
+
+// removeAt removes element at index from slice
+func removeAt(slice [][]byte, index int) [][]byte {
+	return append(slice[:index], slice[index+1:]...)
+}
+
+// removeChildAt removes child at index from slice
+func removeChildAt(slice []PageID, index int) []PageID {
+	return append(slice[:index], slice[index+1:]...)
+}
+
+// findKey returns the index of key in node, or -1 if not found
+func (n *Node) findKey(key []byte) int {
+	for i := 0; i < int(n.numKeys); i++ {
+		cmp := bytes.Compare(key, n.keys[i])
+		if cmp == 0 {
+			return i
+		}
+		if cmp < 0 {
+			return -1
+		}
+	}
+	return -1
+}
+
+// findPredecessor finds the predecessor key/value in the subtree rooted at node
+func (bt *BTree) findPredecessor(node *Node) ([]byte, []byte, error) {
+	// Keep going right until we reach a leaf
+	for !node.isLeaf {
+		lastChildIdx := len(node.children) - 1
+		child, err := bt.loadNode(node.children[lastChildIdx])
+		if err != nil {
+			return nil, nil, err
+		}
+		node = child
+	}
+
+	// Return the last key/value in the leaf
+	if node.numKeys == 0 {
+		return nil, nil, ErrKeyNotFound
+	}
+	lastIdx := node.numKeys - 1
+	return node.keys[lastIdx], node.values[lastIdx], nil
+}
+
+// findSuccessor finds the successor key/value in the subtree rooted at node
+func (bt *BTree) findSuccessor(node *Node) ([]byte, []byte, error) {
+	// Keep going left until we reach a leaf
+	for !node.isLeaf {
+		child, err := bt.loadNode(node.children[0])
+		if err != nil {
+			return nil, nil, err
+		}
+		node = child
+	}
+
+	// Return the first key/value in the leaf
+	if node.numKeys == 0 {
+		return nil, nil, ErrKeyNotFound
+	}
+	return node.keys[0], node.values[0], nil
+}
+
+// isUnderflow checks if node has too few keys (doesn't apply to root)
+func (n *Node) isUnderflow() bool {
+	return int(n.numKeys) < MinKeysPerNode
+}
+
+// mergeNodes merges node with its sibling through the parent's separator key
+func (bt *BTree) mergeNodes(leftNode, rightNode *Node, parent *Node, parentKeyIdx int) error {
+	// Add parent's separator key/value to left node
+	leftNode.keys = append(leftNode.keys, parent.keys[parentKeyIdx])
+	leftNode.values = append(leftNode.values, parent.values[parentKeyIdx])
+
+	// Add all keys/values from right node to left node
+	leftNode.keys = append(leftNode.keys, rightNode.keys...)
+	leftNode.values = append(leftNode.values, rightNode.values...)
+
+	// If not leaf, copy children pointers too
+	if !leftNode.isLeaf {
+		leftNode.children = append(leftNode.children, rightNode.children...)
+	}
+
+	// Update left node's key count
+	leftNode.numKeys = uint16(len(leftNode.keys))
+	leftNode.dirty = true
+
+	// Remove the separator key from parent
+	parent.keys = removeAt(parent.keys, parentKeyIdx)
+	parent.values = removeAt(parent.values, parentKeyIdx)
+	parent.children = removeChildAt(parent.children, parentKeyIdx+1)
+	parent.numKeys--
+	parent.dirty = true
+
+	// Free the right node's page
+	if err := bt.pager.FreePage(rightNode.pageID); err != nil {
+		return err
+	}
+
+	// Remove from cache
+	delete(bt.pageCache, rightNode.pageID)
+
+	return nil
+}
+
+// borrowFromLeft borrows a key from left sibling through parent
+func (bt *BTree) borrowFromLeft(node, leftSibling, parent *Node, parentKeyIdx int) {
+	// Move a key from parent to node
+	node.keys = append([][]byte{parent.keys[parentKeyIdx]}, node.keys...)
+	node.values = append([][]byte{parent.values[parentKeyIdx]}, node.values...)
+
+	// Move the last key from left sibling to parent
+	parent.keys[parentKeyIdx] = leftSibling.keys[leftSibling.numKeys-1]
+	parent.values[parentKeyIdx] = leftSibling.values[leftSibling.numKeys-1]
+
+	// If not leaf, move the last child pointer too
+	if !node.isLeaf {
+		node.children = append([]PageID{leftSibling.children[len(leftSibling.children)-1]}, node.children...)
+		leftSibling.children = leftSibling.children[:len(leftSibling.children)-1]
+	}
+
+	// Remove the last key from left sibling
+	leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
+	leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
+	leftSibling.numKeys--
+
+	node.numKeys++
+
+	// Mark nodes as dirty
+	node.dirty = true
+	leftSibling.dirty = true
+	parent.dirty = true
+}
+
+// borrowFromRight borrows a key from right sibling through parent
+func (bt *BTree) borrowFromRight(node, rightSibling, parent *Node, parentKeyIdx int) {
+	// Move a key from parent to node
+	node.keys = append(node.keys, parent.keys[parentKeyIdx])
+	node.values = append(node.values, parent.values[parentKeyIdx])
+
+	// Move the first key from right sibling to parent
+	parent.keys[parentKeyIdx] = rightSibling.keys[0]
+	parent.values[parentKeyIdx] = rightSibling.values[0]
+
+	// If not leaf, move the first child pointer too
+	if !node.isLeaf {
+		node.children = append(node.children, rightSibling.children[0])
+		rightSibling.children = rightSibling.children[1:]
+	}
+
+	// Remove the first key from right sibling
+	rightSibling.keys = rightSibling.keys[1:]
+	rightSibling.values = rightSibling.values[1:]
+	rightSibling.numKeys--
+
+	node.numKeys++
+
+	// Mark nodes as dirty
+	node.dirty = true
+	rightSibling.dirty = true
+	parent.dirty = true
+}
+
+// deleteFromNode recursively deletes a key from the subtree rooted at node
+func (bt *BTree) deleteFromNode(node *Node, key []byte) error {
+	idx := node.findKey(key)
+
+	if idx >= 0 {
+		// Key found in this node
+		if node.isLeaf {
+			return bt.deleteFromLeaf(node, idx)
+		}
+		return bt.deleteFromNonLeaf(node, key, idx)
+	}
+
+	// Key not in this node
+	if node.isLeaf {
+		return ErrKeyNotFound
+	}
+
+	// Find child where key might be
+	childIdx := 0
+	for childIdx < int(node.numKeys) && bytes.Compare(key, node.keys[childIdx]) > 0 {
+		childIdx++
+	}
+
+	child, err := bt.loadNode(node.children[childIdx])
+	if err != nil {
+		return err
+	}
+
+	// Check if child will underflow
+	shouldCheckUnderflow := (child.numKeys == MinKeysPerNode)
+
+	// Delete from child
+	err = bt.deleteFromNode(child, key)
+	if err != nil {
+		return err
+	}
+
+	// Handle underflow if necessary
+	if shouldCheckUnderflow && child.isUnderflow() && node != bt.root {
+		return bt.fixUnderflow(node, childIdx, child)
+	}
+
+	return nil
+}
+
+// deleteFromLeaf deletes a key at index from a leaf node
+func (bt *BTree) deleteFromLeaf(node *Node, idx int) error {
+	// Simply remove the key and value
+	node.keys = removeAt(node.keys, idx)
+	node.values = removeAt(node.values, idx)
+	node.numKeys--
+	node.dirty = true
+	return nil
+}
+
+// deleteFromNonLeaf deletes a key from a non-leaf node
+func (bt *BTree) deleteFromNonLeaf(node *Node, key []byte, idx int) error {
+	// Try to replace with predecessor from left subtree
+	leftChild, err := bt.loadNode(node.children[idx])
+	if err != nil {
+		return err
+	}
+
+	if leftChild.numKeys > MinKeysPerNode {
+		// Get predecessor
+		predKey, predVal, err := bt.findPredecessor(leftChild)
+		if err != nil {
+			return err
+		}
+
+		// Replace key with predecessor
+		node.keys[idx] = predKey
+		node.values[idx] = predVal
+		node.dirty = true
+
+		// Delete predecessor from left subtree
+		return bt.deleteFromNode(leftChild, predKey)
+	}
+
+	// Try to replace with successor from right subtree
+	rightChild, err := bt.loadNode(node.children[idx+1])
+	if err != nil {
+		return err
+	}
+
+	if rightChild.numKeys > MinKeysPerNode {
+		// Get successor
+		succKey, succVal, err := bt.findSuccessor(rightChild)
+		if err != nil {
+			return err
+		}
+
+		// Replace key with successor
+		node.keys[idx] = succKey
+		node.values[idx] = succVal
+		node.dirty = true
+
+		// Delete successor from right subtree
+		return bt.deleteFromNode(rightChild, succKey)
+	}
+
+	// Both children have minimum keys, merge them
+	if err := bt.mergeNodes(leftChild, rightChild, node, idx); err != nil {
+		return err
+	}
+
+	// Delete from the merged node
+	return bt.deleteFromNode(leftChild, key)
+}
+
+// fixUnderflow fixes underflow in child at childIdx
+func (bt *BTree) fixUnderflow(parent *Node, childIdx int, child *Node) error {
+	// Try to borrow from left sibling
+	if childIdx > 0 {
+		leftSibling, err := bt.loadNode(parent.children[childIdx-1])
+		if err != nil {
+			return err
+		}
+
+		if leftSibling.numKeys > MinKeysPerNode {
+			bt.borrowFromLeft(child, leftSibling, parent, childIdx-1)
+			return nil
+		}
+	}
+
+	// Try to borrow from right sibling
+	if childIdx < len(parent.children)-1 {
+		rightSibling, err := bt.loadNode(parent.children[childIdx+1])
+		if err != nil {
+			return err
+		}
+
+		if rightSibling.numKeys > MinKeysPerNode {
+			bt.borrowFromRight(child, rightSibling, parent, childIdx)
+			return nil
+		}
+	}
+
+	// Merge with a sibling
+	if childIdx > 0 {
+		// Merge with left sibling
+		leftSibling, err := bt.loadNode(parent.children[childIdx-1])
+		if err != nil {
+			return err
+		}
+		return bt.mergeNodes(leftSibling, child, parent, childIdx-1)
+	}
+
+	// Merge with right sibling
+	rightSibling, err := bt.loadNode(parent.children[childIdx+1])
+	if err != nil {
+		return err
+	}
+	return bt.mergeNodes(child, rightSibling, parent, childIdx)
 }

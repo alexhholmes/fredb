@@ -379,6 +379,331 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 }
 
+// Delete Tests
+
+func TestBTreeDelete(t *testing.T) {
+	// Test basic delete operations
+	pager := NewInMemoryPageManager()
+	bt, err := NewBTree(pager)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer bt.Close()
+
+	// Insert some keys
+	keys := []string{"key1", "key2", "key3", "key4", "key5"}
+	for _, k := range keys {
+		err := bt.Set([]byte(k), []byte("value-"+k))
+		if err != nil {
+			t.Errorf("Failed to set %s: %v", k, err)
+		}
+	}
+
+	// Delete middle key
+	err = bt.Delete([]byte("key3"))
+	if err != nil {
+		t.Errorf("Failed to delete key3: %v", err)
+	}
+
+	// Verify key3 is gone
+	_, err = bt.Get([]byte("key3"))
+	if err != ErrKeyNotFound {
+		t.Errorf("Expected ErrKeyNotFound for deleted key3, got %v", err)
+	}
+
+	// Verify other keys still exist
+	for _, k := range []string{"key1", "key2", "key4", "key5"} {
+		val, err := bt.Get([]byte(k))
+		if err != nil {
+			t.Errorf("Failed to get %s after delete: %v", k, err)
+		}
+		if string(val) != "value-"+k {
+			t.Errorf("Wrong value for %s: got %s", k, string(val))
+		}
+	}
+
+	// Delete first key
+	err = bt.Delete([]byte("key1"))
+	if err != nil {
+		t.Errorf("Failed to delete key1: %v", err)
+	}
+
+	// Delete last key
+	err = bt.Delete([]byte("key5"))
+	if err != nil {
+		t.Errorf("Failed to delete key5: %v", err)
+	}
+
+	// Delete non-existent key
+	err = bt.Delete([]byte("nonexistent"))
+	if err != ErrKeyNotFound {
+		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
+	}
+
+	// Verify remaining keys
+	for _, k := range []string{"key2", "key4"} {
+		val, err := bt.Get([]byte(k))
+		if err != nil {
+			t.Errorf("Failed to get %s: %v", k, err)
+		}
+		if string(val) != "value-"+k {
+			t.Errorf("Wrong value for %s: got %s", k, string(val))
+		}
+	}
+}
+
+func TestBTreeDeleteAll(t *testing.T) {
+	// Test deleting all keys from tree
+	pager := NewInMemoryPageManager()
+	bt, err := NewBTree(pager)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer bt.Close()
+
+	// Insert and then delete keys one by one
+	numKeys := 100
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%04d", i)
+		value := fmt.Sprintf("value%04d", i)
+		err := bt.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Errorf("Failed to set %s: %v", key, err)
+		}
+	}
+
+	// Delete all keys in order
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%04d", i)
+		err := bt.Delete([]byte(key))
+		if err != nil {
+			t.Errorf("Failed to delete %s: %v", key, err)
+		}
+
+		// Verify deleted
+		_, err = bt.Get([]byte(key))
+		if err != ErrKeyNotFound {
+			t.Errorf("Key %s should be deleted, got %v", key, err)
+		}
+
+		// Verify remaining keys still exist
+		for j := i + 1; j < numKeys && j < i+5; j++ {
+			checkKey := fmt.Sprintf("key%04d", j)
+			val, err := bt.Get([]byte(checkKey))
+			if err != nil {
+				t.Errorf("Key %s should still exist: %v", checkKey, err)
+			}
+			expectedVal := fmt.Sprintf("value%04d", j)
+			if string(val) != expectedVal {
+				t.Errorf("Wrong value for %s: got %s, expected %s", checkKey, string(val), expectedVal)
+			}
+		}
+	}
+
+	// Tree should be empty now
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%04d", i)
+		_, err := bt.Get([]byte(key))
+		if err != ErrKeyNotFound {
+			t.Errorf("Key %s should not exist in empty tree", key)
+		}
+	}
+}
+
+func TestBTreeSequentialDelete(t *testing.T) {
+	// Test sequential deletion pattern with tree structure checks
+	pager := NewInMemoryPageManager()
+	bt, err := NewBTree(pager)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer bt.Close()
+
+	// Insert enough keys to create a multi-level tree
+	numKeys := MaxKeysPerNode * 2 // Enough to cause splits
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := bt.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Errorf("Failed to set %s: %v", key, err)
+		}
+	}
+
+	// Check initial tree structure
+	initialIsLeaf := bt.root.isLeaf
+	initialRootKeys := int(bt.root.numKeys)
+	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
+
+	// Delete keys sequentially and monitor tree structure
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		err := bt.Delete([]byte(key))
+		if err != nil {
+			t.Errorf("Failed to delete %s: %v", key, err)
+		}
+
+		// Log tree structure changes at key points
+		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
+			t.Logf("After %d deletions: root isLeaf=%v, numKeys=%d",
+				i+1, bt.root.isLeaf, bt.root.numKeys)
+		}
+
+		// Verify key is deleted
+		_, err = bt.Get([]byte(key))
+		if err != ErrKeyNotFound {
+			t.Errorf("Key %s should be deleted", key)
+		}
+	}
+
+	// Final tree should be empty
+	if bt.root.numKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d keys", bt.root.numKeys)
+	}
+	if !bt.root.isLeaf {
+		t.Errorf("Empty tree root should be leaf")
+	}
+}
+
+func TestBTreeRandomDelete(t *testing.T) {
+	// Test random deletion pattern with tree structure checks
+	pager := NewInMemoryPageManager()
+	bt, err := NewBTree(pager)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer bt.Close()
+
+	// Insert keys
+	numKeys := MaxKeysPerNode * 2
+	keys := make([]string, numKeys)
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		keys[i] = key
+		err := bt.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Errorf("Failed to set %s: %v", key, err)
+		}
+	}
+
+	// Check initial tree structure
+	initialIsLeaf := bt.root.isLeaf
+	initialRootKeys := int(bt.root.numKeys)
+	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
+
+	// Create random deletion order
+	deleteOrder := make([]int, numKeys)
+	for i := 0; i < numKeys; i++ {
+		deleteOrder[i] = i
+	}
+	// Deterministic shuffle for reproducibility
+	for i := len(deleteOrder) - 1; i > 0; i-- {
+		j := (i * 7) % (i + 1)
+		deleteOrder[i], deleteOrder[j] = deleteOrder[j], deleteOrder[i]
+	}
+
+	// Track which keys are deleted
+	deleted := make(map[string]bool)
+
+	// Delete keys randomly and monitor tree structure
+	for i, idx := range deleteOrder {
+		key := keys[idx]
+		err := bt.Delete([]byte(key))
+		if err != nil {
+			t.Errorf("Failed to delete %s: %v", key, err)
+		}
+		deleted[key] = true
+
+		// Log tree structure changes at key points
+		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
+			t.Logf("After %d random deletions: root isLeaf=%v, numKeys=%d",
+				i+1, bt.root.isLeaf, bt.root.numKeys)
+		}
+
+		// Verify deleted key is gone
+		_, err = bt.Get([]byte(key))
+		if err != ErrKeyNotFound {
+			t.Errorf("Key %s should be deleted", key)
+		}
+
+		// Verify some non-deleted keys still exist (spot check)
+		checked := 0
+		for _, k := range keys {
+			if !deleted[k] && checked < 5 {
+				val, err := bt.Get([]byte(k))
+				if err != nil {
+					t.Errorf("Key %s should still exist: %v", k, err)
+				}
+				expectedVal := "value" + k[3:] // Concatenate value prefix with key suffix
+				if string(val) != expectedVal {
+					t.Errorf("Wrong value for %s: got %s", k, string(val))
+				}
+				checked++
+			}
+		}
+	}
+
+	// Final tree should be empty
+	if bt.root.numKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d keys", bt.root.numKeys)
+	}
+	if !bt.root.isLeaf {
+		t.Errorf("Empty tree root should be leaf")
+	}
+}
+
+func TestBTreeReverseDelete(t *testing.T) {
+	// Test reverse sequential deletion pattern
+	pager := NewInMemoryPageManager()
+	bt, err := NewBTree(pager)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer bt.Close()
+
+	// Insert keys
+	numKeys := MaxKeysPerNode * 2
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := bt.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Errorf("Failed to set %s: %v", key, err)
+		}
+	}
+
+	// Check initial tree structure
+	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", bt.root.isLeaf, bt.root.numKeys)
+
+	// Delete keys in reverse order
+	for i := numKeys - 1; i >= 0; i-- {
+		key := fmt.Sprintf("key%06d", i)
+		err := bt.Delete([]byte(key))
+		if err != nil {
+			t.Errorf("Failed to delete %s: %v", key, err)
+		}
+
+		// Log tree structure at key points
+		deletedCount := numKeys - i
+		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
+			t.Logf("After %d reverse deletions: root isLeaf=%v, numKeys=%d",
+				deletedCount, bt.root.isLeaf, bt.root.numKeys)
+		}
+
+		// Verify key is deleted
+		_, err = bt.Get([]byte(key))
+		if err != ErrKeyNotFound {
+			t.Errorf("Key %s should be deleted", key)
+		}
+	}
+
+	// Final tree should be empty
+	if bt.root.numKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d keys", bt.root.numKeys)
+	}
+}
+
 // Stress Tests
 
 func TestBTreeStress(t *testing.T) {
