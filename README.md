@@ -70,7 +70,8 @@ Currently: 49 tests passing
 - [x] Node serialization
 - [x] Meta page format
 - [x] Free list design
-- [ ] Disk page manager
+- [x] Disk page manager
+- [ ] Cache eviction
 - [ ] WAL for durability
 - [ ] MVCC transactions
 - [ ] Benchmarks
