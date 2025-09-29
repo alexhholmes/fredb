@@ -5,7 +5,10 @@ import (
 	"sync"
 )
 
-var ErrKeyNotFound = errors.New("key not found")
+var (
+	ErrKeyNotFound   = errors.New("key not found")
+	ErrPageOverflow  = errors.New("page overflow: serialized data exceeds page size")
+)
 
 type DB interface {
 	Get(key []byte) ([]byte, error)

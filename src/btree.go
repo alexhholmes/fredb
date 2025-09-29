@@ -5,18 +5,9 @@ import (
 )
 
 const (
-	PageSize       = 4096
-	PageHeaderSize = 16
-	MaxKeysPerNode = 256 // Simplified for in-memory version
+	MaxKeysPerNode = 256                // Simplified for in-memory version
 	MinKeysPerNode = MaxKeysPerNode / 2 // Minimum keys for non-root nodes
 )
-
-type PageID uint32
-
-// Page is raw disk page
-type Page struct {
-	data [PageSize]byte
-}
 
 // PageManager handles disk I/O
 type PageManager interface {
@@ -169,7 +160,9 @@ func (bt *BTree) Delete(key []byte) error {
 func (bt *BTree) Close() error {
 	// Flush root if dirty
 	if bt.root != nil && bt.root.dirty {
-		// TODO: Serialize node data into page.data before writing
+		if err := bt.root.serialize(); err != nil {
+			return err
+		}
 		if err := bt.pager.WritePage(bt.root.pageID, bt.root.page); err != nil {
 			return err
 		}
@@ -179,7 +172,9 @@ func (bt *BTree) Close() error {
 	// Flush all cached nodes
 	for _, node := range bt.pageCache {
 		if node.dirty {
-			// TODO: Serialize node data into page.data before writing
+			if err := node.serialize(); err != nil {
+				return err
+			}
 			if err := bt.pager.WritePage(node.pageID, node.page); err != nil {
 				return err
 			}
@@ -235,17 +230,26 @@ func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 		return nil, err
 	}
 
-	// Create node (would normally decode from page.data)
+	// Create node and deserialize
 	node := &Node{
 		page:   page,
 		pageID: pageID,
 		dirty:  false,
-		// TODO: Decode these from page.data
-		isLeaf:   true,
-		numKeys:  0,
-		keys:     make([][]byte, 0),
-		values:   make([][]byte, 0),
-		children: make([]PageID, 0),
+	}
+
+	// Try to deserialize - if page is empty (new page), header.NumKeys will be 0
+	header := page.Header()
+	if header.NumKeys > 0 {
+		if err := node.deserialize(); err != nil {
+			return nil, err
+		}
+	} else {
+		// New/empty page - initialize as empty leaf
+		node.isLeaf = true
+		node.numKeys = 0
+		node.keys = make([][]byte, 0)
+		node.values = make([][]byte, 0)
+		node.children = make([]PageID, 0)
 	}
 
 	// Cache it
@@ -257,6 +261,158 @@ func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 // isFull checks if a node is full (simplified for in-memory)
 func (n *Node) isFull() bool {
 	return int(n.numKeys) >= MaxKeysPerNode
+}
+
+// serializedSize calculates the size of the serialized node
+func (n *Node) serializedSize() int {
+	size := PageHeaderSize
+
+	if n.isLeaf {
+		size += int(n.numKeys) * LeafElementSize
+		for i := 0; i < int(n.numKeys); i++ {
+			size += len(n.keys[i]) + len(n.values[i])
+		}
+	} else {
+		size += int(n.numKeys) * BranchElementSize
+		size += 8 // children[0]
+		for i := 0; i < int(n.numKeys); i++ {
+			size += len(n.keys[i])
+		}
+	}
+
+	return size
+}
+
+// serialize encodes the node data into page.data
+func (n *Node) serialize() error {
+	// Check size
+	if n.serializedSize() > PageSize {
+		return ErrPageOverflow
+	}
+
+	// Clear page data
+	for i := range n.page.data {
+		n.page.data[i] = 0
+	}
+
+	// Write header
+	header := &PageHeader{
+		PageID:  n.pageID,
+		NumKeys: n.numKeys,
+	}
+	if n.isLeaf {
+		header.Flags = LeafPageFlag
+	} else {
+		header.Flags = BranchPageFlag
+	}
+	n.page.WriteHeader(header)
+
+	if n.isLeaf {
+		// Serialize leaf node
+		dataOffset := uint16(0)
+		for i := 0; i < int(n.numKeys); i++ {
+			key := n.keys[i]
+			value := n.values[i]
+
+			elem := &LeafElement{
+				KeyOffset:   dataOffset,
+				KeySize:     uint16(len(key)),
+				ValueOffset: dataOffset + uint16(len(key)),
+				ValueSize:   uint16(len(value)),
+			}
+			n.page.WriteLeafElement(i, elem)
+
+			// Write key and value to data area
+			dataStart := n.page.DataAreaStart()
+			copy(n.page.data[dataStart+int(dataOffset):], key)
+			dataOffset += uint16(len(key))
+			copy(n.page.data[dataStart+int(dataOffset):], value)
+			dataOffset += uint16(len(value))
+		}
+	} else {
+		// Serialize branch node
+		// Write children[0] first
+		if len(n.children) > 0 {
+			n.page.WriteBranchFirstChild(n.children[0])
+		}
+
+		// Write keys and remaining children
+		dataOffset := uint16(8) // Start after children[0]
+		for i := 0; i < int(n.numKeys); i++ {
+			key := n.keys[i]
+
+			elem := &BranchElement{
+				KeyOffset: dataOffset,
+				KeySize:   uint16(len(key)),
+				ChildID:   n.children[i+1],
+			}
+			n.page.WriteBranchElement(i, elem)
+
+			// Write key to data area
+			dataStart := n.page.DataAreaStart()
+			copy(n.page.data[dataStart+int(dataOffset):], key)
+			dataOffset += uint16(len(key))
+		}
+	}
+
+	return nil
+}
+
+// deserialize decodes the page data into node fields
+func (n *Node) deserialize() error {
+	header := n.page.Header()
+	n.pageID = header.PageID
+	n.numKeys = header.NumKeys
+	n.isLeaf = (header.Flags & LeafPageFlag) != 0
+
+	if n.isLeaf {
+		// Deserialize leaf node
+		n.keys = make([][]byte, n.numKeys)
+		n.values = make([][]byte, n.numKeys)
+		n.children = nil
+
+		elements := n.page.LeafElements()
+		for i := 0; i < int(n.numKeys); i++ {
+			elem := elements[i]
+
+			// Copy key
+			keyData := n.page.GetKey(elem.KeyOffset, elem.KeySize)
+			n.keys[i] = make([]byte, len(keyData))
+			copy(n.keys[i], keyData)
+
+			// Copy value
+			valueData := n.page.GetValue(elem.ValueOffset, elem.ValueSize)
+			n.values[i] = make([]byte, len(valueData))
+			copy(n.values[i], valueData)
+		}
+	} else {
+		// Deserialize branch node
+		n.keys = make([][]byte, n.numKeys)
+		n.values = make([][]byte, n.numKeys) // Branch nodes also store values for separator keys
+		n.children = make([]PageID, n.numKeys+1)
+
+		// Read children[0]
+		n.children[0] = n.page.ReadBranchFirstChild()
+
+		elements := n.page.BranchElements()
+		for i := 0; i < int(n.numKeys); i++ {
+			elem := elements[i]
+
+			// Copy key
+			keyData := n.page.GetKey(elem.KeyOffset, elem.KeySize)
+			n.keys[i] = make([]byte, len(keyData))
+			copy(n.keys[i], keyData)
+
+			// Copy child pointer
+			n.children[i+1] = elem.ChildID
+
+			// Branch nodes need values too (for separator keys)
+			// For now, initialize empty values
+			n.values[i] = make([]byte, 0)
+		}
+	}
+
+	return nil
 }
 
 // splitChild splits a full child node
