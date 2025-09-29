@@ -1,22 +1,25 @@
 package src
 
 import (
+	"hash/crc32"
 	"unsafe"
 )
 
 const (
 	PageSize = 4096
 
-	// Page type flags
 	LeafPageFlag   uint16 = 0x01
 	BranchPageFlag uint16 = 0x02
+	MetaPageFlag   uint16 = 0x04
 
-	// Page header size
-	PageHeaderSize = 16
-
-	// Element sizes
+	PageHeaderSize    = 16
 	LeafElementSize   = 12
 	BranchElementSize = 16
+
+	// MagicNumber for file format identification ("frdb" in hex)
+	MagicNumber uint32 = 0x66726462
+
+	FormatVersion uint16 = 1
 )
 
 type PageID uint64
@@ -106,19 +109,41 @@ func (p *Page) WriteBranchElement(idx int, e *BranchElement) {
 }
 
 // GetKey retrieves a key from the data area given an offset and size
-func (p *Page) GetKey(offset, size uint16) []byte {
+func (p *Page) GetKey(offset, size uint16) ([]byte, error) {
 	dataStart := p.DataAreaStart()
 	start := dataStart + int(offset)
 	end := start + int(size)
-	return p.data[start:end]
+
+	if start < dataStart {
+		return nil, ErrInvalidOffset
+	}
+	if end > PageSize {
+		return nil, ErrPageOverflow
+	}
+	if start > end {
+		return nil, ErrInvalidOffset
+	}
+
+	return p.data[start:end], nil
 }
 
 // GetValue retrieves a value from the data area given an offset and size
-func (p *Page) GetValue(offset, size uint16) []byte {
+func (p *Page) GetValue(offset, size uint16) ([]byte, error) {
 	dataStart := p.DataAreaStart()
 	start := dataStart + int(offset)
 	end := start + int(size)
-	return p.data[start:end]
+
+	if start < dataStart {
+		return nil, ErrInvalidOffset
+	}
+	if end > PageSize {
+		return nil, ErrPageOverflow
+	}
+	if start > end {
+		return nil, ErrInvalidOffset
+	}
+
+	return p.data[start:end], nil
 }
 
 // WriteBranchFirstChild writes the first child PageID to the start of data area
@@ -131,4 +156,100 @@ func (p *Page) WriteBranchFirstChild(childID PageID) {
 func (p *Page) ReadBranchFirstChild() PageID {
 	dataStart := p.DataAreaStart()
 	return *(*PageID)(unsafe.Pointer(&p.data[dataStart]))
+}
+
+// MetaPage represents database metadata stored in pages 0 and 1
+// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][TxnID: 8][NumPages: 8][Checksum: 4]
+// Total: 44 bytes
+type MetaPage struct {
+	Magic      uint32 // 4 bytes: 0x66726462 ("frdb")
+	Version    uint16 // 2 bytes: format version (1)
+	PageSize   uint16 // 2 bytes: page size (4096)
+	RootPageID PageID // 8 bytes: root of B-tree
+	FreelistID PageID // 8 bytes: start of freelist
+	TxnID      uint64 // 8 bytes: transaction counter
+	NumPages   uint64 // 8 bytes: total pages allocated
+	Checksum   uint32 // 4 bytes: CRC32 of above fields
+}
+
+// WriteMeta writes metadata to the page starting at PageHeaderSize
+func (p *Page) WriteMeta(m *MetaPage) {
+	offset := PageHeaderSize
+	ptr := unsafe.Pointer(&p.data[offset])
+	*(*MetaPage)(ptr) = *m
+}
+
+// ReadMeta reads metadata from the page starting at PageHeaderSize
+func (p *Page) ReadMeta() *MetaPage {
+	offset := PageHeaderSize
+	ptr := unsafe.Pointer(&p.data[offset])
+	return (*MetaPage)(ptr)
+}
+
+// CalculateChecksum computes CRC32 checksum of all fields except Checksum itself
+func (m *MetaPage) CalculateChecksum() uint32 {
+	// Create byte slice of all fields except Checksum
+	// MetaPage is 44 bytes, Checksum is last 4 bytes, so we hash first 40 bytes
+	data := make([]byte, 40)
+	offset := 0
+
+	// Magic (4 bytes)
+	data[offset] = byte(m.Magic)
+	data[offset+1] = byte(m.Magic >> 8)
+	data[offset+2] = byte(m.Magic >> 16)
+	data[offset+3] = byte(m.Magic >> 24)
+	offset += 4
+
+	// Version (2 bytes)
+	data[offset] = byte(m.Version)
+	data[offset+1] = byte(m.Version >> 8)
+	offset += 2
+
+	// PageSize (2 bytes)
+	data[offset] = byte(m.PageSize)
+	data[offset+1] = byte(m.PageSize >> 8)
+	offset += 2
+
+	// RootPageID (8 bytes)
+	for i := 0; i < 8; i++ {
+		data[offset+i] = byte(m.RootPageID >> (i * 8))
+	}
+	offset += 8
+
+	// FreelistID (8 bytes)
+	for i := 0; i < 8; i++ {
+		data[offset+i] = byte(m.FreelistID >> (i * 8))
+	}
+	offset += 8
+
+	// TxnID (8 bytes)
+	for i := 0; i < 8; i++ {
+		data[offset+i] = byte(m.TxnID >> (i * 8))
+	}
+	offset += 8
+
+	// NumPages (8 bytes)
+	for i := 0; i < 8; i++ {
+		data[offset+i] = byte(m.NumPages >> (i * 8))
+	}
+
+	return crc32.ChecksumIEEE(data)
+}
+
+// Validate checks if the metadata is valid
+func (m *MetaPage) Validate() error {
+	if m.Magic != MagicNumber {
+		return ErrInvalidMagicNumber
+	}
+	if m.Version != FormatVersion {
+		return ErrInvalidVersion
+	}
+	if m.PageSize != PageSize {
+		return ErrInvalidPageSize
+	}
+	expectedChecksum := m.CalculateChecksum()
+	if m.Checksum != expectedChecksum {
+		return ErrInvalidChecksum
+	}
+	return nil
 }

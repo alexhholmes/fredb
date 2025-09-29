@@ -402,13 +402,74 @@ func TestGetKeyValue(t *testing.T) {
 	copy(page.data[dataStart+5:], value)
 
 	// Read back using GetKey/GetValue
-	readKey := page.GetKey(elem.KeyOffset, elem.KeySize)
-	readValue := page.GetValue(elem.ValueOffset, elem.ValueSize)
+	readKey, err := page.GetKey(elem.KeyOffset, elem.KeySize)
+	if err != nil {
+		t.Fatalf("GetKey() error = %v", err)
+	}
+	readValue, err := page.GetValue(elem.ValueOffset, elem.ValueSize)
+	if err != nil {
+		t.Fatalf("GetValue() error = %v", err)
+	}
 
 	if string(readKey) != string(key) {
 		t.Errorf("GetKey() = %q, want %q", readKey, key)
 	}
 	if string(readValue) != string(value) {
 		t.Errorf("GetValue() = %q, want %q", readValue, value)
+	}
+}
+
+func TestGetKeyValueBoundsChecking(t *testing.T) {
+	var page Page
+
+	// Write header for leaf with 1 key
+	header := PageHeader{
+		PageID:  1,
+		Flags:   LeafPageFlag,
+		NumKeys: 1,
+	}
+	page.WriteHeader(&header)
+
+	dataStart := page.DataAreaStart()
+
+	tests := []struct {
+		name   string
+		offset uint16
+		size   uint16
+		wantErr bool
+	}{
+		{
+			name:    "valid key",
+			offset:  0,
+			size:    10,
+			wantErr: false,
+		},
+		{
+			name:    "key extends beyond page",
+			offset:  uint16(PageSize - dataStart - 5),
+			size:    10,
+			wantErr: true,
+		},
+		{
+			name:    "offset too large",
+			offset:  uint16(PageSize),
+			size:    1,
+			wantErr: true,
+		},
+		{
+			name:    "zero size",
+			offset:  0,
+			size:    0,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := page.GetKey(tt.offset, tt.size)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetKey() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }

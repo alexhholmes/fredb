@@ -376,12 +376,18 @@ func (n *Node) deserialize() error {
 			elem := elements[i]
 
 			// Copy key
-			keyData := n.page.GetKey(elem.KeyOffset, elem.KeySize)
+			keyData, err := n.page.GetKey(elem.KeyOffset, elem.KeySize)
+			if err != nil {
+				return err
+			}
 			n.keys[i] = make([]byte, len(keyData))
 			copy(n.keys[i], keyData)
 
 			// Copy value
-			valueData := n.page.GetValue(elem.ValueOffset, elem.ValueSize)
+			valueData, err := n.page.GetValue(elem.ValueOffset, elem.ValueSize)
+			if err != nil {
+				return err
+			}
 			n.values[i] = make([]byte, len(valueData))
 			copy(n.values[i], valueData)
 		}
@@ -399,7 +405,10 @@ func (n *Node) deserialize() error {
 			elem := elements[i]
 
 			// Copy key
-			keyData := n.page.GetKey(elem.KeyOffset, elem.KeySize)
+			keyData, err := n.page.GetKey(elem.KeyOffset, elem.KeySize)
+			if err != nil {
+				return err
+			}
 			n.keys[i] = make([]byte, len(keyData))
 			copy(n.keys[i], keyData)
 

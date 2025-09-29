@@ -6,8 +6,13 @@ import (
 )
 
 var (
-	ErrKeyNotFound   = errors.New("key not found")
-	ErrPageOverflow  = errors.New("page overflow: serialized data exceeds page size")
+	ErrKeyNotFound         = errors.New("key not found")
+	ErrPageOverflow        = errors.New("page overflow: serialized data exceeds page size")
+	ErrInvalidOffset       = errors.New("invalid offset: out of bounds")
+	ErrInvalidMagicNumber  = errors.New("invalid magic number")
+	ErrInvalidVersion      = errors.New("invalid format version")
+	ErrInvalidPageSize     = errors.New("invalid page size")
+	ErrInvalidChecksum     = errors.New("invalid checksum")
 )
 
 type DB interface {
