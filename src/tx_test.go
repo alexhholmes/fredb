@@ -3,6 +3,7 @@ package src
 import (
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -321,5 +322,288 @@ func TestTxAutoRollback(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("View failed: %v", err)
+	}
+}
+
+func TestTxMultipleBeginWithoutCommit(t *testing.T) {
+	tmpfile := "/tmp/test_tx_multiple_begin.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+	defer db.Close()
+
+	// Begin first write transaction
+	tx1, err := db.Begin(true)
+	if err != nil {
+		t.Fatalf("Failed to begin first transaction: %v", err)
+	}
+
+	// Attempt to begin second write transaction without committing first
+	tx2, err := db.Begin(true)
+	if err != ErrTxInProgress {
+		t.Errorf("Expected ErrTxInProgress for second write tx, got: %v", err)
+	}
+	if tx2 != nil {
+		t.Error("Second transaction should be nil when ErrTxInProgress is returned")
+		tx2.Rollback()
+	}
+
+	// First transaction should still be valid
+	testKey := []byte("test_key")
+	testValue := []byte("test_value")
+	err = tx1.Set(testKey, testValue)
+	if err != nil {
+		t.Errorf("First transaction should still be valid: %v", err)
+	}
+
+	// Commit first transaction
+	err = tx1.Commit()
+	if err != nil {
+		t.Errorf("Failed to commit first transaction: %v", err)
+	}
+
+	// Now second write transaction should succeed
+	tx3, err := db.Begin(true)
+	if err != nil {
+		t.Fatalf("Failed to begin write tx after commit: %v", err)
+	}
+	defer tx3.Rollback()
+
+	// Verify we can access the committed data
+	val, err := tx3.Get(testKey)
+	if err != nil {
+		t.Errorf("Failed to get committed data: %v", err)
+	}
+	if string(val) != string(testValue) {
+		t.Errorf("Expected %s, got %s", string(testValue), string(val))
+	}
+}
+
+func TestTxOperationsAfterClose(t *testing.T) {
+	tmpfile := "/tmp/test_tx_after_close.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+
+	// Insert some data
+	err = db.Set([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to set data: %v", err)
+	}
+
+	// Begin transaction before close
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	// Close database
+	err = db.Close()
+	if err != nil {
+		t.Errorf("Failed to close DB: %v", err)
+	}
+
+	// Operations on transaction after db.Close() should still work
+	// because transaction captured snapshot
+	val, err := tx.Get([]byte("key1"))
+	if err != nil {
+		t.Logf("Get after close returned error: %v (may be expected)", err)
+	} else if string(val) != "value1" {
+		t.Errorf("Expected value1, got %s", string(val))
+	}
+
+	// Rollback should not panic
+	err = tx.Rollback()
+	if err != nil {
+		t.Logf("Rollback after close returned error: %v", err)
+	}
+
+	// New transaction after close should fail
+	_, err = db.Begin(false)
+	if err == nil {
+		t.Error("Expected error when beginning transaction after close")
+	}
+}
+
+func TestTxConcurrentWriteBegin(t *testing.T) {
+	tmpfile := "/tmp/test_tx_concurrent_write_begin.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+	defer db.Close()
+
+	// Begin first write transaction
+	tx1, err := db.Begin(true)
+	if err != nil {
+		t.Fatalf("Failed to begin first transaction: %v", err)
+	}
+	defer tx1.Rollback()
+
+	// Launch goroutines attempting to begin write transactions
+	numAttempts := 10
+	var wg sync.WaitGroup
+	wg.Add(numAttempts)
+
+	errors := make(chan error, numAttempts)
+
+	for i := 0; i < numAttempts; i++ {
+		go func(id int) {
+			defer wg.Done()
+
+			tx, err := db.Begin(true)
+			if err == ErrTxInProgress {
+				// Expected
+				errors <- nil
+				return
+			}
+			if err != nil {
+				errors <- fmt.Errorf("goroutine %d: unexpected error: %v", id, err)
+				return
+			}
+
+			// If we got a transaction, that's wrong
+			tx.Rollback()
+			errors <- fmt.Errorf("goroutine %d: should not have obtained write transaction", id)
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// All should have gotten ErrTxInProgress
+	errorCount := 0
+	for err := range errors {
+		if err != nil {
+			t.Error(err)
+			errorCount++
+		}
+	}
+
+	if errorCount > 0 {
+		t.Errorf("%d goroutines had unexpected behavior", errorCount)
+	}
+
+	// Commit the first transaction
+	err = tx1.Commit()
+	if err != nil {
+		t.Errorf("Failed to commit: %v", err)
+	}
+
+	// Now a new write transaction should succeed
+	tx2, err := db.Begin(true)
+	if err != nil {
+		t.Errorf("Should be able to begin write tx after commit: %v", err)
+	}
+	if tx2 != nil {
+		tx2.Rollback()
+	}
+}
+
+func TestTxWriteThenReadMultiple(t *testing.T) {
+	tmpfile := "/tmp/test_tx_write_then_read.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+	defer db.Close()
+
+	// Write some data
+	err = db.Set([]byte("initial"), []byte("data"))
+	if err != nil {
+		t.Fatalf("Failed to set initial data: %v", err)
+	}
+
+	// Begin write transaction
+	writeTx, err := db.Begin(true)
+	if err != nil {
+		t.Fatalf("Failed to begin write transaction: %v", err)
+	}
+
+	// Write in write transaction
+	err = writeTx.Set([]byte("write_key"), []byte("write_value"))
+	if err != nil {
+		t.Errorf("Failed to set in write tx: %v", err)
+	}
+
+	// Multiple read transactions should be allowed concurrently
+	numReaders := 5
+	var wg sync.WaitGroup
+	wg.Add(numReaders)
+
+	readerErrors := make(chan error, numReaders)
+
+	for i := 0; i < numReaders; i++ {
+		go func(id int) {
+			defer wg.Done()
+
+			readTx, err := db.Begin(false)
+			if err != nil {
+				readerErrors <- fmt.Errorf("reader %d: failed to begin: %v", id, err)
+				return
+			}
+			defer readTx.Rollback()
+
+			// Should see initial data
+			val, err := readTx.Get([]byte("initial"))
+			if err != nil {
+				readerErrors <- fmt.Errorf("reader %d: failed to get initial: %v", id, err)
+				return
+			}
+			if string(val) != "data" {
+				readerErrors <- fmt.Errorf("reader %d: wrong initial value", id)
+				return
+			}
+
+			// Should NOT see uncommitted write
+			_, err = readTx.Get([]byte("write_key"))
+			if err != ErrKeyNotFound {
+				readerErrors <- fmt.Errorf("reader %d: should not see uncommitted write", id)
+				return
+			}
+
+			readerErrors <- nil
+		}(i)
+	}
+
+	wg.Wait()
+	close(readerErrors)
+
+	// Check all readers succeeded
+	for err := range readerErrors {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	// Commit write transaction
+	err = writeTx.Commit()
+	if err != nil {
+		t.Errorf("Failed to commit write tx: %v", err)
+	}
+
+	// New read transaction should see committed write
+	readTx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin read tx after commit: %v", err)
+	}
+	defer readTx.Rollback()
+
+	val, err := readTx.Get([]byte("write_key"))
+	if err != nil {
+		t.Errorf("Should see committed write: %v", err)
+	}
+	if string(val) != "write_value" {
+		t.Errorf("Expected write_value, got %s", string(val))
 	}
 }

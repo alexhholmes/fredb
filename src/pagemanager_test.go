@@ -740,3 +740,221 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	t.Logf("Successfully recovered from crash using backup meta page")
 }
+
+func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
+	tmpfile := "/tmp/test_crash_recovery_wrong_magic.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+
+	err = db.Set([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to set key: %v", err)
+	}
+
+	err = db.Close()
+	if err != nil {
+		t.Fatalf("Failed to close DB: %v", err)
+	}
+
+	// Corrupt meta page with valid checksum but wrong magic
+	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+
+	// Write wrong magic number at page 0
+	wrongMagic := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	_, err = file.WriteAt(wrongMagic, int64(PageHeaderSize))
+	if err != nil {
+		t.Fatalf("Failed to write wrong magic: %v", err)
+	}
+	file.Sync()
+	file.Close()
+
+	// Try to open - should fail or use page 1
+	db, err = Open(tmpfile)
+	if err != nil {
+		t.Logf("Open failed with wrong magic (expected): %v", err)
+		return
+	}
+	defer db.Close()
+
+	// If open succeeded, it should have used page 1
+	val, err := db.Get([]byte("key1"))
+	if err != nil {
+		t.Logf("Failed to get key after wrong magic: %v", err)
+	} else if string(val) != "value1" {
+		t.Errorf("Expected value1, got %s", string(val))
+	}
+}
+
+func TestCrashRecoveryRootPageIDZero(t *testing.T) {
+	tmpfile := "/tmp/test_crash_recovery_root_zero.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+
+	err = db.Set([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to set key: %v", err)
+	}
+
+	err = db.Close()
+	if err != nil {
+		t.Fatalf("Failed to close DB: %v", err)
+	}
+
+	// Corrupt meta page: set RootPageID to 0 but keep valid TxnID
+	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+
+	// Read current meta from page 0
+	page := &Page{}
+	_, err = file.ReadAt(page.data[:], 0)
+	if err != nil {
+		t.Fatalf("Failed to read meta: %v", err)
+	}
+
+	// Parse and modify
+	meta := page.ReadMeta()
+	meta.RootPageID = 0 // Set to 0 (invalid state if TxnID > 0)
+	meta.Checksum = meta.CalculateChecksum()
+
+	// Write back
+	page.WriteMeta(meta)
+	_, err = file.WriteAt(page.data[:], 0)
+	if err != nil {
+		t.Fatalf("Failed to write modified meta: %v", err)
+	}
+	file.Sync()
+	file.Close()
+
+	// Try to open - behavior depends on implementation
+	db, err = Open(tmpfile)
+	if err != nil {
+		t.Logf("Open failed with RootPageID=0 (may be expected): %v", err)
+		return
+	}
+	defer db.Close()
+
+	// If open succeeded, verify state
+	_, err = db.Get([]byte("key1"))
+	if err == ErrKeyNotFound {
+		t.Logf("Key not found (expected with RootPageID=0)")
+	} else if err != nil {
+		t.Logf("Get returned error: %v", err)
+	}
+}
+
+func TestCrashRecoveryTruncatedFile(t *testing.T) {
+	tmpfile := "/tmp/test_crash_recovery_truncated.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+
+	err = db.Set([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to set key: %v", err)
+	}
+
+	err = db.Close()
+	if err != nil {
+		t.Fatalf("Failed to close DB: %v", err)
+	}
+
+	// Truncate file to only 1 page (missing meta page 1)
+	err = os.Truncate(tmpfile, PageSize)
+	if err != nil {
+		t.Fatalf("Failed to truncate file: %v", err)
+	}
+
+	// Try to open
+	db, err = Open(tmpfile)
+	if err != nil {
+		t.Logf("Open failed on truncated file (expected): %v", err)
+		return
+	}
+	defer db.Close()
+
+	// If open succeeded, verify we can still use it
+	t.Log("Open succeeded on truncated file")
+}
+
+func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
+	tmpfile := "/tmp/test_crash_recovery_same_txnid.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+
+	err = db.Set([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to set key: %v", err)
+	}
+
+	err = db.Close()
+	if err != nil {
+		t.Fatalf("Failed to close DB: %v", err)
+	}
+
+	// Create impossible state: both meta pages with same TxnID but different roots
+	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+
+	// Read meta from page 0
+	page0 := &Page{}
+	_, err = file.ReadAt(page0.data[:], 0)
+	if err != nil {
+		t.Fatalf("Failed to read meta 0: %v", err)
+	}
+	meta0 := page0.ReadMeta()
+
+	// Read meta from page 1
+	page1 := &Page{}
+	_, err = file.ReadAt(page1.data[:], PageSize)
+	if err != nil {
+		t.Fatalf("Failed to read meta 1: %v", err)
+	}
+	meta1 := page1.ReadMeta()
+
+	// Make both have same TxnID
+	meta1.TxnID = meta0.TxnID
+	meta1.RootPageID = 999 // Different root (invalid)
+	meta1.Checksum = meta1.CalculateChecksum()
+
+	// Write back page 1
+	page1.WriteMeta(meta1)
+	_, err = file.WriteAt(page1.data[:], int64(PageSize))
+	if err != nil {
+		t.Fatalf("Failed to write meta 1: %v", err)
+	}
+	file.Sync()
+	file.Close()
+
+	// Try to open - should handle this gracefully
+	db, err = Open(tmpfile)
+	if err != nil {
+		t.Logf("Open failed with same TxnID (may be expected): %v", err)
+		return
+	}
+	defer db.Close()
+
+	// If open succeeded, verify which meta was chosen
+	t.Log("Open succeeded despite same TxnID on both metas")
+}

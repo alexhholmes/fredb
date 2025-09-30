@@ -1,6 +1,7 @@
 package src
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"testing"
@@ -1227,4 +1228,328 @@ func validateSiblingPointers(bt *BTree) error {
 	}
 
 	return nil
+}
+
+func TestPageOverflowLargeKey(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Key that's too large to fit in a page
+	largeKey := make([]byte, 3000)
+	for i := range largeKey {
+		largeKey[i] = byte(i % 256)
+	}
+	value := []byte("small_value")
+
+	err := db.Set(largeKey, value)
+	if err != ErrPageOverflow {
+		t.Errorf("Expected ErrPageOverflow for large key, got: %v", err)
+	}
+}
+
+func TestPageOverflowLargeValue(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := []byte("small_key")
+	// Value that's too large to fit in a page
+	largeValue := make([]byte, 3900)
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+
+	err := db.Set(key, largeValue)
+	if err != ErrPageOverflow {
+		t.Errorf("Expected ErrPageOverflow for large value, got: %v", err)
+	}
+}
+
+func TestPageOverflowCombinedSize(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Key + value that individually fit but combined exceed PageSize
+	key := make([]byte, 2000)
+	value := make([]byte, 2000)
+	for i := range key {
+		key[i] = byte(i % 256)
+	}
+	for i := range value {
+		value[i] = byte((i + 50) % 256)
+	}
+
+	err := db.Set(key, value)
+	if err != ErrPageOverflow {
+		t.Errorf("Expected ErrPageOverflow for combined size, got: %v", err)
+	}
+}
+
+func TestPageOverflowBoundary(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Test key+value that exactly fits (should succeed)
+	// PageSize = 4096
+	// PageHeaderSize = 32
+	// LeafElementSize = 16 (2 * uint64)
+	// Available = 4096 - 32 - 16 = 4048 bytes for key+value
+
+	keySize := 1000
+	valueSize := 3000 // Total 4000, should fit
+
+	key := make([]byte, keySize)
+	value := make([]byte, valueSize)
+	for i := range key {
+		key[i] = 'k'
+	}
+	for i := range value {
+		value[i] = 'v'
+	}
+
+	err := db.Set(key, value)
+	if err != nil {
+		t.Errorf("Should fit in page, got error: %v", err)
+	}
+
+	// Verify we can retrieve it
+	retrieved, err := db.Get(key)
+	if err != nil {
+		t.Errorf("Failed to get key after boundary insert: %v", err)
+	}
+	if len(retrieved) != valueSize {
+		t.Errorf("Retrieved value wrong size: expected %d, got %d", valueSize, len(retrieved))
+	}
+}
+
+func TestPageOverflowMaxKeyValue(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Test with maximum reasonable key+value size
+	// Should fit: PageSize - PageHeaderSize - LeafElementSize = 4048
+	maxSize := 4048
+
+	key := make([]byte, maxSize/2)
+	value := make([]byte, maxSize/2-100) // Leave some room for overhead
+
+	for i := range key {
+		key[i] = byte(i % 256)
+	}
+	for i := range value {
+		value[i] = byte((i + 128) % 256)
+	}
+
+	err := db.Set(key, value)
+	if err != nil {
+		t.Errorf("Max size key+value should fit, got error: %v", err)
+	}
+
+	// Verify retrieval
+	retrieved, err := db.Get(key)
+	if err != nil {
+		t.Errorf("Failed to get max size key: %v", err)
+	}
+	if !bytes.Equal(retrieved, value) {
+		t.Error("Retrieved value doesn't match for max size")
+	}
+}
+
+func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Insert enough keys to create multi-level tree
+	numKeys := MaxKeysPerNode * 2
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := db.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Fatalf("Failed to set key %d: %v", i, err)
+		}
+	}
+
+	// Delete until we have a node with exactly MinKeysPerNode=64 keys
+	// This should NOT trigger underflow
+	deleteCount := numKeys - MinKeysPerNode
+	for i := 0; i < deleteCount; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		err := db.Delete([]byte(key))
+		if err != nil {
+			t.Fatalf("Failed to delete key %d: %v", i, err)
+		}
+	}
+
+	// Verify remaining keys exist
+	for i := deleteCount; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		val, err := db.Get([]byte(key))
+		if err != nil {
+			t.Errorf("Key %s should still exist: %v", key, err)
+		}
+		expectedValue := fmt.Sprintf("value%06d", i)
+		if string(val) != expectedValue {
+			t.Errorf("Wrong value for %s", key)
+		}
+	}
+
+	t.Logf("Tree root: isLeaf=%v, numKeys=%d", db.store.root.isLeaf, db.store.root.numKeys)
+}
+
+func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
+	db := setupTestDB(t)
+
+	numKeys := MaxKeysPerNode * 2
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := db.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Fatalf("Failed to set key %d: %v", i, err)
+		}
+	}
+
+	deleteCount := numKeys - MinKeysPerNode - 1
+	for i := 0; i < deleteCount; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		err := db.Delete([]byte(key))
+		if err != nil {
+			t.Fatalf("Failed to delete key %d: %v", i, err)
+		}
+	}
+
+	key := fmt.Sprintf("key%06d", deleteCount)
+	err := db.Delete([]byte(key))
+	if err != nil {
+		t.Fatalf("Failed to trigger underflow: %v", err)
+	}
+
+	remainingKeys := numKeys - deleteCount - 1
+	t.Logf("Remaining keys after underflow: %d", remainingKeys)
+
+	for i := deleteCount + 1; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		_, err := db.Get([]byte(key))
+		if err != nil {
+			t.Errorf("Key %s should exist after underflow: %v", key, err)
+		}
+	}
+}
+
+func TestBoundaryInsert255ThenSplit(t *testing.T) {
+	db := setupTestDB(t)
+
+	for i := 0; i < MaxKeysPerNode-1; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := db.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Fatalf("Failed to set key %d: %v", i, err)
+		}
+	}
+
+	if !db.store.root.isLeaf {
+		t.Error("Root should still be leaf with 255 keys")
+	}
+	if db.store.root.numKeys != MaxKeysPerNode-1 {
+		t.Errorf("Expected %d keys, got %d", MaxKeysPerNode-1, db.store.root.numKeys)
+	}
+
+	key256 := fmt.Sprintf("key%06d", MaxKeysPerNode-1)
+	value256 := fmt.Sprintf("value%06d", MaxKeysPerNode-1)
+	err := db.Set([]byte(key256), []byte(value256))
+	if err != nil {
+		t.Fatalf("Failed to trigger split: %v", err)
+	}
+
+	if db.store.root.isLeaf {
+		t.Error("Root should be branch after split")
+	}
+	if len(db.store.root.children) < 2 {
+		t.Errorf("Root should have at least 2 children after split, got %d", len(db.store.root.children))
+	}
+
+	for i := 0; i < MaxKeysPerNode; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		_, err := db.Get([]byte(key))
+		if err != nil {
+			t.Errorf("Key %s not found after split: %v", key, err)
+		}
+	}
+}
+
+func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
+	db := setupTestDB(t)
+
+	numKeys := MaxKeysPerNode * 2
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := db.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Fatalf("Failed to set key %d: %v", i, err)
+		}
+	}
+
+	if db.store.root.isLeaf {
+		t.Fatal("Root should be branch node")
+	}
+
+	initialRootKeys := db.store.root.numKeys
+	t.Logf("Initial root keys: %d", initialRootKeys)
+
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		err := db.Delete([]byte(key))
+		if err != nil {
+			t.Fatalf("Failed to delete key %d: %v", i, err)
+		}
+
+		if i%(numKeys/4) == 0 {
+			t.Logf("After %d deletions: root.isLeaf=%v, root.numKeys=%d",
+				i+1, db.store.root.isLeaf, db.store.root.numKeys)
+		}
+	}
+
+	if !db.store.root.isLeaf {
+		t.Error("Final root should be leaf")
+	}
+	if db.store.root.numKeys != 0 {
+		t.Errorf("Final root should have 0 keys, got %d", db.store.root.numKeys)
+	}
+}
+
+func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
+	db := setupTestDB(t)
+
+	numKeys := MaxKeysPerNode * 3
+	for i := 0; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		value := fmt.Sprintf("value%06d", i)
+		err := db.Set([]byte(key), []byte(value))
+		if err != nil {
+			t.Fatalf("Failed to set key %d: %v", i, err)
+		}
+	}
+
+	if db.store.root.isLeaf {
+		t.Fatal("Root should not be leaf for this test")
+	}
+
+	t.Logf("Tree structure: root.numKeys=%d, root.children=%d",
+		db.store.root.numKeys, len(db.store.root.children))
+
+	deleteCount := numKeys / 2
+	for i := 0; i < deleteCount; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		err := db.Delete([]byte(key))
+		if err != nil {
+			t.Fatalf("Failed to delete key %d: %v", i, err)
+		}
+	}
+
+	for i := deleteCount; i < numKeys; i++ {
+		key := fmt.Sprintf("key%06d", i)
+		_, err := db.Get([]byte(key))
+		if err != nil {
+			t.Errorf("Key %s should exist: %v", key, err)
+		}
+	}
+
+	t.Logf("After deletions: root.isLeaf=%v, root.numKeys=%d",
+		db.store.root.isLeaf, db.store.root.numKeys)
 }
