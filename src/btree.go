@@ -59,6 +59,8 @@ func (n *Node) setPrevLeaf(id PageID) {
 	}
 }
 
+var _ DB = (*BTree)(nil)
+
 // BTree is the main structure
 type BTree struct {
 	pager PageManager
