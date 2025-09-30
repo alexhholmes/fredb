@@ -6,36 +6,20 @@ import (
 	"testing"
 )
 
-// Helper functions for cursor tests
-
-func setupTestBTree(t *testing.T) *BTree {
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	return bt
-}
-
-func cleanupBTree(bt *BTree) {
-	bt.Close()
-}
-
 func TestCursorSequentialScan(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Insert keys 1-100
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := btree.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to insert key %d: %v", i, err)
 		}
 	}
 
 	// Sequential scan from beginning
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("key000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -64,20 +48,19 @@ func TestCursorSequentialScan(t *testing.T) {
 }
 
 func TestCursorReverseScan(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Insert keys 1-50
 	for i := 1; i <= 50; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := btree.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to insert key %d: %v", i, err)
 		}
 	}
 
 	// Seek to last key
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("key999")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -124,20 +107,19 @@ func TestCursorReverseScan(t *testing.T) {
 }
 
 func TestCursorRangeScan(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Insert keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		if err := btree.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to insert key %d: %v", i*10, err)
 		}
 	}
 
 	// Range scan: [30, 70)
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("key030")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -165,11 +147,10 @@ func TestCursorRangeScan(t *testing.T) {
 }
 
 func TestCursorEmptyTree(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Empty tree - cursor should be invalid
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("anykey")); err != nil {
 		t.Fatalf("Seek on empty tree failed: %v", err)
 	}
@@ -189,20 +170,19 @@ func TestCursorEmptyTree(t *testing.T) {
 }
 
 func TestCursorSeekNotFound(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Insert keys: key001, key003, key005, key007, key009
 	for i := 1; i <= 9; i += 2 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := btree.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to insert key %d: %v", i, err)
 		}
 	}
 
 	// Seek to key002 (not present) - should land on key003
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("key002")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -239,21 +219,20 @@ func TestCursorSeekNotFound(t *testing.T) {
 }
 
 func TestCursorAcrossSplits(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Insert enough keys to trigger splits (200 keys)
 	// This should create multiple leaf nodes
 	for i := 1; i <= 200; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := btree.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to insert key %d: %v", i, err)
 		}
 	}
 
 	// Full scan should traverse all leaves via sibling pointers
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("key00000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -280,14 +259,13 @@ func TestCursorAcrossSplits(t *testing.T) {
 }
 
 func TestCursorAfterMerges(t *testing.T) {
-	btree := setupTestBTree(t)
-	defer cleanupBTree(btree)
+	db := setupTestDB(t)
 
 	// Insert 100 keys to create multiple nodes
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := btree.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to insert key %d: %v", i, err)
 		}
 	}
@@ -295,13 +273,13 @@ func TestCursorAfterMerges(t *testing.T) {
 	// Delete every other key to trigger potential merges
 	for i := 2; i <= 100; i += 2 {
 		key := []byte(fmt.Sprintf("key%05d", i))
-		if err := btree.Delete(key); err != nil {
+		if err := db.Delete(key); err != nil {
 			t.Fatalf("Failed to delete key %d: %v", i, err)
 		}
 	}
 
 	// Scan remaining keys (odd numbers only)
-	cursor := btree.NewCursor()
+	cursor := db.store.NewCursor()
 	if err := cursor.Seek([]byte("key00000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}

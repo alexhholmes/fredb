@@ -2,27 +2,42 @@ package src
 
 import (
 	"fmt"
+	"os"
 	"testing"
 )
+
+// Helper to create a temporary test database
+func setupTestDB(t *testing.T) *db {
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	_ = os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = db.Close()
+		_ = os.Remove(tmpfile)
+	})
+
+	return db
+}
 
 // Basic Operations Tests
 
 func TestBTreeBasicOps(t *testing.T) {
 	// Test basic Get/Set operations
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
+	db := setupTestDB(t)
 
 	// Insert key-value pair
-	err = bt.Set([]byte("key1"), []byte("value1"))
+	err := db.Set([]byte("key1"), []byte("value1"))
 	if err != nil {
 		t.Errorf("Failed to set key1: %v", err)
 	}
 
 	// Get existing key
-	val, err := bt.Get([]byte("key1"))
+	val, err := db.Get([]byte("key1"))
 	if err != nil {
 		t.Errorf("Failed to get key1: %v", err)
 	}
@@ -31,12 +46,12 @@ func TestBTreeBasicOps(t *testing.T) {
 	}
 
 	// Update existing key
-	err = bt.Set([]byte("key1"), []byte("value2"))
+	err = db.Set([]byte("key1"), []byte("value2"))
 	if err != nil {
 		t.Errorf("Failed to update key1: %v", err)
 	}
 
-	val, err = bt.Get([]byte("key1"))
+	val, err = db.Get([]byte("key1"))
 	if err != nil {
 		t.Errorf("Failed to get updated key1: %v", err)
 	}
@@ -45,41 +60,30 @@ func TestBTreeBasicOps(t *testing.T) {
 	}
 
 	// Get non-existent key (should return ErrKeyNotFound)
-	_, err = bt.Get([]byte("nonexistent"))
+	_, err = db.Get([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound, got %v", err)
-	}
-
-	// Close the tree
-	err = bt.Close()
-	if err != nil {
-		t.Errorf("Failed to close BTree: %v", err)
 	}
 }
 
 func TestBTreeUpdate(t *testing.T) {
 	// Test that Set updates existing keys rather than duplicating
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert key with value1
-	err = bt.Set([]byte("testkey"), []byte("value1"))
+	err := db.Set([]byte("testkey"), []byte("value1"))
 	if err != nil {
 		t.Errorf("Failed to set testkey: %v", err)
 	}
 
 	// Update same key with value2
-	err = bt.Set([]byte("testkey"), []byte("value2"))
+	err = db.Set([]byte("testkey"), []byte("value2"))
 	if err != nil {
 		t.Errorf("Failed to update testkey: %v", err)
 	}
 
 	// Verify Get returns value2
-	val, err := bt.Get([]byte("testkey"))
+	val, err := db.Get([]byte("testkey"))
 	if err != nil {
 		t.Errorf("Failed to get testkey: %v", err)
 	}
@@ -91,16 +95,16 @@ func TestBTreeUpdate(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%d", i))
 		val := []byte(fmt.Sprintf("value%d", i))
-		bt.Set(key, val)
+		db.Set(key, val)
 	}
 
 	// Update the original key again
-	err = bt.Set([]byte("testkey"), []byte("value3"))
+	err = db.Set([]byte("testkey"), []byte("value3"))
 	if err != nil {
 		t.Errorf("Failed to update testkey again: %v", err)
 	}
 
-	val, err = bt.Get([]byte("testkey"))
+	val, err = db.Get([]byte("testkey"))
 	if err != nil {
 		t.Errorf("Failed to get testkey after second update: %v", err)
 	}
@@ -113,12 +117,7 @@ func TestBTreeUpdate(t *testing.T) {
 
 func TestBTreeSplitting(t *testing.T) {
 	// Test node splitting when exceeding MaxKeysPerNode
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert MaxKeysPerNode + 1 keys to force a split
 	keys := make(map[string]string)
@@ -127,25 +126,25 @@ func TestBTreeSplitting(t *testing.T) {
 		value := fmt.Sprintf("value%06d", i)
 		keys[key] = value
 
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	if bt.root.isLeaf {
+	if db.store.root.isLeaf {
 		t.Errorf("Root should not be a leaf after splitting")
 	}
 
 	// Check tree height increases (root should have children)
-	if len(bt.root.children) == 0 {
+	if len(db.store.root.children) == 0 {
 		t.Errorf("Root should have children after splitting")
 	}
 
 	// Verify all keys still retrievable
 	for key, expectedValue := range keys {
-		val, err := bt.Get([]byte(key))
+		val, err := db.Get([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to get %s after split: %v", key, err)
 			continue
@@ -158,12 +157,7 @@ func TestBTreeSplitting(t *testing.T) {
 
 func TestBTreeMultipleSplits(t *testing.T) {
 	// Test multiple levels of splitting
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert enough keys to cause multiple splits (3x MaxKeysPerNode should cause multiple levels)
 	numKeys := MaxKeysPerNode * 3
@@ -174,25 +168,25 @@ func TestBTreeMultipleSplits(t *testing.T) {
 		value := fmt.Sprintf("value%08d", i)
 		keys[key] = value
 
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
 	}
 
 	// Verify tree structure remains valid (root is not a leaf for large tree)
-	if bt.root.isLeaf {
+	if db.store.root.isLeaf {
 		t.Errorf("Root should not be a leaf after multiple splits")
 	}
 
 	// Verify root has multiple children
-	if len(bt.root.children) < 2 {
-		t.Errorf("Root should have multiple children after multiple splits, got %d", len(bt.root.children))
+	if len(db.store.root.children) < 2 {
+		t.Errorf("Root should have multiple children after multiple splits, got %d", len(db.store.root.children))
 	}
 
 	// All keys retrievable
 	for key, expectedValue := range keys {
-		val, err := bt.Get([]byte(key))
+		val, err := db.Get([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to get %s after multiple splits: %v", key, err)
 			continue
@@ -205,12 +199,12 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	// Verify we can still insert after multiple splits
 	testKey := []byte("test_after_splits")
 	testValue := []byte("test_value")
-	err = bt.Set(testKey, testValue)
+	err := db.Set(testKey, testValue)
 	if err != nil {
 		t.Errorf("Failed to insert after multiple splits: %v", err)
 	}
 
-	val, err := bt.Get(testKey)
+	val, err := db.Get(testKey)
 	if err != nil {
 		t.Errorf("Failed to get test key after multiple splits: %v", err)
 	}
@@ -223,12 +217,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 
 func TestSequentialInsert(t *testing.T) {
 	// Test inserting keys in sequential order
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert 1000 sequential keys
 	numKeys := 1000
@@ -236,7 +225,7 @@ func TestSequentialInsert(t *testing.T) {
 		key := fmt.Sprintf("key%08d", i)
 		value := fmt.Sprintf("value%08d", i)
 
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
@@ -247,7 +236,7 @@ func TestSequentialInsert(t *testing.T) {
 		key := fmt.Sprintf("key%08d", i)
 		expectedValue := fmt.Sprintf("value%08d", i)
 
-		val, err := bt.Get([]byte(key))
+		val, err := db.Get([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to get %s: %v", key, err)
 			continue
@@ -258,22 +247,17 @@ func TestSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely right-heavy due to sequential insert)
-	if bt.root.isLeaf {
+	if db.store.root.isLeaf {
 		t.Logf("Tree has single leaf root after %d sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d keys and %d children after %d sequential inserts",
-			bt.root.numKeys, len(bt.root.children), numKeys)
+			db.store.root.numKeys, len(db.store.root.children), numKeys)
 	}
 }
 
 func TestRandomInsert(t *testing.T) {
 	// Test inserting keys in random order
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Generate random keys (using deterministic seed for reproducibility)
 	numKeys := 1000
@@ -297,7 +281,7 @@ func TestRandomInsert(t *testing.T) {
 		value := fmt.Sprintf("value%08d", idx)
 		keys[key] = value
 
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
@@ -305,7 +289,7 @@ func TestRandomInsert(t *testing.T) {
 
 	// Verify all retrievable
 	for key, expectedValue := range keys {
-		val, err := bt.Get([]byte(key))
+		val, err := db.Get([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to get %s: %v", key, err)
 			continue
@@ -316,25 +300,20 @@ func TestRandomInsert(t *testing.T) {
 	}
 
 	// Check tree balance (random insertion typically produces more balanced trees)
-	if !bt.root.isLeaf {
+	if !db.store.root.isLeaf {
 		t.Logf("Tree has internal root with %d keys and %d children after %d random inserts",
-			bt.root.numKeys, len(bt.root.children), numKeys)
+			db.store.root.numKeys, len(db.store.root.children), numKeys)
 
 		// Check if root has reasonable number of children (indicating some balance)
-		if len(bt.root.children) > 1 && len(bt.root.children) < 10 {
-			t.Logf("Tree appears relatively balanced with %d root children", len(bt.root.children))
+		if len(db.store.root.children) > 1 && len(db.store.root.children) < 10 {
+			t.Logf("Tree appears relatively balanced with %d root children", len(db.store.root.children))
 		}
 	}
 }
 
 func TestReverseSequentialInsert(t *testing.T) {
 	// Test inserting keys in reverse order
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert 1000 keys in descending order
 	numKeys := 1000
@@ -342,7 +321,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 		key := fmt.Sprintf("key%08d", i)
 		value := fmt.Sprintf("value%08d", i)
 
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
@@ -353,7 +332,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 		key := fmt.Sprintf("key%08d", i)
 		expectedValue := fmt.Sprintf("value%08d", i)
 
-		val, err := bt.Get([]byte(key))
+		val, err := db.Get([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to get %s: %v", key, err)
 			continue
@@ -364,14 +343,14 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely left-heavy due to reverse sequential insert)
-	if bt.root.isLeaf {
+	if db.store.root.isLeaf {
 		t.Logf("Tree has single leaf root after %d reverse sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d keys and %d children after %d reverse sequential inserts",
-			bt.root.numKeys, len(bt.root.children), numKeys)
+			db.store.root.numKeys, len(db.store.root.children), numKeys)
 
 		// With reverse insertion, we expect most activity on the left side of the tree
-		if len(bt.root.children) > 0 {
+		if len(db.store.root.children) > 0 {
 			t.Logf("First child likely contains lower keys due to reverse insertion pattern")
 		}
 	}
@@ -381,37 +360,32 @@ func TestReverseSequentialInsert(t *testing.T) {
 
 func TestBTreeDelete(t *testing.T) {
 	// Test basic delete operations
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert some keys
 	keys := []string{"key1", "key2", "key3", "key4", "key5"}
 	for _, k := range keys {
-		err := bt.Set([]byte(k), []byte("value-"+k))
+		err := db.Set([]byte(k), []byte("value-"+k))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", k, err)
 		}
 	}
 
 	// Delete middle key
-	err = bt.Delete([]byte("key3"))
+	err := db.Delete([]byte("key3"))
 	if err != nil {
 		t.Errorf("Failed to delete key3: %v", err)
 	}
 
 	// Verify key3 is gone
-	_, err = bt.Get([]byte("key3"))
+	_, err = db.Get([]byte("key3"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound for deleted key3, got %v", err)
 	}
 
 	// Verify other keys still exist
 	for _, k := range []string{"key1", "key2", "key4", "key5"} {
-		val, err := bt.Get([]byte(k))
+		val, err := db.Get([]byte(k))
 		if err != nil {
 			t.Errorf("Failed to get %s after delete: %v", k, err)
 		}
@@ -421,26 +395,26 @@ func TestBTreeDelete(t *testing.T) {
 	}
 
 	// Delete first key
-	err = bt.Delete([]byte("key1"))
+	err = db.Delete([]byte("key1"))
 	if err != nil {
 		t.Errorf("Failed to delete key1: %v", err)
 	}
 
 	// Delete last key
-	err = bt.Delete([]byte("key5"))
+	err = db.Delete([]byte("key5"))
 	if err != nil {
 		t.Errorf("Failed to delete key5: %v", err)
 	}
 
 	// Delete non-existent key
-	err = bt.Delete([]byte("nonexistent"))
+	err = db.Delete([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
 	}
 
 	// Verify remaining keys
 	for _, k := range []string{"key2", "key4"} {
-		val, err := bt.Get([]byte(k))
+		val, err := db.Get([]byte(k))
 		if err != nil {
 			t.Errorf("Failed to get %s: %v", k, err)
 		}
@@ -452,19 +426,14 @@ func TestBTreeDelete(t *testing.T) {
 
 func TestBTreeDeleteAll(t *testing.T) {
 	// Test deleting all keys from tree
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert and then delete keys one by one
 	numKeys := 100
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
 		value := fmt.Sprintf("value%04d", i)
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
@@ -473,13 +442,13 @@ func TestBTreeDeleteAll(t *testing.T) {
 	// Delete all keys in order
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
-		err := bt.Delete([]byte(key))
+		err := db.Delete([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to delete %s: %v", key, err)
 		}
 
 		// Verify deleted
-		_, err = bt.Get([]byte(key))
+		_, err = db.Get([]byte(key))
 		if err != ErrKeyNotFound {
 			t.Errorf("Key %s should be deleted, got %v", key, err)
 		}
@@ -487,7 +456,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 		// Verify remaining keys still exist
 		for j := i + 1; j < numKeys && j < i+5; j++ {
 			checkKey := fmt.Sprintf("key%04d", j)
-			val, err := bt.Get([]byte(checkKey))
+			val, err := db.Get([]byte(checkKey))
 			if err != nil {
 				t.Errorf("Key %s should still exist: %v", checkKey, err)
 			}
@@ -501,7 +470,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 	// Tree should be empty now
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
-		_, err := bt.Get([]byte(key))
+		_, err := db.Get([]byte(key))
 		if err != ErrKeyNotFound {
 			t.Errorf("Key %s should not exist in empty tree", key)
 		}
@@ -510,33 +479,28 @@ func TestBTreeDeleteAll(t *testing.T) {
 
 func TestBTreeSequentialDelete(t *testing.T) {
 	// Test sequential deletion pattern with tree structure checks
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert enough keys to create a multi-level tree
 	numKeys := MaxKeysPerNode * 2 // Enough to cause splits
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := bt.root.isLeaf
-	initialRootKeys := int(bt.root.numKeys)
+	initialIsLeaf := db.store.root.isLeaf
+	initialRootKeys := int(db.store.root.numKeys)
 	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
 
 	// Delete keys sequentially and monitor tree structure
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
-		err := bt.Delete([]byte(key))
+		err := db.Delete([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to delete %s: %v", key, err)
 		}
@@ -544,33 +508,28 @@ func TestBTreeSequentialDelete(t *testing.T) {
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 			t.Logf("After %d deletions: root isLeaf=%v, numKeys=%d",
-				i+1, bt.root.isLeaf, bt.root.numKeys)
+				i+1, db.store.root.isLeaf, db.store.root.numKeys)
 		}
 
 		// Verify key is deleted
-		_, err = bt.Get([]byte(key))
+		_, err = db.Get([]byte(key))
 		if err != ErrKeyNotFound {
 			t.Errorf("Key %s should be deleted", key)
 		}
 	}
 
 	// Final tree should be empty
-	if bt.root.numKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d keys", bt.root.numKeys)
+	if db.store.root.numKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
 	}
-	if !bt.root.isLeaf {
+	if !db.store.root.isLeaf {
 		t.Errorf("Empty tree root should be leaf")
 	}
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
 	// Test random deletion pattern with tree structure checks
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert keys
 	numKeys := MaxKeysPerNode * 2
@@ -579,15 +538,15 @@ func TestBTreeRandomDelete(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		keys[i] = key
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := bt.root.isLeaf
-	initialRootKeys := int(bt.root.numKeys)
+	initialIsLeaf := db.store.root.isLeaf
+	initialRootKeys := int(db.store.root.numKeys)
 	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
 
 	// Create random deletion order
@@ -607,7 +566,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 	// Delete keys randomly and monitor tree structure
 	for i, idx := range deleteOrder {
 		key := keys[idx]
-		err := bt.Delete([]byte(key))
+		err := db.Delete([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to delete %s: %v", key, err)
 		}
@@ -616,11 +575,11 @@ func TestBTreeRandomDelete(t *testing.T) {
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 			t.Logf("After %d random deletions: root isLeaf=%v, numKeys=%d",
-				i+1, bt.root.isLeaf, bt.root.numKeys)
+				i+1, db.store.root.isLeaf, db.store.root.numKeys)
 		}
 
 		// Verify deleted key is gone
-		_, err = bt.Get([]byte(key))
+		_, err = db.Get([]byte(key))
 		if err != ErrKeyNotFound {
 			t.Errorf("Key %s should be deleted", key)
 		}
@@ -629,7 +588,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 		checked := 0
 		for _, k := range keys {
 			if !deleted[k] && checked < 5 {
-				val, err := bt.Get([]byte(k))
+				val, err := db.Get([]byte(k))
 				if err != nil {
 					t.Errorf("Key %s should still exist: %v", k, err)
 				}
@@ -643,41 +602,36 @@ func TestBTreeRandomDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	if bt.root.numKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d keys", bt.root.numKeys)
+	if db.store.root.numKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
 	}
-	if !bt.root.isLeaf {
+	if !db.store.root.isLeaf {
 		t.Errorf("Empty tree root should be leaf")
 	}
 }
 
 func TestBTreeReverseDelete(t *testing.T) {
 	// Test reverse sequential deletion pattern
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert keys
 	numKeys := MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", key, err)
 		}
 	}
 
 	// Check initial tree structure
-	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", bt.root.isLeaf, bt.root.numKeys)
+	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", db.store.root.isLeaf, db.store.root.numKeys)
 
 	// Delete keys in reverse order
 	for i := numKeys - 1; i >= 0; i-- {
 		key := fmt.Sprintf("key%06d", i)
-		err := bt.Delete([]byte(key))
+		err := db.Delete([]byte(key))
 		if err != nil {
 			t.Errorf("Failed to delete %s: %v", key, err)
 		}
@@ -686,19 +640,19 @@ func TestBTreeReverseDelete(t *testing.T) {
 		deletedCount := numKeys - i
 		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
 			t.Logf("After %d reverse deletions: root isLeaf=%v, numKeys=%d",
-				deletedCount, bt.root.isLeaf, bt.root.numKeys)
+				deletedCount, db.store.root.isLeaf, db.store.root.numKeys)
 		}
 
 		// Verify key is deleted
-		_, err = bt.Get([]byte(key))
+		_, err = db.Get([]byte(key))
 		if err != ErrKeyNotFound {
 			t.Errorf("Key %s should be deleted", key)
 		}
 	}
 
 	// Final tree should be empty
-	if bt.root.numKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d keys", bt.root.numKeys)
+	if db.store.root.numKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
 	}
 }
 
@@ -752,15 +706,10 @@ func TestLoadNode(t *testing.T) {
 
 func TestEmptyTree(t *testing.T) {
 	// Test operations on empty tree
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Get from empty tree (should return ErrKeyNotFound)
-	_, err = bt.Get([]byte("nonexistent"))
+	_, err := db.Get([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound from empty tree, got %v", err)
 	}
@@ -774,39 +723,28 @@ func TestEmptyTree(t *testing.T) {
 	}
 
 	for _, key := range testKeys {
-		_, err = bt.Get(key)
+		_, err = db.Get(key)
 		if err != ErrKeyNotFound {
 			t.Errorf("Expected ErrKeyNotFound for key %v, got %v", key, err)
 		}
-	}
-
-	// Close empty tree should work without error
-	err = bt.Close()
-	if err != nil {
-		t.Errorf("Failed to close empty tree: %v", err)
 	}
 }
 
 func TestSingleKey(t *testing.T) {
 	// Test tree with single key
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert one key
 	testKey := []byte("single_key")
 	testValue := []byte("single_value")
 
-	err = bt.Set(testKey, testValue)
+	err := db.Set(testKey, testValue)
 	if err != nil {
 		t.Errorf("Failed to set single key: %v", err)
 	}
 
 	// Get that key
-	val, err := bt.Get(testKey)
+	val, err := db.Get(testKey)
 	if err != nil {
 		t.Errorf("Failed to get single key: %v", err)
 	}
@@ -815,19 +753,19 @@ func TestSingleKey(t *testing.T) {
 	}
 
 	// Get non-existent key
-	_, err = bt.Get([]byte("nonexistent"))
+	_, err = db.Get([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
 	}
 
 	// Update the key
 	newValue := []byte("updated_value")
-	err = bt.Set(testKey, newValue)
+	err = db.Set(testKey, newValue)
 	if err != nil {
 		t.Errorf("Failed to update single key: %v", err)
 	}
 
-	val, err = bt.Get(testKey)
+	val, err = db.Get(testKey)
 	if err != nil {
 		t.Errorf("Failed to get updated single key: %v", err)
 	}
@@ -836,22 +774,17 @@ func TestSingleKey(t *testing.T) {
 	}
 
 	// Verify tree is still a leaf (single key shouldn't cause split)
-	if !bt.root.isLeaf {
+	if !db.store.root.isLeaf {
 		t.Errorf("Root should be a leaf with single key")
 	}
-	if bt.root.numKeys != 1 {
-		t.Errorf("Root should have exactly 1 key, got %d", bt.root.numKeys)
+	if db.store.root.numKeys != 1 {
+		t.Errorf("Root should have exactly 1 key, got %d", db.store.root.numKeys)
 	}
 }
 
 func TestDuplicateKeys(t *testing.T) {
 	// Test handling of duplicate key insertions
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	key := []byte("duplicate_test")
 	value1 := []byte("value1")
@@ -859,13 +792,13 @@ func TestDuplicateKeys(t *testing.T) {
 	value3 := []byte("value3")
 
 	// Insert key with value1
-	err = bt.Set(key, value1)
+	err := db.Set(key, value1)
 	if err != nil {
 		t.Errorf("Failed to set key: %v", err)
 	}
 
 	// Verify value1 is stored
-	val, err := bt.Get(key)
+	val, err := db.Get(key)
 	if err != nil {
 		t.Errorf("Failed to get key: %v", err)
 	}
@@ -874,13 +807,13 @@ func TestDuplicateKeys(t *testing.T) {
 	}
 
 	// Insert same key with value2
-	err = bt.Set(key, value2)
+	err = db.Set(key, value2)
 	if err != nil {
 		t.Errorf("Failed to update key: %v", err)
 	}
 
 	// Verify only one entry exists with value2
-	val, err = bt.Get(key)
+	val, err = db.Get(key)
 	if err != nil {
 		t.Errorf("Failed to get updated key: %v", err)
 	}
@@ -892,16 +825,16 @@ func TestDuplicateKeys(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		k := []byte(fmt.Sprintf("key%d", i))
 		v := []byte(fmt.Sprintf("value%d", i))
-		bt.Set(k, v)
+		db.Set(k, v)
 	}
 
 	// Update original key again with value3
-	err = bt.Set(key, value3)
+	err = db.Set(key, value3)
 	if err != nil {
 		t.Errorf("Failed to update key again: %v", err)
 	}
 
-	val, err = bt.Get(key)
+	val, err = db.Get(key)
 	if err != nil {
 		t.Errorf("Failed to get key after second update: %v", err)
 	}
@@ -912,12 +845,7 @@ func TestDuplicateKeys(t *testing.T) {
 
 func TestBinaryKeys(t *testing.T) {
 	// Test with non-string binary keys
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Test data with various binary patterns
 	testData := []struct {
@@ -936,7 +864,7 @@ func TestBinaryKeys(t *testing.T) {
 
 	// Insert all binary keys
 	for _, td := range testData {
-		err := bt.Set(td.key, td.value)
+		err := db.Set(td.key, td.value)
 		if err != nil {
 			t.Errorf("Failed to set %s: %v", td.desc, err)
 		}
@@ -944,7 +872,7 @@ func TestBinaryKeys(t *testing.T) {
 
 	// Verify correct retrieval
 	for _, td := range testData {
-		val, err := bt.Get(td.key)
+		val, err := db.Get(td.key)
 		if err != nil {
 			t.Errorf("Failed to get %s: %v", td.desc, err)
 			continue
@@ -960,16 +888,16 @@ func TestBinaryKeys(t *testing.T) {
 	val1 := []byte("first")
 	val2 := []byte("second")
 
-	bt.Set(key1, val1)
-	bt.Set(key2, val2)
+	db.Set(key1, val1)
+	db.Set(key2, val2)
 
 	// Both should be retrievable
-	v, err := bt.Get(key1)
+	v, err := db.Get(key1)
 	if err != nil || string(v) != string(val1) {
 		t.Errorf("Binary ordering test failed for key1")
 	}
 
-	v, err = bt.Get(key2)
+	v, err = db.Get(key2)
 	if err != nil || string(v) != string(val2) {
 		t.Errorf("Binary ordering test failed for key2")
 	}
@@ -977,24 +905,19 @@ func TestBinaryKeys(t *testing.T) {
 
 func TestZeroLengthKeys(t *testing.T) {
 	// Test with zero-length keys
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert empty key
 	emptyKey := []byte{}
 	emptyValue := []byte("empty_key_value")
 
-	err = bt.Set(emptyKey, emptyValue)
+	err := db.Set(emptyKey, emptyValue)
 	if err != nil {
 		t.Errorf("Failed to set empty key: %v", err)
 	}
 
 	// Retrieve empty key
-	val, err := bt.Get(emptyKey)
+	val, err := db.Get(emptyKey)
 	if err != nil {
 		t.Errorf("Failed to get empty key: %v", err)
 	}
@@ -1014,14 +937,14 @@ func TestZeroLengthKeys(t *testing.T) {
 	}
 
 	for _, kv := range normalKeys {
-		err := bt.Set(kv.key, kv.value)
+		err := db.Set(kv.key, kv.value)
 		if err != nil {
 			t.Errorf("Failed to set key %v: %v", kv.key, err)
 		}
 	}
 
 	// Verify empty key was updated
-	val, err = bt.Get(emptyKey)
+	val, err = db.Get(emptyKey)
 	if err != nil {
 		t.Errorf("Failed to get empty key after update: %v", err)
 	}
@@ -1031,7 +954,7 @@ func TestZeroLengthKeys(t *testing.T) {
 
 	// Verify all keys are retrievable
 	for _, kv := range normalKeys {
-		val, err := bt.Get(kv.key)
+		val, err := db.Get(kv.key)
 		if err != nil {
 			t.Errorf("Failed to get key %v: %v", kv.key, err)
 			continue
@@ -1044,24 +967,19 @@ func TestZeroLengthKeys(t *testing.T) {
 
 func TestZeroLengthValues(t *testing.T) {
 	// Test with zero-length values
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
-	if err != nil {
-		t.Fatalf("Failed to create BTree: %v", err)
-	}
-	defer bt.Close()
+	db := setupTestDB(t)
 
 	// Insert key with empty value
 	key := []byte("key_with_empty_value")
 	emptyValue := []byte{}
 
-	err = bt.Set(key, emptyValue)
+	err := db.Set(key, emptyValue)
 	if err != nil {
 		t.Errorf("Failed to set key with empty value: %v", err)
 	}
 
 	// Retrieve and verify empty value
-	val, err := bt.Get(key)
+	val, err := db.Get(key)
 	if err != nil {
 		t.Errorf("Failed to get key with empty value: %v", err)
 	}
@@ -1082,7 +1000,7 @@ func TestZeroLengthValues(t *testing.T) {
 	}
 
 	for _, td := range testData {
-		err := bt.Set(td.key, td.value)
+		err := db.Set(td.key, td.value)
 		if err != nil {
 			t.Errorf("Failed to set key %s: %v", string(td.key), err)
 		}
@@ -1090,7 +1008,7 @@ func TestZeroLengthValues(t *testing.T) {
 
 	// Verify all values are correctly stored
 	for _, td := range testData {
-		val, err := bt.Get(td.key)
+		val, err := db.Get(td.key)
 		if err != nil {
 			t.Errorf("Failed to get key %s: %v", string(td.key), err)
 			continue
@@ -1103,17 +1021,17 @@ func TestZeroLengthValues(t *testing.T) {
 
 	// Update a key from non-empty to empty value
 	updateKey := []byte("update_test")
-	bt.Set(updateKey, []byte("initial_value"))
+	db.Set(updateKey, []byte("initial_value"))
 
-	val, err = bt.Get(updateKey)
+	val, err = db.Get(updateKey)
 	if err != nil || string(val) != "initial_value" {
 		t.Errorf("Failed initial value setup")
 	}
 
 	// Update to empty value
-	bt.Set(updateKey, []byte{})
+	db.Set(updateKey, []byte{})
 
-	val, err = bt.Get(updateKey)
+	val, err = db.Get(updateKey)
 	if err != nil {
 		t.Errorf("Failed to get key after updating to empty value: %v", err)
 	}
@@ -1142,19 +1060,24 @@ func BenchmarkBTreeMixed(b *testing.B) {
 	// Benchmark mixed workload (80% reads, 20% writes)
 	// - Pre-populate tree
 	// - Run mixed operations
-	pager := NewInMemoryPageManager()
-	bt, err := NewBTree(pager)
+	tmpfile := "/tmp/bench_mixed.db"
+	_ = os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
 	if err != nil {
-		b.Fatalf("Failed to create BTree: %v", err)
+		b.Fatalf("Failed to create DB: %v", err)
 	}
-	defer bt.Close()
+	defer func() {
+		_ = db.Close()
+		_ = os.Remove(tmpfile)
+	}()
 
 	// Pre-populate with 10000 keys
 	numKeys := 10000
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%08d", i)
 		value := fmt.Sprintf("value%08d", i)
-		err := bt.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
 			b.Fatalf("Failed to populate tree: %v", err)
 		}
@@ -1171,7 +1094,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 			keyNum := (i * 7) % numKeys // Deterministic key selection
 			key := fmt.Sprintf("key%08d", keyNum)
 
-			_, err := bt.Get([]byte(key))
+			_, err := db.Get([]byte(key))
 			if err != nil {
 				b.Errorf("Read failed for key %s: %v", key, err)
 			}
@@ -1183,7 +1106,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 				key := fmt.Sprintf("key%08d", keyNum)
 				value := fmt.Sprintf("updated%08d", i)
 
-				err := bt.Set([]byte(key), []byte(value))
+				err := db.Set([]byte(key), []byte(value))
 				if err != nil {
 					b.Errorf("Update failed for key %s: %v", key, err)
 				}
@@ -1192,7 +1115,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 				key := fmt.Sprintf("newkey%08d", numKeys+i)
 				value := fmt.Sprintf("newvalue%08d", i)
 
-				err := bt.Set([]byte(key), []byte(value))
+				err := db.Set([]byte(key), []byte(value))
 				if err != nil {
 					b.Errorf("Insert failed for key %s: %v", key, err)
 				}

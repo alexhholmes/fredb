@@ -15,22 +15,17 @@ var (
 	ErrInvalidChecksum    = errors.New("invalid checksum")
 )
 
-type DB interface {
-	Get(key []byte) ([]byte, error)
-	Set(key, value []byte) error
-	Delete(key []byte) error
-	NewCursor() *Cursor
-	Close() error
-}
-
-var _ DB = (*db)(nil)
-
 type db struct {
 	mu    sync.RWMutex
 	store *BTree
+
+	// Transaction state
+	writerTx  *Tx    // Current write transaction (nil if none)
+	readerTxs []*Tx  // Active read transactions
+	nextTxnID uint64 // Monotonic transaction ID counter
 }
 
-func NewDB(path string) (DB, error) {
+func Open(path string) (*db, error) {
 	pager, err := NewDiskPageManager(path)
 	if err != nil {
 		return nil, err
@@ -41,37 +36,109 @@ func NewDB(path string) (DB, error) {
 		return nil, err
 	}
 
+	// Initialize nextTxnID from disk to ensure monotonic IDs across sessions
+	meta := pager.GetMeta()
+
 	return &db{
-		store: btree,
+		store:     btree,
+		nextTxnID: meta.TxnID, // Resume from last committed TxnID
 	}, nil
 }
 
 func (d *db) Get(key []byte) ([]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	return d.store.Get(key)
+	// Phase 2.7: Use transaction for MVCC isolation
+	var result []byte
+	err := d.View(func(tx *Tx) error {
+		val, err := tx.Get(key)
+		if err != nil {
+			return err
+		}
+		result = val
+		return nil
+	})
+	return result, err
 }
 
 func (d *db) Set(key, value []byte) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	return d.store.Set(key, value)
+	// Phase 2.7: Use transaction for MVCC isolation
+	return d.Update(func(tx *Tx) error {
+		return tx.Set(key, value)
+	})
 }
 
 func (d *db) Delete(key []byte) error {
+	// Phase 2.7: Use transaction for MVCC isolation
+	return d.Update(func(tx *Tx) error {
+		return tx.Delete(key)
+	})
+}
+
+
+func (d *db) Begin(writable bool) (*Tx, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	return d.store.Delete(key)
+	// Enforce single writer rule
+	if writable && d.writerTx != nil {
+		return nil, ErrTxInProgress
+	}
+
+	// Assign monotonic transaction ID
+	d.nextTxnID++
+	txnID := d.nextTxnID
+
+	// Create transaction
+	// Phase 2.7: Snapshot isolation - capture root at transaction start
+	// Read transactions keep this snapshot, write transactions replace it on first modification
+	tx := &Tx{
+		db:       d,
+		txnID:    txnID,
+		writable: writable,
+		meta:     nil,          // Will be populated from BTree meta in Phase 3
+		root:     d.store.root, // Phase 2.7: Capture snapshot for MVCC isolation
+		pending:  make([]PageID, 0),
+		freed:    make([]PageID, 0),
+		done:     false,
+	}
+
+	// Track active transaction
+	if writable {
+		d.writerTx = tx
+	} else {
+		d.readerTxs = append(d.readerTxs, tx)
+	}
+
+	return tx, nil
 }
 
-func (d *db) NewCursor() *Cursor {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+// View executes a function within a read-only transaction.
+// If the function returns an error, the transaction is rolled back.
+// If the function returns nil, the transaction is rolled back (read-only).
+func (d *db) View(fn func(*Tx) error) error {
+	tx, err := d.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-	return d.store.NewCursor()
+	return fn(tx)
+}
+
+// Update executes a function within a read-write transaction.
+// If the function returns an error, the transaction is rolled back.
+// If the function returns nil, the transaction is committed.
+func (d *db) Update(fn func(*Tx) error) error {
+	tx, err := d.Begin(true)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (d *db) Close() error {

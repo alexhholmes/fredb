@@ -3,6 +3,7 @@ package src
 import (
 	"fmt"
 	"os"
+	"sync"
 )
 
 // PageManager handles disk I/O
@@ -19,7 +20,11 @@ type PageManager interface {
 var _ PageManager = (*DiskPageManager)(nil)
 
 // DiskPageManager implements PageManager with disk-based storage
+// NOTE: Phase 2 uses a simple mutex for thread safety. Phase 3 will replace
+// this with proper MVCC design where each transaction gets its own snapshot
+// of the freelist and meta page, eliminating contention.
 type DiskPageManager struct {
+	mu       sync.Mutex // Protects meta and freelist access
 	file     *os.File
 	meta     MetaPage
 	freelist *FreeList
@@ -74,6 +79,9 @@ func (dm *DiskPageManager) WritePage(id PageID, page *Page) error {
 
 // AllocatePage allocates a new page (from freelist or grows file)
 func (dm *DiskPageManager) AllocatePage() (PageID, error) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	// Try freelist first
 	id := dm.freelist.Allocate()
 	if id != 0 {
@@ -95,23 +103,58 @@ func (dm *DiskPageManager) AllocatePage() (PageID, error) {
 
 // FreePage adds a page to the freelist
 func (dm *DiskPageManager) FreePage(id PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	dm.freelist.Free(id)
 	return nil
 }
 
 // GetMeta returns the current metadata
 func (dm *DiskPageManager) GetMeta() *MetaPage {
-	return &dm.meta
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	// Return a copy to prevent external modifications
+	metaCopy := dm.meta
+	return &metaCopy
 }
 
-// PutMeta updates the metadata
+// PutMeta updates the metadata and persists it to disk (Phase 3.3-3.4)
+// Writes to the inactive meta page and fsyncs for durability
 func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	// Update checksum
+	meta.Checksum = meta.CalculateChecksum()
+
+	// Phase 3.3: Write to inactive meta page (alternates based on TxnID)
+	// TxnID % 2 determines which page: 0 or 1
+	metaPage := &Page{}
+	metaPage.WriteMeta(meta)
+	metaPageID := PageID(meta.TxnID % 2)
+
+	// Write meta page to disk
+	if err := dm.writePageAt(metaPageID, metaPage); err != nil {
+		return err
+	}
+
+	// Phase 3.4: Fsync to ensure durability before considering commit complete
+	if err := dm.file.Sync(); err != nil {
+		return err
+	}
+
+	// Phase 3.5: Only update in-memory meta after successful disk write and fsync
 	dm.meta = *meta
-	dm.meta.Checksum = dm.meta.CalculateChecksum()
+
 	return nil
 }
 
 func (dm *DiskPageManager) Close() error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	// Serialize freelist to disk
 	pagesNeeded := dm.freelist.PagesNeeded()
 

@@ -14,7 +14,7 @@ func TestDBBasicOperations(t *testing.T) {
 	tmpfile := "/tmp/test_db_basic.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestDBErrors(t *testing.T) {
 	tmpfile := "/tmp/test_db_errors.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestDBClose(t *testing.T) {
 	tmpfile := "/tmp/test_db_close.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestDBConcurrency(t *testing.T) {
 	tmpfile := "/tmp/test_db_concurrency.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -153,10 +153,17 @@ func TestDBConcurrency(t *testing.T) {
 					key := fmt.Sprintf("key-%d-%d", id, j)
 					value := fmt.Sprintf("value-%d-%d", id, j)
 
-					err := db.Set([]byte(key), []byte(value))
-					if err != nil {
-						t.Errorf("Set failed: %v", err)
-						return
+					// Retry on write transaction conflict
+					for {
+						err := db.Set([]byte(key), []byte(value))
+						if err == ErrTxInProgress {
+							continue
+						}
+						if err != nil {
+							t.Errorf("Set failed: %v", err)
+							return
+						}
+						break
 					}
 
 					// Track what we wrote
@@ -212,7 +219,7 @@ func TestDBConcurrentReads(t *testing.T) {
 	tmpfile := "/tmp/test_db_concurrent_reads.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -292,7 +299,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 	tmpfile := "/tmp/test_db_concurrent_writes.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
@@ -316,10 +323,18 @@ func TestDBConcurrentWrites(t *testing.T) {
 				key := fmt.Sprintf("writer-%d-key-%d", id, j)
 				value := fmt.Sprintf("writer-%d-value-%d", id, j)
 
-				err := db.Set([]byte(key), []byte(value))
-				if err != nil {
-					t.Errorf("Set failed for writer %d: %v", id, err)
-					return
+				// Retry on write transaction conflict
+				for {
+					err := db.Set([]byte(key), []byte(value))
+					if err == ErrTxInProgress {
+						// Another writer holds the lock, retry
+						continue
+					}
+					if err != nil {
+						t.Errorf("Set failed for writer %d: %v", id, err)
+						return
+					}
+					break
 				}
 
 				// Track what was written
@@ -357,9 +372,19 @@ func TestDBConcurrentWrites(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			value := fmt.Sprintf("updater-%d", id)
-			err := db.Set(updateKey, []byte(value))
-			if err != nil {
-				t.Errorf("Update failed for updater %d: %v", id, err)
+
+			// Retry on write transaction conflict
+			for {
+				err := db.Set(updateKey, []byte(value))
+				if err == ErrTxInProgress {
+					// Another writer holds the lock, retry
+					continue
+				}
+				if err != nil {
+					t.Errorf("Update failed for updater %d: %v", id, err)
+					return
+				}
+				break
 			}
 		}(i)
 	}
@@ -373,13 +398,172 @@ func TestDBConcurrentWrites(t *testing.T) {
 	}
 }
 
+// TestTxSnapshotIsolation tests MVCC snapshot isolation.
+// Phase 2.7: Test concurrent read/write with snapshot isolation
+func TestTxSnapshotIsolation(t *testing.T) {
+	tmpfile := "/tmp/test_tx_snapshot_isolation.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+	defer db.Close()
+
+	// Insert initial values
+	for i := 0; i < 10; i++ {
+		key := []byte(fmt.Sprintf("key-%d", i))
+		value := []byte(fmt.Sprintf("value-%d-v1", i))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to set initial key: %v", err)
+		}
+	}
+
+	// Test 1: Simple snapshot isolation
+	// Start read transaction, capture value
+	readTx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin read transaction: %v", err)
+	}
+	defer readTx.Rollback()
+
+	oldValue, err := readTx.Get([]byte("key-0"))
+	if err != nil {
+		t.Fatalf("Failed to get value in read tx: %v", err)
+	}
+	if string(oldValue) != "value-0-v1" {
+		t.Errorf("Expected 'value-0-v1', got %s", string(oldValue))
+	}
+
+	// Start write transaction, modify value, commit
+	err = db.Update(func(writeTx *Tx) error {
+		return writeTx.Set([]byte("key-0"), []byte("value-0-v2"))
+	})
+	if err != nil {
+		t.Fatalf("Failed to commit write transaction: %v", err)
+	}
+
+	// Verify read tx still sees old value (snapshot isolation)
+	stillOldValue, err := readTx.Get([]byte("key-0"))
+	if err != nil {
+		t.Fatalf("Failed to get value in read tx after write: %v", err)
+	}
+	if string(stillOldValue) != "value-0-v1" {
+		t.Errorf("Snapshot isolation broken: expected 'value-0-v1', got %s", string(stillOldValue))
+	}
+
+	readTx.Rollback()
+
+	// Verify new transaction sees new value
+	newValue, err := db.Get([]byte("key-0"))
+	if err != nil {
+		t.Fatalf("Failed to get value after commit: %v", err)
+	}
+	if string(newValue) != "value-0-v2" {
+		t.Errorf("Expected 'value-0-v2', got %s", string(newValue))
+	}
+
+	// Test 2: 10 concurrent readers + 1 writer
+	// All readers should see consistent snapshots
+	numReaders := 10
+	var wg sync.WaitGroup
+	wg.Add(numReaders + 1) // +1 for writer
+
+	// Start all read transactions
+	readerErrors := make(chan error, numReaders)
+	for i := 0; i < numReaders; i++ {
+		go func(readerID int) {
+			defer wg.Done()
+
+			// Start read transaction
+			tx, err := db.Begin(false)
+			if err != nil {
+				readerErrors <- fmt.Errorf("reader %d: failed to begin: %v", readerID, err)
+				return
+			}
+			defer tx.Rollback()
+
+			// Capture initial snapshot
+			snapshot := make(map[string]string)
+			for j := 0; j < 10; j++ {
+				key := []byte(fmt.Sprintf("key-%d", j))
+				value, err := tx.Get(key)
+				if err != nil {
+					readerErrors <- fmt.Errorf("reader %d: failed to get key-%d: %v", readerID, j, err)
+					return
+				}
+				snapshot[string(key)] = string(value)
+			}
+
+			// Wait for writer to make changes
+			time.Sleep(50 * time.Millisecond)
+
+			// Verify snapshot is still consistent
+			for j := 0; j < 10; j++ {
+				key := []byte(fmt.Sprintf("key-%d", j))
+				value, err := tx.Get(key)
+				if err != nil {
+					readerErrors <- fmt.Errorf("reader %d: failed to re-read key-%d: %v", readerID, j, err)
+					return
+				}
+				if snapshot[string(key)] != string(value) {
+					readerErrors <- fmt.Errorf("reader %d: snapshot changed for key-%d: was %s, now %s",
+						readerID, j, snapshot[string(key)], string(value))
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Writer modifies all values
+	go func() {
+		defer wg.Done()
+
+		// Small delay to let readers start
+		time.Sleep(10 * time.Millisecond)
+
+		// Perform writes
+		for i := 0; i < 10; i++ {
+			key := []byte(fmt.Sprintf("key-%d", i))
+			value := []byte(fmt.Sprintf("value-%d-v3", i))
+			err := db.Set(key, value)
+			if err != nil {
+				readerErrors <- fmt.Errorf("writer: failed to set key-%d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(readerErrors)
+
+	// Check for any reader errors
+	for err := range readerErrors {
+		t.Error(err)
+	}
+
+	// Verify final state has v3 values
+	for i := 0; i < 10; i++ {
+		key := []byte(fmt.Sprintf("key-%d", i))
+		value, err := db.Get(key)
+		if err != nil {
+			t.Errorf("Failed to get final value for key-%d: %v", i, err)
+			continue
+		}
+		expectedValue := fmt.Sprintf("value-%d-v3", i)
+		if string(value) != expectedValue {
+			t.Errorf("Final value for key-%d: expected %s, got %s", i, expectedValue, string(value))
+		}
+	}
+}
+
 // Benchmarks
 
 func BenchmarkDBGet(b *testing.B) {
 	tmpfile := "/tmp/bench_db_get.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -412,7 +596,7 @@ func BenchmarkDBSet(b *testing.B) {
 	tmpfile := "/tmp/bench_db_set.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -434,7 +618,7 @@ func BenchmarkDBMixed(b *testing.B) {
 	tmpfile := "/tmp/bench_db_mixed.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -490,7 +674,7 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 	tmpfile := "/tmp/bench_db_concurrent_reads.db"
 	defer os.Remove(tmpfile)
 
-	db, err := NewDB(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
