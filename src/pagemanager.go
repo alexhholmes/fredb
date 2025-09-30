@@ -5,6 +5,17 @@ import (
 	"os"
 )
 
+// PageManager handles disk I/O
+type PageManager interface {
+	ReadPage(id PageID) (*Page, error)
+	WritePage(id PageID, page *Page) error
+	AllocatePage() (PageID, error)
+	FreePage(id PageID) error
+	GetMeta() *MetaPage
+	PutMeta(meta *MetaPage) error
+	Close() error
+}
+
 var _ PageManager = (*DiskPageManager)(nil)
 
 // DiskPageManager implements PageManager with disk-based storage

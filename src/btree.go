@@ -6,19 +6,8 @@ import (
 
 const (
 	MaxKeysPerNode = 256                // Simplified for in-memory version
-	MinKeysPerNode = MaxKeysPerNode / 2 // Minimum keys for non-root nodes
+	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
 )
-
-// PageManager handles disk I/O
-type PageManager interface {
-	ReadPage(id PageID) (*Page, error)
-	WritePage(id PageID, page *Page) error
-	AllocatePage() (PageID, error)
-	FreePage(id PageID) error
-	GetMeta() *MetaPage
-	PutMeta(meta *MetaPage) error
-	Close() error
-}
 
 // Node wraps a Page with BTree operations
 type Node struct {
@@ -36,9 +25,9 @@ type Node struct {
 
 // BTree is the main structure
 type BTree struct {
-	pager     PageManager
-	root      *Node
-	pageCache map[PageID]*Node
+	pager PageManager
+	root  *Node
+	cache *PageCache // LRU cache for non-root nodes
 }
 
 // NewBTree creates a new BTree with the given PageManager
@@ -46,8 +35,8 @@ func NewBTree(pager PageManager) (*BTree, error) {
 	meta := pager.GetMeta()
 
 	bt := &BTree{
-		pager:     pager,
-		pageCache: make(map[PageID]*Node),
+		pager: pager,
+		cache: NewPageCache(DefaultCacheSize),
 	}
 
 	// Check if existing root exists
@@ -58,8 +47,7 @@ func NewBTree(pager PageManager) (*BTree, error) {
 			return nil, err
 		}
 		bt.root = root
-		// Remove from cache since it's root
-		delete(bt.pageCache, meta.RootPageID)
+		// Root is never cached (always stays in bt.root)
 		return bt, nil
 	}
 
@@ -131,7 +119,8 @@ func (bt *BTree) Set(key, value []byte) error {
 		}
 
 		// Cache the old root before it becomes a child
-		bt.pageCache[oldRoot.pageID] = oldRoot
+		bt.cache.Put(oldRoot.pageID, oldRoot)
+		bt.cache.Unpin(oldRoot.pageID)
 
 		bt.root = newRoot
 
@@ -168,8 +157,8 @@ func (bt *BTree) Delete(key []byte) error {
 				return err
 			}
 
+			// Root is never cached
 			bt.root = newRoot
-			delete(bt.pageCache, newRoot.pageID) // Remove from cache since it's now root
 
 			// Free old root page
 			if err := bt.pager.FreePage(oldRootID); err != nil {
@@ -195,20 +184,14 @@ func (bt *BTree) Close() error {
 	}
 
 	// Flush all cached nodes
-	for _, node := range bt.pageCache {
-		if node.dirty {
-			if err := node.serialize(); err != nil {
-				return err
-			}
-			if err := bt.pager.WritePage(node.pageID, node.page); err != nil {
-				return err
-			}
-			node.dirty = false
+	if bt.cache != nil {
+		if err := bt.cache.FlushDirty(&bt.pager); err != nil {
+			return err
 		}
 	}
 
-	// Clear cache
-	bt.pageCache = nil
+	// Clear references
+	bt.cache = nil
 	bt.root = nil
 
 	// Close pager (writes meta page and frees resources)
@@ -246,7 +229,8 @@ func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
 // loadNode loads a node from disk or cache
 func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 	// Check cache first
-	if cached, exists := bt.pageCache[pageID]; exists {
+	if cached, hit := bt.cache.Get(pageID); hit {
+		bt.cache.Unpin(pageID) // Unpin immediately - simplifies lifetime
 		return cached, nil
 	}
 
@@ -279,7 +263,8 @@ func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 	}
 
 	// Cache it
-	bt.pageCache[pageID] = node
+	bt.cache.Put(pageID, node)
+	bt.cache.Unpin(pageID) // Unpin immediately - simplifies lifetime
 
 	return node, nil
 }
@@ -506,7 +491,8 @@ func (bt *BTree) splitChild(parent *Node, index int, child *Node) error {
 	parent.dirty = true
 
 	// Cache new node
-	bt.pageCache[newNodeID] = newNode
+	bt.cache.Put(newNodeID, newNode)
+	bt.cache.Unpin(newNodeID)
 
 	return nil
 }
@@ -686,8 +672,7 @@ func (bt *BTree) mergeNodes(leftNode, rightNode *Node, parent *Node, parentKeyId
 		return err
 	}
 
-	// Remove from cache
-	delete(bt.pageCache, rightNode.pageID)
+	// Cache will automatically evict if needed
 
 	return nil
 }
