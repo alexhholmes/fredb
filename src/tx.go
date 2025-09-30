@@ -52,6 +52,14 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrTxNotWritable
 	}
 
+	// Validate key/value size before insertion
+	// Maximum size = PageSize - PageHeaderSize - LeafElementSize
+	// = 4096 - 32 - 16 = 4048 bytes for key + value
+	maxSize := PageSize - PageHeaderSize - LeafElementSize
+	if len(key)+len(value) > maxSize {
+		return ErrPageOverflow
+	}
+
 	// Use COW-aware insertion with splits
 	// Keep changes in tx.root (transaction-local), not db.store.root
 
