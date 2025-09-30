@@ -20,7 +20,7 @@ type PageManager interface {
 var _ PageManager = (*DiskPageManager)(nil)
 
 // DiskPageManager implements PageManager with disk-based storage
-// NOTE: Phase 2 uses a simple mutex for thread safety. Phase 3 will replace
+// NOTE: Uses a simple mutex for thread safety. Future work will replace
 // this with proper MVCC design where each transaction gets its own snapshot
 // of the freelist and meta page, eliminating contention.
 type DiskPageManager struct {
@@ -120,7 +120,7 @@ func (dm *DiskPageManager) GetMeta() *MetaPage {
 	return &metaCopy
 }
 
-// PutMeta updates the metadata and persists it to disk (Phase 3.3-3.4)
+// PutMeta updates the metadata and persists it to disk
 // Writes to the inactive meta page and fsyncs for durability
 func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	dm.mu.Lock()
@@ -129,7 +129,7 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	// Update checksum
 	meta.Checksum = meta.CalculateChecksum()
 
-	// Phase 3.3: Write to inactive meta page (alternates based on TxnID)
+	// Write to inactive meta page (alternates based on TxnID)
 	// TxnID % 2 determines which page: 0 or 1
 	metaPage := &Page{}
 	metaPage.WriteMeta(meta)
@@ -140,12 +140,12 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 		return err
 	}
 
-	// Phase 3.4: Fsync to ensure durability before considering commit complete
+	// Fsync to ensure durability before considering commit complete
 	if err := dm.file.Sync(); err != nil {
 		return err
 	}
 
-	// Phase 3.5: Only update in-memory meta after successful disk write and fsync
+	// Only update in-memory meta after successful disk write and fsync
 	dm.meta = *meta
 
 	return nil

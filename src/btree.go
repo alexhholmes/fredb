@@ -27,8 +27,8 @@ type Node struct {
 // The clone is marked dirty and does not have a page allocated yet
 func (n *Node) clone() *Node {
 	cloned := &Node{
-		page:    nil, // Will be allocated by tx.allocatePage() in Phase 2.2
-		pageID:  0,   // Will be set when page is allocated
+		page:    nil,
+		pageID:  0,
 		dirty:   true,
 		isLeaf:  n.isLeaf,
 		numKeys: n.numKeys,
@@ -511,7 +511,6 @@ func (n *Node) isUnderflow() bool {
 
 // insertNonFull inserts into a non-full node with COW.
 // It performs COW on nodes before modifying them.
-// Phase 2.4: Handles recursive COW - parent nodes updated when children change.
 func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, error) {
 	if node.isLeaf {
 		// COW before modifying leaf
@@ -542,7 +541,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		return node, nil
 	}
 
-	// Branch node - Phase 2.4: Recursive COW
+	// Branch node - recursive COW
 	i := int(node.numKeys) - 1
 
 	// Find child to insert into
@@ -570,7 +569,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		return nil, err
 	}
 
-	// Phase 2.5: Handle full child with COW-aware split
+	// Handle full child with COW-aware split
 	if child.isFull() {
 		// Split child using COW
 		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, node, i, child)
@@ -610,7 +609,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		return nil, err
 	}
 
-	// Phase 2.4: If child was COWed, update parent pointer
+	// If child was COWed, update parent pointer
 	if newChild.pageID != oldChildID {
 		// COW parent to update child pointer
 		node, err = tx.ensureWritable(node)
@@ -643,7 +642,7 @@ func (bt *BTree) deleteFromLeaf(tx *Tx, node *Node, idx int) (*Node, error) {
 }
 
 // mergeNodes merges two nodes with COW semantics.
-// Phase 2.6: Transaction-aware merge operation
+// Transaction-aware merge operation.
 func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKeyIdx int) (*Node, *Node, error) {
 	// COW left node (will receive merged content)
 	leftNode, err := tx.ensureWritable(leftNode)
@@ -691,7 +690,6 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 }
 
 // borrowFromLeft borrows a key from left sibling through parent (COW).
-// Phase 2.6: Transaction-aware borrow operation
 func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentKeyIdx int) (*Node, *Node, *Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
@@ -743,7 +741,6 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 }
 
 // borrowFromRight borrows a key from right sibling through parent (COW).
-// Phase 2.6: Transaction-aware borrow operation
 func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, parentKeyIdx int) (*Node, *Node, *Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
@@ -795,7 +792,6 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 }
 
 // fixUnderflow fixes underflow in child at childIdx with COW semantics.
-// Phase 2.6: Transaction-aware underflow handling
 func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (*Node, *Node, error) {
 	// Try to borrow from left sibling
 	if childIdx > 0 {
@@ -856,7 +852,6 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 }
 
 // deleteFromNonLeaf deletes a key from a non-leaf node with COW semantics.
-// Phase 2.6: Transaction-aware internal node deletion
 func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*Node, error) {
 	// Try to replace with predecessor from left subtree
 	leftChild, err := bt.loadNode(node.children[idx])
@@ -949,7 +944,6 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 }
 
 // deleteFromNode recursively deletes a key from the subtree rooted at node with COW.
-// Phase 2.6: Transaction-aware recursive deletion
 func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 	idx := node.findKey(key)
 
@@ -1010,7 +1004,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 // splitChild performs COW on the child being split and allocates the new sibling.
 // Returns the COWed child and new sibling, along with the middle key/value.
 func (bt *BTree) splitChild(tx *Tx, parent *Node, index int, child *Node) (*Node, *Node, []byte, []byte, error) {
-	// Phase 2.5: COW the child being split
+	// COW the child being split
 	child, err := tx.ensureWritable(child)
 	if err != nil {
 		return nil, nil, nil, nil, err

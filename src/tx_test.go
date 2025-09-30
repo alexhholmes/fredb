@@ -58,7 +58,7 @@ func TestTxBasicOperations(t *testing.T) {
 }
 
 func TestTxCommitRollback(t *testing.T) {
-	// Phase 2.3: COW now implemented for simple leaf modifications
+	// COW now implemented for simple leaf modifications
 	tmpfile := "/tmp/test_tx_commit_rollback.db"
 	defer os.Remove(tmpfile)
 
@@ -290,7 +290,7 @@ func TestTxDoneCheck(t *testing.T) {
 }
 
 func TestTxAutoRollback(t *testing.T) {
-	// Phase 2.3: COW now implemented for simple leaf modifications
+	// COW now implemented for simple leaf modifications
 	tmpfile := "/tmp/test_tx_auto_rollback.db"
 	defer os.Remove(tmpfile)
 

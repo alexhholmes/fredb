@@ -399,7 +399,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 }
 
 // TestTxSnapshotIsolation tests MVCC snapshot isolation.
-// Phase 2.7: Test concurrent read/write with snapshot isolation
+// Test concurrent read/write with snapshot isolation
 func TestTxSnapshotIsolation(t *testing.T) {
 	tmpfile := "/tmp/test_tx_snapshot_isolation.db"
 	defer os.Remove(tmpfile)

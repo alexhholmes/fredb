@@ -485,3 +485,109 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 		})
 	}
 }
+
+func TestFreeListPending(t *testing.T) {
+	fl := NewFreeList()
+
+	// Add some pages to pending at different transactions
+	fl.FreePending(10, []PageID{100, 101, 102})
+	fl.FreePending(11, []PageID{200, 201})
+	fl.FreePending(12, []PageID{300})
+
+	// Verify pending size
+	if fl.PendingSize() != 6 {
+		t.Errorf("Expected 6 pages in pending, got %d", fl.PendingSize())
+	}
+
+	// Nothing in free list yet
+	if fl.Size() != 0 {
+		t.Errorf("Expected 0 pages in free list, got %d", fl.Size())
+	}
+
+	// Release up to txnID 10
+	released := fl.Release(10)
+	if released != 3 {
+		t.Errorf("Expected 3 pages released, got %d", released)
+	}
+
+	// Check free list now has 3 pages
+	if fl.Size() != 3 {
+		t.Errorf("Expected 3 pages in free list after release, got %d", fl.Size())
+	}
+
+	// Pending should still have 3
+	if fl.PendingSize() != 3 {
+		t.Errorf("Expected 3 pages still pending, got %d", fl.PendingSize())
+	}
+
+	// Release everything
+	released = fl.Release(100)
+	if released != 3 {
+		t.Errorf("Expected 3 more pages released, got %d", released)
+	}
+
+	// All pages should be free now
+	if fl.Size() != 6 {
+		t.Errorf("Expected 6 pages in free list after full release, got %d", fl.Size())
+	}
+
+	if fl.PendingSize() != 0 {
+		t.Errorf("Expected 0 pages pending after full release, got %d", fl.PendingSize())
+	}
+
+	// Verify we can allocate the freed pages
+	for i := 0; i < 6; i++ {
+		id := fl.Allocate()
+		if id == 0 {
+			t.Errorf("Expected to allocate page, got 0")
+		}
+	}
+
+	// Should be empty now
+	if fl.Allocate() != 0 {
+		t.Error("Expected no more pages to allocate")
+	}
+}
+
+func TestFreeListReleaseOrder(t *testing.T) {
+	fl := NewFreeList()
+
+	// Add pages at various transaction IDs
+	fl.FreePending(50, []PageID{500})
+	fl.FreePending(10, []PageID{100})
+	fl.FreePending(30, []PageID{300})
+	fl.FreePending(20, []PageID{200})
+
+	// Release up to 25 should release txns 10 and 20
+	released := fl.Release(25)
+	if released != 2 {
+		t.Errorf("Expected 2 pages released (txn 10, 20), got %d", released)
+	}
+
+	// Release up to 30 should release txn 30
+	released = fl.Release(30)
+	if released != 1 {
+		t.Errorf("Expected 1 page released (txn 30), got %d", released)
+	}
+
+	// txn 50 still pending
+	if fl.PendingSize() != 1 {
+		t.Errorf("Expected 1 page still pending (txn 50), got %d", fl.PendingSize())
+	}
+}
+
+func TestFreeListEmptyRelease(t *testing.T) {
+	fl := NewFreeList()
+
+	// Release on empty pending should do nothing
+	released := fl.Release(100)
+	if released != 0 {
+		t.Errorf("Expected 0 pages released from empty pending, got %d", released)
+	}
+
+	// Add empty slice shouldn't break anything
+	fl.FreePending(10, []PageID{})
+	if fl.PendingSize() != 0 {
+		t.Errorf("Expected 0 pages after adding empty slice, got %d", fl.PendingSize())
+	}
+}

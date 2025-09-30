@@ -35,7 +35,7 @@ func (tx *Tx) check() error {
 // The allocated page is tracked in tx.pending for COW semantics
 func (tx *Tx) allocatePage() (PageID, *Page, error) {
 	// Allocate from pager (uses freelist or grows file)
-	// DiskPageManager.AllocatePage() is now thread-safe via mutex (Phase 2)
+	// DiskPageManager.AllocatePage() is thread-safe via mutex
 	pageID, err := tx.db.store.pager.AllocatePage()
 	if err != nil {
 		return 0, nil, err
@@ -57,9 +57,8 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 // Always performs COW to avoid modifying shared state.
 // Returns a writable clone with a new pageID.
 func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
-	// Phase 2.3: Always clone, even if node is dirty
+	// Always clone, even if node is dirty
 	// The dirty flag means "modified from disk", not "owned by this transaction"
-	// Phase 2.4 will track node ownership to enable dirty-node reuse optimization
 
 	// Perform Copy-On-Write
 	cloned := node.clone()
@@ -76,8 +75,8 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	cloned.dirty = true
 
 	// Track old page as freed
-	// NOTE: Phase 2 just tracks freed pages, doesn't reclaim them yet.
-	// Phase 4 will implement versioned freelist to safely reclaim pages
+	// NOTE: Just tracks freed pages, doesn't reclaim them yet.
+	// Future work: implement versioned freelist to safely reclaim pages
 	// after all transactions that might reference them have finished.
 	if node.pageID != 0 {
 		tx.freed = append(tx.freed, node.pageID)
@@ -97,7 +96,7 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Phase 2.7: Use transaction's snapshot root for MVCC isolation
+	// Use transaction's snapshot root for MVCC isolation
 	// tx.root is captured at Begin() time and provides snapshot isolation
 	if tx.root == nil {
 		return nil, ErrKeyNotFound
@@ -117,7 +116,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Phase 2.5: Use COW-aware insertion with splits
+	// Use COW-aware insertion with splits
 	// Keep changes in tx.root (transaction-local), not db.store.root
 
 	// Use tx.root if set, otherwise start from db.store.root
@@ -126,7 +125,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		root = tx.db.store.root
 	}
 
-	// Phase 2.5: Handle root split with COW
+	// Handle root split with COW
 	if root.isFull() {
 		// Split root using COW
 		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, nil, 0, root)
@@ -162,7 +161,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		root = newRoot
 	}
 
-	// Insert with recursive COW (Phase 2.4 + 2.5)
+	// Insert with recursive COW
 	newRoot, err := tx.db.store.insertNonFull(tx, root, key, value)
 	if err != nil {
 		return err
@@ -185,7 +184,7 @@ func (tx *Tx) Delete(key []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Phase 2.6: Full COW-aware deletion with merge/borrow support
+	// Full COW-aware deletion with merge/borrow support
 	// Keep changes in tx.root (transaction-local), not db.store.root
 
 	// Use tx.root if set, otherwise start from db.store.root
@@ -230,8 +229,8 @@ func (tx *Tx) Delete(key []byte) error {
 // Cursor creates a new cursor for iterating over keys.
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
-	// Phase 1: Direct pass-through to BTree
-	// Phase 5: Will bind cursor to transaction and validate tx state
+	// Direct pass-through to BTree
+	// Future work: bind cursor to transaction and validate tx state
 	return tx.db.store.NewCursor()
 }
 
@@ -253,13 +252,13 @@ func (tx *Tx) Commit() error {
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
-	// Phase 2.3: Apply transaction-local root to db.store.root
+	// Apply transaction-local root to db.store.root
 	// This makes all COW changes visible to future transactions
 	if tx.root != nil {
 		tx.db.store.root = tx.root
 	}
 
-	// Phase 3.3-3.5: Write meta page to disk for persistence
+	// Write meta page to disk for persistence
 	// Get current meta from pager
 	currentMeta := tx.db.store.pager.GetMeta()
 
@@ -271,7 +270,7 @@ func (tx *Tx) Commit() error {
 	newMeta.TxnID = tx.txnID
 	newMeta.Checksum = newMeta.CalculateChecksum()
 
-	// Update pager's in-memory meta (Phase 3.5)
+	// Update pager's in-memory meta
 	if err := tx.db.store.pager.PutMeta(&newMeta); err != nil {
 		return err
 	}

@@ -46,7 +46,6 @@ func Open(path string) (*db, error) {
 }
 
 func (d *db) Get(key []byte) ([]byte, error) {
-	// Phase 2.7: Use transaction for MVCC isolation
 	var result []byte
 	err := d.View(func(tx *Tx) error {
 		val, err := tx.Get(key)
@@ -60,19 +59,16 @@ func (d *db) Get(key []byte) ([]byte, error) {
 }
 
 func (d *db) Set(key, value []byte) error {
-	// Phase 2.7: Use transaction for MVCC isolation
 	return d.Update(func(tx *Tx) error {
 		return tx.Set(key, value)
 	})
 }
 
 func (d *db) Delete(key []byte) error {
-	// Phase 2.7: Use transaction for MVCC isolation
 	return d.Update(func(tx *Tx) error {
 		return tx.Delete(key)
 	})
 }
-
 
 func (d *db) Begin(writable bool) (*Tx, error) {
 	d.mu.Lock()
@@ -88,14 +84,13 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 	txnID := d.nextTxnID
 
 	// Create transaction
-	// Phase 2.7: Snapshot isolation - capture root at transaction start
 	// Read transactions keep this snapshot, write transactions replace it on first modification
 	tx := &Tx{
 		db:       d,
 		txnID:    txnID,
 		writable: writable,
-		meta:     nil,          // Will be populated from BTree meta in Phase 3
-		root:     d.store.root, // Phase 2.7: Capture snapshot for MVCC isolation
+		meta:     nil,          // Reserved for future BTree metadata tracking
+		root:     d.store.root, // Capture snapshot for MVCC isolation
 		pending:  make([]PageID, 0),
 		freed:    make([]PageID, 0),
 		done:     false,

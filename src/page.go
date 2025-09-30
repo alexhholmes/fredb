@@ -271,13 +271,15 @@ const (
 
 // FreeList tracks free pages for reuse
 type FreeList struct {
-	ids []PageID // sorted array of free page IDs
+	ids     []PageID              // sorted array of free page IDs
+	pending map[uint64][]PageID   // txnID -> pages freed at that transaction
 }
 
 // NewFreeList creates an empty freelist
 func NewFreeList() *FreeList {
 	return &FreeList{
-		ids: make([]PageID, 0),
+		ids:     make([]PageID, 0),
+		pending: make(map[uint64][]PageID),
 	}
 }
 
@@ -308,6 +310,46 @@ func (f *FreeList) Free(id PageID) {
 // Size returns number of free pages
 func (f *FreeList) Size() int {
 	return len(f.ids)
+}
+
+// FreePending adds pages to the pending map at the given transaction ID.
+// These pages are not immediately reusable - they'll be moved to free
+// when all readers with txnID < this have finished.
+func (f *FreeList) FreePending(txnID uint64, pageIDs []PageID) {
+	if len(pageIDs) == 0 {
+		return
+	}
+	f.pending[txnID] = append(f.pending[txnID], pageIDs...)
+}
+
+// Release moves pages from pending to free for all transactions <= minTxnID.
+// Returns the number of pages released.
+func (f *FreeList) Release(minTxnID uint64) int {
+	released := 0
+
+	// Find all pending entries that can be released
+	for txnID, pageIDs := range f.pending {
+		if txnID <= minTxnID {
+			// Move these pages to free list
+			for _, id := range pageIDs {
+				f.Free(id)
+				released++
+			}
+			// Remove from pending
+			delete(f.pending, txnID)
+		}
+	}
+
+	return released
+}
+
+// PendingSize returns the total number of pages in pending state
+func (f *FreeList) PendingSize() int {
+	total := 0
+	for _, pageIDs := range f.pending {
+		total += len(pageIDs)
+	}
+	return total
 }
 
 // PagesNeeded returns number of pages needed to serialize this freelist

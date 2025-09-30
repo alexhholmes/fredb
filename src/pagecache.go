@@ -191,7 +191,7 @@ func (c *PageCache) evictToWaterMark() {
 			continue
 		}
 
-		// Skip dirty pages for now (Phase 3 will handle flushing)
+		// Skip dirty pages for now (will be flushed during eviction in future)
 		// For now we just keep them in cache
 		if entry.node.dirty {
 			c.lruList.MoveToFront(elem)
