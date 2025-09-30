@@ -1,6 +1,9 @@
 package src
 
-import "unsafe"
+import (
+	"fmt"
+	"unsafe"
+)
 
 const (
 	// FreeListPageCapacity is max number of PageIDs per freelist page
@@ -37,15 +40,30 @@ func (f *FreeList) Allocate() PageID {
 	// CRITICAL: Remove from pending to prevent double-allocation
 	// If this page is in pending from a previous transaction, remove it
 	// to prevent the background releaser from adding it back to free
+	removedCount := 0
 	for txnID, pageIDs := range f.pending {
-		for i, pid := range pageIDs {
-			if pid == id {
+		// Remove ALL occurrences of id from this txnID's pending list
+		// Iterate backwards to handle removal correctly
+		for i := len(pageIDs) - 1; i >= 0; i-- {
+			if pageIDs[i] == id {
 				// Remove from pending
 				f.pending[txnID] = append(pageIDs[:i], pageIDs[i+1:]...)
-				if len(f.pending[txnID]) == 0 {
-					delete(f.pending, txnID)
-				}
-				break
+				pageIDs = f.pending[txnID]  // Update reference after modification
+				removedCount++
+			}
+		}
+		// Clean up empty entries
+		if len(f.pending[txnID]) == 0 {
+			delete(f.pending, txnID)
+		}
+	}
+
+	// DEBUG: Check if page still exists in pending after removal
+	for txnID, pageIDs := range f.pending {
+		for _, pid := range pageIDs {
+			if pid == id {
+				panic(fmt.Sprintf("BUG: Allocated pageID %d still in pending[%d] after removal (removed %d occurrences)",
+					id, txnID, removedCount))
 			}
 		}
 	}
@@ -55,6 +73,13 @@ func (f *FreeList) Allocate() PageID {
 
 // Free adds a page ID to the free list
 func (f *FreeList) Free(id PageID) {
+	// Check if already in free list to prevent duplicates
+	for _, existingID := range f.ids {
+		if existingID == id {
+			return // Already free, don't add duplicate
+		}
+	}
+
 	f.ids = append(f.ids, id)
 	// Keep sorted for deterministic behavior
 	for i := len(f.ids) - 1; i > 0; i-- {

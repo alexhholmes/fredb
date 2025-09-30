@@ -529,85 +529,90 @@ func TestBTreeSequentialDelete(t *testing.T) {
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
-	// Test random deletion pattern with tree structure checks
-	db := setupTestDB(t)
+	for i := 0; i < 50; i++ {
+		// Test random deletion pattern with tree structure checks
+		db := setupTestDB(t)
 
-	// Insert keys
-	numKeys := MaxKeysPerNode * 2
-	keys := make([]string, numKeys)
-	for i := 0; i < numKeys; i++ {
-		key := fmt.Sprintf("key%06d", i)
-		value := fmt.Sprintf("value%06d", i)
-		keys[i] = key
-		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
-	}
-
-	// Check initial tree structure
-	initialIsLeaf := db.store.root.isLeaf
-	initialRootKeys := int(db.store.root.numKeys)
-	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
-
-	// Create random deletion order
-	deleteOrder := make([]int, numKeys)
-	for i := 0; i < numKeys; i++ {
-		deleteOrder[i] = i
-	}
-	// Deterministic shuffle for reproducibility
-	for i := len(deleteOrder) - 1; i > 0; i-- {
-		j := (i * 7) % (i + 1)
-		deleteOrder[i], deleteOrder[j] = deleteOrder[j], deleteOrder[i]
-	}
-
-	// Track which keys are deleted
-	deleted := make(map[string]bool)
-
-	// Delete keys randomly and monitor tree structure
-	for i, idx := range deleteOrder {
-		key := keys[idx]
-		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to delete %s: %v", key, err)
-		}
-		deleted[key] = true
-
-		// Log tree structure changes at key points
-		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
-			t.Logf("After %d random deletions: root isLeaf=%v, numKeys=%d",
-				i+1, db.store.root.isLeaf, db.store.root.numKeys)
-		}
-
-		// Verify deleted key is gone
-		_, err = db.Get([]byte(key))
-		if err != ErrKeyNotFound {
-			t.Errorf("Key %s should be deleted", key)
-		}
-
-		// Verify some non-deleted keys still exist (spot check)
-		checked := 0
-		for _, k := range keys {
-			if !deleted[k] && checked < 5 {
-				val, err := db.Get([]byte(k))
-				if err != nil {
-					t.Errorf("Key %s should still exist: %v", k, err)
-				}
-				expectedVal := "value" + k[3:] // Concatenate value prefix with key suffix
-				if string(val) != expectedVal {
-					t.Errorf("Wrong value for %s: got %s", k, string(val))
-				}
-				checked++
+		// Insert keys
+		numKeys := MaxKeysPerNode * 2
+		keys := make([]string, numKeys)
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("key%06d", i)
+			value := fmt.Sprintf("value%06d", i)
+			keys[i] = key
+			err := db.Set([]byte(key), []byte(value))
+			if err != nil {
+				t.Errorf("Failed to set %s: %v", key, err)
 			}
 		}
-	}
 
-	// Final tree should be empty
-	if db.store.root.numKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
-	}
-	if !db.store.root.isLeaf {
-		t.Errorf("Empty tree root should be leaf")
+		// Check initial tree structure
+		initialIsLeaf := db.store.root.isLeaf
+		initialRootKeys := int(db.store.root.numKeys)
+		t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
+
+		// Create random deletion order
+		deleteOrder := make([]int, numKeys)
+		for i := 0; i < numKeys; i++ {
+			deleteOrder[i] = i
+		}
+		// Deterministic shuffle for reproducibility
+		for i := len(deleteOrder) - 1; i > 0; i-- {
+			j := (i * 7) % (i + 1)
+			deleteOrder[i], deleteOrder[j] = deleteOrder[j], deleteOrder[i]
+		}
+
+		// Track which keys are deleted
+		deleted := make(map[string]bool)
+
+		// Delete keys randomly and monitor tree structure
+		for i, idx := range deleteOrder {
+			key := keys[idx]
+			err := db.Delete([]byte(key))
+			if err != nil {
+				t.Errorf("Failed to delete %s: %v", key, err)
+			}
+			deleted[key] = true
+
+			// Log tree structure changes at key points
+			if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
+				t.Logf("After %d random deletions: root isLeaf=%v, numKeys=%d",
+					i+1, db.store.root.isLeaf, db.store.root.numKeys)
+			}
+
+			// Verify deleted key is gone
+			_, err = db.Get([]byte(key))
+			if err != ErrKeyNotFound {
+				t.Errorf("Key %s should be deleted", key)
+			}
+
+			// Verify some non-deleted keys still exist (spot check)
+			checked := 0
+			for _, k := range keys {
+				if !deleted[k] && checked < 5 {
+					val, err := db.Get([]byte(k))
+					if err != nil {
+						t.Errorf("Key %s should still exist: %v", k, err)
+					}
+					expectedVal := "value" + k[3:] // Concatenate value prefix with key suffix
+					if string(val) != expectedVal {
+						t.Errorf("Wrong value for %s: got %s", k, string(val))
+					}
+					checked++
+				}
+			}
+		}
+
+		// Final tree should be empty
+		if db.store.root.numKeys != 0 {
+			t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
+		}
+		if !db.store.root.isLeaf {
+			t.Errorf("Empty tree root should be leaf")
+		}
+
+		// Close database after each iteration
+		db.Close()
 	}
 }
 

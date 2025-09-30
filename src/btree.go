@@ -735,7 +735,7 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 	parent.children[parentKeyIdx] = leftNode.pageID
 
 	// Track right node as freed (it's been merged into left)
-	tx.freed = append(tx.freed, rightNode.pageID)
+	tx.addFreed(rightNode.pageID)
 
 	return leftNode, parent, nil
 }

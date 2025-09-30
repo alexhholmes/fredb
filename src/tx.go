@@ -144,9 +144,7 @@ func (tx *Tx) Delete(key []byte) error {
 	if !newRoot.isLeaf && newRoot.numKeys == 0 {
 		if len(newRoot.children) > 0 {
 			// Track old root as freed
-			if newRoot.pageID != 0 {
-				tx.freed = append(tx.freed, newRoot.pageID)
-			}
+			tx.addFreed(newRoot.pageID)
 
 			// Load the only child as new root
 			newRoot, err = tx.db.store.loadNode(newRoot.children[0])
@@ -306,6 +304,21 @@ func (tx *Tx) check() error {
 	return nil
 }
 
+// addFreed adds a page to the freed list, checking for duplicates first.
+// This prevents the same page from being freed multiple times in a transaction.
+func (tx *Tx) addFreed(pageID PageID) {
+	if pageID == 0 {
+		return
+	}
+	// Check if already freed to prevent duplicates
+	for _, pid := range tx.freed {
+		if pid == pageID {
+			return // Already freed
+		}
+	}
+	tx.freed = append(tx.freed, pageID)
+}
+
 // allocatePage allocates a new page for this transaction
 // The allocated page is tracked in tx.pending for COW semantics
 func (tx *Tx) allocatePage() (PageID, *Page, error) {
@@ -376,9 +389,7 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	// NOTE: Just tracks freed pages, doesn't reclaim them yet.
 	// Future work: implement versioned freelist to safely reclaim pages
 	// after all transactions that might reference them have finished.
-	if node.pageID != 0 {
-		tx.freed = append(tx.freed, node.pageID)
-	}
+	tx.addFreed(node.pageID)
 
 	// Cache immediately - serialization will update the page data in-place
 	tx.db.store.cache.Put(pageID, cloned)
