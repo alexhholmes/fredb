@@ -25,8 +25,8 @@ func TestFreeListPending(t *testing.T) {
 		t.Errorf("Expected 0 pages in free list, got %d", fl.Size())
 	}
 
-	// Release up to txnID 10
-	released := fl.Release(10)
+	// Release pages from transactions < 11 (i.e., txnID 10)
+	released := fl.Release(11)
 	if released != 3 {
 		t.Errorf("Expected 3 pages released, got %d", released)
 	}
@@ -85,8 +85,8 @@ func TestFreeListReleaseOrder(t *testing.T) {
 		t.Errorf("Expected 2 pages released (txn 10, 20), got %d", released)
 	}
 
-	// Release up to 30 should release txn 30
-	released = fl.Release(30)
+	// Release pages from transactions < 31 (i.e., txnID 30)
+	released = fl.Release(31)
 	if released != 1 {
 		t.Errorf("Expected 1 page released (txn 30), got %d", released)
 	}

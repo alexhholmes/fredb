@@ -25,95 +25,6 @@ type Tx struct {
 	done     bool      // Has Commit() or Rollback() been called?
 }
 
-// check verifies the transaction is still active.
-// Returns ErrTxDone if the transaction has been committed or rolled back.
-func (tx *Tx) check() error {
-	if tx.done {
-		return ErrTxDone
-	}
-	return nil
-}
-
-// allocatePage allocates a new page for this transaction
-// The allocated page is tracked in tx.pending for COW semantics
-func (tx *Tx) allocatePage() (PageID, *Page, error) {
-	// Allocate from pager (uses freelist or grows file)
-	// DiskPageManager.AllocatePage() is thread-safe via mutex
-	pageID, err := tx.db.store.pager.AllocatePage()
-	if err != nil {
-		return 0, nil, err
-	}
-
-	// VALIDATE: Check for duplicate allocation (freelist corruption)
-	for _, pid := range tx.pending {
-		if pid == pageID {
-			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
-				pageID, tx.txnID, tx.pending, tx.freed)
-		}
-	}
-	for _, pid := range tx.freed {
-		if pid == pageID {
-			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d in tx.freed (txnID=%d, pending=%v, freed=%v)",
-				pageID, tx.txnID, tx.pending, tx.freed)
-		}
-	}
-
-	// Track in pending pages (for COW)
-	tx.pending = append(tx.pending, pageID)
-
-	// Read the freshly allocated page
-	page, err := tx.db.store.pager.ReadPage(pageID)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	return pageID, page, nil
-}
-
-// ensureWritable ensures a node is safe to modify in this transaction.
-// Performs COW only if the node doesn't already belong to this transaction.
-// Returns a writable node (either the original if already owned, or a clone).
-func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
-	// Check if this node already belongs to this transaction
-	// If its pageID is in tx.pending, it was allocated in this transaction
-	for _, pid := range tx.pending {
-		if pid == node.pageID {
-			// Node already owned by this transaction, no COW needed
-			return node, nil
-		}
-	}
-
-	// Node doesn't belong to this transaction, perform Copy-On-Write
-	cloned := node.clone()
-
-	// Allocate new page for cloned node
-	pageID, page, err := tx.allocatePage()
-	if err != nil {
-		return nil, err
-	}
-
-	// Set up cloned node with new page
-	cloned.pageID = pageID
-	cloned.page = page
-	cloned.dirty = true
-
-	// Don't serialize here - let the caller modify the node first
-	// The caller will serialize after modifications
-
-	// Track old page as freed
-	// NOTE: Just tracks freed pages, doesn't reclaim them yet.
-	// Future work: implement versioned freelist to safely reclaim pages
-	// after all transactions that might reference them have finished.
-	if node.pageID != 0 {
-		tx.freed = append(tx.freed, node.pageID)
-	}
-
-	// Cache immediately - serialization will update the page data in-place
-	tx.db.store.cache.Put(pageID, cloned)
-
-	return cloned, nil
-}
-
 // Get retrieves the value for a key.
 // Returns ErrKeyNotFound if the key does not exist.
 func (tx *Tx) Get(key []byte) ([]byte, error) {
@@ -384,4 +295,93 @@ func (tx *Tx) Rollback() error {
 	}
 
 	return nil
+}
+
+// check verifies the transaction is still active.
+// Returns ErrTxDone if the transaction has been committed or rolled back.
+func (tx *Tx) check() error {
+	if tx.done {
+		return ErrTxDone
+	}
+	return nil
+}
+
+// allocatePage allocates a new page for this transaction
+// The allocated page is tracked in tx.pending for COW semantics
+func (tx *Tx) allocatePage() (PageID, *Page, error) {
+	// Allocate from pager (uses freelist or grows file)
+	// DiskPageManager.AllocatePage() is thread-safe via mutex
+	pageID, err := tx.db.store.pager.AllocatePage()
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// VALIDATE: Check for duplicate allocation (freelist corruption)
+	for _, pid := range tx.pending {
+		if pid == pageID {
+			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+				pageID, tx.txnID, tx.pending, tx.freed)
+		}
+	}
+	for _, pid := range tx.freed {
+		if pid == pageID {
+			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d in tx.freed (txnID=%d, pending=%v, freed=%v)",
+				pageID, tx.txnID, tx.pending, tx.freed)
+		}
+	}
+
+	// Track in pending pages (for COW)
+	tx.pending = append(tx.pending, pageID)
+
+	// Read the freshly allocated page
+	page, err := tx.db.store.pager.ReadPage(pageID)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	return pageID, page, nil
+}
+
+// ensureWritable ensures a node is safe to modify in this transaction.
+// Performs COW only if the node doesn't already belong to this transaction.
+// Returns a writable node (either the original if already owned, or a clone).
+func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
+	// Check if this node already belongs to this transaction
+	// If its pageID is in tx.pending, it was allocated in this transaction
+	for _, pid := range tx.pending {
+		if pid == node.pageID {
+			// Node already owned by this transaction, no COW needed
+			return node, nil
+		}
+	}
+
+	// Node doesn't belong to this transaction, perform Copy-On-Write
+	cloned := node.clone()
+
+	// Allocate new page for cloned node
+	pageID, page, err := tx.allocatePage()
+	if err != nil {
+		return nil, err
+	}
+
+	// Set up cloned node with new page
+	cloned.pageID = pageID
+	cloned.page = page
+	cloned.dirty = true
+
+	// Don't serialize here - let the caller modify the node first
+	// The caller will serialize after modifications
+
+	// Track old page as freed
+	// NOTE: Just tracks freed pages, doesn't reclaim them yet.
+	// Future work: implement versioned freelist to safely reclaim pages
+	// after all transactions that might reference them have finished.
+	if node.pageID != 0 {
+		tx.freed = append(tx.freed, node.pageID)
+	}
+
+	// Cache immediately - serialization will update the page data in-place
+	tx.db.store.cache.Put(pageID, cloned)
+
+	return cloned, nil
 }

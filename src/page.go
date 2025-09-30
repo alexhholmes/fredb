@@ -50,13 +50,14 @@ type LeafElement struct {
 	Reserved    uint32 // 4 bytes
 }
 
-// BranchElement represents metadata for a key and child pointer in a branch page
-// Layout: [KeyOffset: 2][KeySize: 2][Reserved1: 4][ChildID: 8]
+// BranchElement represents metadata for a key, value, and child pointer in a branch page
+// Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][ChildID: 8]
 type BranchElement struct {
-	KeyOffset uint16 // 2 bytes: offset from data area start
-	KeySize   uint16 // 2 bytes
-	Reserved1 uint32 // 4 bytes
-	ChildID   PageID // 8 bytes
+	KeyOffset   uint16 // 2 bytes: offset from data area start
+	KeySize     uint16 // 2 bytes
+	ValueOffset uint16 // 2 bytes: offset from data area start for value
+	ValueSize   uint16 // 2 bytes
+	ChildID     PageID // 8 bytes
 }
 
 // Header returns the page header decoded from page data

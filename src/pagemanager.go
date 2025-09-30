@@ -155,13 +155,23 @@ func (dm *DiskPageManager) Close() error {
 	// Serialize freelist to disk
 	pagesNeeded := dm.freelist.PagesNeeded()
 
-	// If freelist grew, allocate more pages from end
+	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
 	if uint64(pagesNeeded) > dm.meta.FreelistPages {
-		// Allocate new freelist pages from file end
-		for dm.meta.FreelistPages < uint64(pagesNeeded) {
-			dm.meta.NumPages++
-			dm.meta.FreelistPages++
+		// Mark old freelist pages as pending (not immediately reusable)
+		// Using current TxnID ensures they're only released after this Close() completes
+		oldPages := make([]PageID, dm.meta.FreelistPages)
+		for i := uint64(0); i < dm.meta.FreelistPages; i++ {
+			oldPages[i] = PageID(dm.meta.FreelistID) + PageID(i)
 		}
+		dm.freelist.FreePending(dm.meta.TxnID, oldPages)
+
+		// Recalculate pages needed after adding old freelist pages to pending
+		pagesNeeded = dm.freelist.PagesNeeded()
+
+		// Move freelist to new pages at end of file
+		dm.meta.FreelistID = PageID(dm.meta.NumPages)
+		dm.meta.FreelistPages = uint64(pagesNeeded)
+		dm.meta.NumPages += uint64(pagesNeeded)
 	}
 
 	// Write freelist

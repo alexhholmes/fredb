@@ -2,7 +2,6 @@ package src
 
 import (
 	"bytes"
-	"fmt"
 )
 
 const (
@@ -304,7 +303,7 @@ func (n *Node) serializedSize() int {
 		size += int(n.numKeys) * BranchElementSize
 		size += 8 // children[0]
 		for i := 0; i < int(n.numKeys); i++ {
-			size += len(n.keys[i])
+			size += len(n.keys[i]) + len(n.values[i])
 		}
 	}
 
@@ -313,15 +312,6 @@ func (n *Node) serializedSize() int {
 
 // serialize encodes the node data into page.data
 func (n *Node) serialize() error {
-	// Validate no self-references before serializing
-	if !n.isLeaf {
-		for _, childID := range n.children {
-			if childID == n.pageID {
-				return fmt.Errorf("corruption: node %d has self-reference in children", n.pageID)
-			}
-		}
-	}
-
 	// Check size
 	if n.serializedSize() > PageSize {
 		return ErrPageOverflow
@@ -375,22 +365,27 @@ func (n *Node) serialize() error {
 			n.page.WriteBranchFirstChild(n.children[0])
 		}
 
-		// Write keys and remaining children
+		// Write keys, values, and remaining children
 		dataOffset := uint16(8) // Start after children[0]
 		for i := 0; i < int(n.numKeys); i++ {
 			key := n.keys[i]
+			value := n.values[i]
 
 			elem := &BranchElement{
-				KeyOffset: dataOffset,
-				KeySize:   uint16(len(key)),
-				ChildID:   n.children[i+1],
+				KeyOffset:   dataOffset,
+				KeySize:     uint16(len(key)),
+				ValueOffset: dataOffset + uint16(len(key)),
+				ValueSize:   uint16(len(value)),
+				ChildID:     n.children[i+1],
 			}
 			n.page.WriteBranchElement(i, elem)
 
-			// Write key to data area
+			// Write key and value to data area
 			dataStart := n.page.DataAreaStart()
 			copy(n.page.data[dataStart+int(dataOffset):], key)
 			dataOffset += uint16(len(key))
+			copy(n.page.data[dataStart+int(dataOffset):], value)
+			dataOffset += uint16(len(value))
 		}
 	}
 
@@ -454,9 +449,13 @@ func (n *Node) deserialize() error {
 			// Copy child pointer
 			n.children[i+1] = elem.ChildID
 
-			// Branch nodes need values too (for separator keys)
-			// For now, initialize empty values
-			n.values[i] = make([]byte, 0)
+			// Copy value (separator values in branch nodes)
+			valueData, err := n.page.GetValue(elem.ValueOffset, elem.ValueSize)
+			if err != nil {
+				return err
+			}
+			n.values[i] = make([]byte, len(valueData))
+			copy(n.values[i], valueData)
 		}
 	}
 
@@ -606,21 +605,10 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 
 	// Handle full child with COW-aware split
 	if child.isFull() {
-		// DEBUG: Track parent pageID before split
-		parentPageIDBefore := node.pageID
-
 		// Split child using COW
 		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, child)
 		if err != nil {
 			return nil, err
-		}
-
-		// DEBUG: Validate split children don't conflict with parent
-		if leftChild.pageID == parentPageIDBefore {
-			return nil, fmt.Errorf("BUG: splitChild returned leftChild.pageID=%d same as parent before COW", parentPageIDBefore)
-		}
-		if rightChild.pageID == parentPageIDBefore {
-			return nil, fmt.Errorf("BUG: splitChild returned rightChild.pageID=%d same as parent before COW", parentPageIDBefore)
 		}
 
 		// COW parent to insert middle key and update pointers
@@ -639,13 +627,6 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		newChildren[i] = leftChild.pageID            // Left child
 		newChildren[i+1] = rightChild.pageID         // Right child
 		copy(newChildren[i+2:], node.children[i+1:]) // After split point
-
-		// Validate no self-references before assigning
-		for _, childID := range newChildren {
-			if childID == node.pageID {
-				return nil, fmt.Errorf("BUG: about to create self-reference in node %d (leftChild=%d rightChild=%d i=%d)", node.pageID, leftChild.pageID, rightChild.pageID, i)
-			}
-		}
 
 		node.children = newChildren
 
