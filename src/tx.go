@@ -308,6 +308,14 @@ func (tx *Tx) Rollback() error {
 				break
 			}
 		}
+
+		// Trigger release - non-blocking send
+		// The background goroutine will calculate the new minimum
+		select {
+		case tx.db.releaseC <- 0: // Value doesn't matter, it's just a trigger
+		default:
+			// Channel blocked, ticker will handle it
+		}
 	}
 
 	return nil

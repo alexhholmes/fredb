@@ -2,7 +2,9 @@ package src
 
 import (
 	"errors"
+	"math"
 	"sync"
+	"time"
 )
 
 var (
@@ -23,6 +25,11 @@ type db struct {
 	writerTx  *Tx    // Current write transaction (nil if none)
 	readerTxs []*Tx  // Active read transactions
 	nextTxnID uint64 // Monotonic transaction ID counter
+
+	// Background releaser
+	releaseC chan uint64      // Trigger release (unbuffered)
+	stopC    chan struct{}    // Shutdown signal
+	wg       sync.WaitGroup   // Clean shutdown
 }
 
 func Open(path string) (*db, error) {
@@ -39,10 +46,75 @@ func Open(path string) (*db, error) {
 	// Initialize nextTxnID from disk to ensure monotonic IDs across sessions
 	meta := pager.GetMeta()
 
-	return &db{
+	d := &db{
 		store:     btree,
 		nextTxnID: meta.TxnID, // Resume from last committed TxnID
-	}, nil
+		releaseC:  make(chan uint64),
+		stopC:     make(chan struct{}),
+	}
+
+	// Start background releaser goroutine
+	d.wg.Add(1)
+	go d.backgroundReleaser()
+
+	return d, nil
+}
+
+// backgroundReleaser periodically releases pending pages when safe
+func (d *db) backgroundReleaser() {
+	defer d.wg.Done()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Periodic check
+			minTxn := d.minReaderTxn()
+			d.releasePages(minTxn)
+
+		case <-d.releaseC:
+			// Reader-triggered release - recalculate minimum
+			minTxn := d.minReaderTxn()
+			d.releasePages(minTxn)
+
+		case <-d.stopC:
+			// Shutdown - release everything
+			d.releasePages(math.MaxUint64)
+			return
+		}
+	}
+}
+
+// minReaderTxn returns the minimum transaction ID across all active readers.
+// If no readers are active, returns nextTxnID-1 (all pending can be released).
+func (d *db) minReaderTxn() uint64 {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if len(d.readerTxs) == 0 {
+		// No readers - can release everything up to current
+		return d.nextTxnID - 1
+	}
+
+	min := d.readerTxs[0].txnID
+	for _, tx := range d.readerTxs[1:] {
+		if tx.txnID < min {
+			min = tx.txnID
+		}
+	}
+	return min
+}
+
+// releasePages calls Release on the freelist with the given minimum transaction ID
+func (d *db) releasePages(minTxn uint64) {
+	// Need to access the DiskPageManager's freelist
+	if dm, ok := d.store.pager.(*DiskPageManager); ok {
+		dm.mu.Lock()
+		dm.freelist.Release(minTxn)
+		dm.mu.Unlock()
+	}
 }
 
 func (d *db) Get(key []byte) ([]byte, error) {
@@ -137,6 +209,10 @@ func (d *db) Update(fn func(*Tx) error) error {
 }
 
 func (d *db) Close() error {
+	// Stop background releaser
+	close(d.stopC)
+	d.wg.Wait()
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
