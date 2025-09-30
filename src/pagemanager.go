@@ -286,6 +286,10 @@ func (dm *DiskPageManager) loadExistingDB() error {
 	}
 	dm.freelist.Deserialize(freelistPages)
 
+	// Release any pending pages that are safe to reclaim
+	// On startup, no readers exist, so all pending pages with txnID <= current can be released
+	dm.freelist.Release(dm.meta.TxnID)
+
 	return nil
 }
 

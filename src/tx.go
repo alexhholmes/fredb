@@ -258,6 +258,17 @@ func (tx *Tx) Commit() error {
 		tx.db.store.root = tx.root
 	}
 
+	// Add freed pages to pending at this transaction ID
+	// These pages were part of the previous version and can be reclaimed
+	// when all readers that might reference them have finished.
+	if len(tx.freed) > 0 {
+		if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
+			dm.mu.Lock()
+			dm.freelist.FreePending(tx.txnID, tx.freed)
+			dm.mu.Unlock()
+		}
+	}
+
 	// Write meta page to disk for persistence
 	// Get current meta from pager
 	currentMeta := tx.db.store.pager.GetMeta()
@@ -276,8 +287,6 @@ func (tx *Tx) Commit() error {
 	}
 
 	tx.db.writerTx = nil
-
-	// Phase 4: Will add freelist management
 
 	return nil
 }

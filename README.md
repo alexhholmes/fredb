@@ -56,7 +56,7 @@ Rest:      B-tree data pages (4KB each)
 ## Testing
 
 ```bash
-go test ./src -v
+go test ./fredb -v
 ```
 
 Currently: 49 tests passing

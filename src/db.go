@@ -27,9 +27,9 @@ type db struct {
 	nextTxnID uint64 // Monotonic transaction ID counter
 
 	// Background releaser
-	releaseC chan uint64      // Trigger release (unbuffered)
-	stopC    chan struct{}    // Shutdown signal
-	wg       sync.WaitGroup   // Clean shutdown
+	releaseC chan uint64    // Trigger release (unbuffered)
+	stopC    chan struct{}  // Shutdown signal
+	wg       sync.WaitGroup // Clean shutdown
 }
 
 func Open(path string) (*db, error) {
@@ -210,8 +210,13 @@ func (d *db) Update(fn func(*Tx) error) error {
 
 func (d *db) Close() error {
 	// Stop background releaser
-	close(d.stopC)
-	d.wg.Wait()
+	select {
+	case <-d.stopC:
+		// Already closed
+	default:
+		close(d.stopC)
+		d.wg.Wait()
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
