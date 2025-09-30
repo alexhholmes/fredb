@@ -1,6 +1,9 @@
 package src
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrTxNotWritable = errors.New("transaction is read-only")
@@ -41,6 +44,20 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 		return 0, nil, err
 	}
 
+	// VALIDATE: Check for duplicate allocation (freelist corruption)
+	for _, pid := range tx.pending {
+		if pid == pageID {
+			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+				pageID, tx.txnID, tx.pending, tx.freed)
+		}
+	}
+	for _, pid := range tx.freed {
+		if pid == pageID {
+			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d in tx.freed (txnID=%d, pending=%v, freed=%v)",
+				pageID, tx.txnID, tx.pending, tx.freed)
+		}
+	}
+
 	// Track in pending pages (for COW)
 	tx.pending = append(tx.pending, pageID)
 
@@ -54,13 +71,19 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 }
 
 // ensureWritable ensures a node is safe to modify in this transaction.
-// Always performs COW to avoid modifying shared state.
-// Returns a writable clone with a new pageID.
+// Performs COW only if the node doesn't already belong to this transaction.
+// Returns a writable node (either the original if already owned, or a clone).
 func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
-	// Always clone, even if node is dirty
-	// The dirty flag means "modified from disk", not "owned by this transaction"
+	// Check if this node already belongs to this transaction
+	// If its pageID is in tx.pending, it was allocated in this transaction
+	for _, pid := range tx.pending {
+		if pid == node.pageID {
+			// Node already owned by this transaction, no COW needed
+			return node, nil
+		}
+	}
 
-	// Perform Copy-On-Write
+	// Node doesn't belong to this transaction, perform Copy-On-Write
 	cloned := node.clone()
 
 	// Allocate new page for cloned node
@@ -74,6 +97,9 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	cloned.page = page
 	cloned.dirty = true
 
+	// Don't serialize here - let the caller modify the node first
+	// The caller will serialize after modifications
+
 	// Track old page as freed
 	// NOTE: Just tracks freed pages, doesn't reclaim them yet.
 	// Future work: implement versioned freelist to safely reclaim pages
@@ -82,9 +108,8 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 		tx.freed = append(tx.freed, node.pageID)
 	}
 
-	// Cache the cloned node so it can be found by loadNode in the same transaction
+	// Cache immediately - serialization will update the page data in-place
 	tx.db.store.cache.Put(pageID, cloned)
-	tx.db.store.cache.Unpin(pageID)
 
 	return cloned, nil
 }
@@ -128,7 +153,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Handle root split with COW
 	if root.isFull() {
 		// Split root using COW
-		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, nil, 0, root)
+		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, root)
 		if err != nil {
 			return err
 		}
@@ -150,13 +175,14 @@ func (tx *Tx) Set(key, value []byte) error {
 			children: []PageID{leftChild.pageID, rightChild.pageID},
 		}
 
-		// Cache the new root and split children
+		// Serialize the new root to its page
+		if err := newRoot.serialize(); err != nil {
+			return err
+		}
+
+		// Cache the new root
+		// The split children were already cached in splitChild()
 		tx.db.store.cache.Put(newRootID, newRoot)
-		tx.db.store.cache.Unpin(newRootID)
-		tx.db.store.cache.Put(leftChild.pageID, leftChild)
-		tx.db.store.cache.Unpin(leftChild.pageID)
-		tx.db.store.cache.Put(rightChild.pageID, rightChild)
-		tx.db.store.cache.Unpin(rightChild.pageID)
 
 		root = newRoot
 	}
@@ -229,9 +255,8 @@ func (tx *Tx) Delete(key []byte) error {
 // Cursor creates a new cursor for iterating over keys.
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
-	// Direct pass-through to BTree
-	// Future work: bind cursor to transaction and validate tx state
-	return tx.db.store.NewCursor()
+	// Pass transaction to cursor for snapshot isolation
+	return tx.db.store.NewCursor(tx)
 }
 
 // Commit writes all changes and makes them visible to future transactions.
@@ -256,6 +281,17 @@ func (tx *Tx) Commit() error {
 	// This makes all COW changes visible to future transactions
 	if tx.root != nil {
 		tx.db.store.root = tx.root
+	}
+
+	// Write all dirty pages to disk
+	// All pages in tx.pending should be dirty (they were created/modified in this transaction)
+	if err := tx.db.store.cache.WriteDirtyPages(tx.pending, tx.db.store.pager); err != nil {
+		return err
+	}
+
+	// Unpin all pages allocated during this transaction
+	for _, pageID := range tx.pending {
+		tx.db.store.cache.Unpin(pageID)
 	}
 
 	// Add freed pages to pending at this transaction ID
@@ -306,6 +342,26 @@ func (tx *Tx) Rollback() error {
 	defer tx.db.mu.Unlock()
 
 	if tx.writable {
+		// Unpin all pages allocated during this transaction
+		// Since we're rolling back, we don't need them anymore
+		for _, pageID := range tx.pending {
+			tx.db.store.cache.Unpin(pageID)
+		}
+
+		// Return allocated but uncommitted pages to the freelist
+		// These pages were allocated during the transaction but never used
+		if len(tx.pending) > 0 {
+			if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
+				dm.mu.Lock()
+				// Add directly to free list, not pending - these can be reused immediately
+				// since they were never part of any committed state
+				for _, pageID := range tx.pending {
+					dm.freelist.Free(pageID)
+				}
+				dm.mu.Unlock()
+			}
+		}
+
 		tx.db.writerTx = nil
 	} else {
 		// Remove from readers slice

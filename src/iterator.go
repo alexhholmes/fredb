@@ -13,20 +13,40 @@ type pathElem struct {
 // Cursor provides ordered iteration over B-tree keys
 type Cursor struct {
 	btree *BTree
+	tx    *Tx        // Transaction this cursor belongs to
 	stack []pathElem // Navigation path from root to current leaf
 	key   []byte     // Cached current key
 	value []byte     // Cached current value
 	valid bool       // Is cursor positioned on valid key?
 }
 
+// check validates that the cursor's transaction is still active
+func (it *Cursor) check() error {
+	if it.tx != nil {
+		return it.tx.check()
+	}
+	return nil
+}
+
 // Seek positions cursor at first key >= target
 // Returns error if tree traversal fails
 func (it *Cursor) Seek(key []byte) error {
+	// Validate transaction state
+	if err := it.check(); err != nil {
+		return err
+	}
+
 	it.valid = false
 	it.stack = it.stack[:0] // Clear stack
 
-	// Navigate to leaf containing key, building stack
-	node := it.btree.root
+	// Get root from transaction for snapshot isolation
+	// Use tx.root if set (modified in this tx), otherwise use btree.root
+	var node *Node
+	if it.tx != nil && it.tx.root != nil {
+		node = it.tx.root
+	} else {
+		node = it.btree.root
+	}
 	for !node.isLeaf {
 		// Find which child to descend to
 		i := 0
@@ -69,6 +89,12 @@ func (it *Cursor) Seek(key []byte) error {
 // Next advances cursor to next key
 // Returns true if advanced successfully, false if exhausted
 func (it *Cursor) Next() bool {
+	// Validate transaction state
+	if err := it.check(); err != nil {
+		it.valid = false
+		return false
+	}
+
 	if !it.valid {
 		return false
 	}
@@ -90,6 +116,12 @@ func (it *Cursor) Next() bool {
 // Prev moves cursor to previous key
 // Returns true if moved successfully, false if at beginning
 func (it *Cursor) Prev() bool {
+	// Validate transaction state
+	if err := it.check(); err != nil {
+		it.valid = false
+		return false
+	}
+
 	if !it.valid {
 		return false
 	}

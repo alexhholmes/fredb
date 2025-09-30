@@ -20,9 +20,6 @@ type PageManager interface {
 var _ PageManager = (*DiskPageManager)(nil)
 
 // DiskPageManager implements PageManager with disk-based storage
-// NOTE: Uses a simple mutex for thread safety. Future work will replace
-// this with proper MVCC design where each transaction gets its own snapshot
-// of the freelist and meta page, eliminating contention.
 type DiskPageManager struct {
 	mu       sync.Mutex // Protects meta and freelist access
 	file     *os.File

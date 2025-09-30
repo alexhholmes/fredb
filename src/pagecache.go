@@ -80,7 +80,8 @@ func (c *PageCache) Put(pageID PageID, node *Node) {
 	defer c.mu.Unlock()
 
 	if entry, exists := c.entries[pageID]; exists {
-		// Already cached, just update pin
+		// Node already cached - increment pin for new reference and update node
+		entry.node = node
 		entry.pinCount++
 		c.lruList.MoveToFront(entry.lruElement)
 		return
@@ -154,6 +155,26 @@ func (c *PageCache) FlushDirty(pager *PageManager) error {
 	}
 
 	return err
+}
+
+// WriteDirtyPages writes specific dirty pages to disk without affecting their pin count
+func (c *PageCache) WriteDirtyPages(pageIDs []PageID, pager PageManager) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, pageID := range pageIDs {
+		if entry, exists := c.entries[pageID]; exists && entry.node.dirty {
+			if err := entry.node.serialize(); err != nil {
+				return err
+			}
+			if err := pager.WritePage(entry.node.pageID, entry.node.page); err != nil {
+				return err
+			}
+			entry.node.dirty = false
+		}
+	}
+
+	return nil
 }
 
 // Stats returns cache statistics

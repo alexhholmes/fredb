@@ -19,7 +19,7 @@ func TestCursorSequentialScan(t *testing.T) {
 	}
 
 	// Sequential scan from beginning
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("key000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestCursorReverseScan(t *testing.T) {
 	}
 
 	// Seek to last key
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("key999")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestCursorRangeScan(t *testing.T) {
 	}
 
 	// Range scan: [30, 70)
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("key030")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestCursorEmptyTree(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Empty tree - cursor should be invalid
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("anykey")); err != nil {
 		t.Fatalf("Seek on empty tree failed: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestCursorSeekNotFound(t *testing.T) {
 	}
 
 	// Seek to key002 (not present) - should land on key003
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("key002")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 	}
 
 	// Full scan should traverse all leaves via sibling pointers
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("key00000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestCursorAfterMerges(t *testing.T) {
 	}
 
 	// Scan remaining keys (odd numbers only)
-	cursor := db.store.NewCursor()
+	cursor := db.store.NewCursor(nil)
 	if err := cursor.Seek([]byte("key00000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}

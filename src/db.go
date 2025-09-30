@@ -15,11 +15,14 @@ var (
 	ErrInvalidVersion     = errors.New("invalid format version")
 	ErrInvalidPageSize    = errors.New("invalid page size")
 	ErrInvalidChecksum    = errors.New("invalid checksum")
+	ErrDatabaseClosed     = errors.New("database is closed")
+	ErrCorruption         = errors.New("data corruption detected")
 )
 
 type db struct {
-	mu    sync.RWMutex
-	store *BTree
+	mu     sync.RWMutex
+	store  *BTree
+	closed bool // Database closed flag
 
 	// Transaction state
 	writerTx  *Tx    // Current write transaction (nil if none)
@@ -87,23 +90,27 @@ func (d *db) backgroundReleaser() {
 	}
 }
 
-// minReaderTxn returns the minimum transaction ID across all active readers.
-// If no readers are active, returns nextTxnID-1 (all pending can be released).
+// minReaderTxn returns the minimum transaction ID across all active transactions (readers + writer).
+// This determines which pending pages can be safely released to the freelist.
 func (d *db) minReaderTxn() uint64 {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	if len(d.readerTxs) == 0 {
-		// No readers - can release everything up to current
-		return d.nextTxnID - 1
+	// Start with minimum possible value
+	min := d.nextTxnID
+
+	// Consider active write transaction
+	if d.writerTx != nil {
+		min = d.writerTx.txnID
 	}
 
-	min := d.readerTxs[0].txnID
-	for _, tx := range d.readerTxs[1:] {
+	// Consider all active read transactions
+	for _, tx := range d.readerTxs {
 		if tx.txnID < min {
 			min = tx.txnID
 		}
 	}
+
 	return min
 }
 
@@ -145,6 +152,11 @@ func (d *db) Delete(key []byte) error {
 func (d *db) Begin(writable bool) (*Tx, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Check if database is closed
+	if d.closed {
+		return nil, ErrDatabaseClosed
+	}
 
 	// Enforce single writer rule
 	if writable && d.writerTx != nil {
@@ -220,6 +232,9 @@ func (d *db) Close() error {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Mark database as closed
+	d.closed = true
 
 	return d.store.Close()
 }

@@ -33,6 +33,23 @@ func (f *FreeList) Allocate() PageID {
 	// Pop from end
 	id := f.ids[len(f.ids)-1]
 	f.ids = f.ids[:len(f.ids)-1]
+
+	// CRITICAL: Remove from pending to prevent double-allocation
+	// If this page is in pending from a previous transaction, remove it
+	// to prevent the background releaser from adding it back to free
+	for txnID, pageIDs := range f.pending {
+		for i, pid := range pageIDs {
+			if pid == id {
+				// Remove from pending
+				f.pending[txnID] = append(pageIDs[:i], pageIDs[i+1:]...)
+				if len(f.pending[txnID]) == 0 {
+					delete(f.pending, txnID)
+				}
+				break
+			}
+		}
+	}
+
 	return id
 }
 
@@ -64,14 +81,14 @@ func (f *FreeList) FreePending(txnID uint64, pageIDs []PageID) {
 	f.pending[txnID] = append(f.pending[txnID], pageIDs...)
 }
 
-// Release moves pages from pending to free for all transactions <= minTxnID.
+// Release moves pages from pending to free for all transactions < minTxnID.
 // Returns the number of pages released.
 func (f *FreeList) Release(minTxnID uint64) int {
 	released := 0
 
 	// Find all pending entries that can be released
 	for txnID, pageIDs := range f.pending {
-		if txnID <= minTxnID {
+		if txnID < minTxnID {
 			// Move these pages to free list
 			for _, id := range pageIDs {
 				f.Free(id)

@@ -2,10 +2,12 @@ package src
 
 import (
 	"bytes"
+	"fmt"
 )
 
 const (
-	MaxKeysPerNode = 256                // Simplified for in-memory version
+	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
+	MaxKeysPerNode = 64
 	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
 )
 
@@ -158,9 +160,10 @@ func NewBTree(pager PageManager) (*BTree, error) {
 
 // NewCursor creates a new cursor for this B-tree
 // Cursor starts in invalid state - call Seek() to position it
-func (bt *BTree) NewCursor() *Cursor {
+func (bt *BTree) NewCursor(tx *Tx) *Cursor {
 	return &Cursor{
 		btree: bt,
+		tx:    tx,
 		valid: false,
 	}
 }
@@ -225,7 +228,17 @@ func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
 func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 	// Check cache first
 	if cached, hit := bt.cache.Get(pageID); hit {
-		bt.cache.Unpin(pageID) // Unpin immediately - simplifies lifetime
+		bt.cache.Unpin(pageID)
+
+		// Cycle detection: check if this node references itself
+		if !cached.isLeaf {
+			for _, childID := range cached.children {
+				if childID == pageID {
+					return nil, ErrCorruption // Self-reference detected
+				}
+			}
+		}
+
 		return cached, nil
 	}
 
@@ -257,9 +270,18 @@ func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 		node.children = make([]PageID, 0)
 	}
 
+	// Cycle detection: check if deserialized node references itself
+	if !node.isLeaf {
+		for _, childID := range node.children {
+			if childID == pageID {
+				return nil, ErrCorruption // Self-reference detected
+			}
+		}
+	}
+
 	// Cache it
 	bt.cache.Put(pageID, node)
-	bt.cache.Unpin(pageID) // Unpin immediately - simplifies lifetime
+	bt.cache.Unpin(pageID)
 
 	return node, nil
 }
@@ -291,6 +313,15 @@ func (n *Node) serializedSize() int {
 
 // serialize encodes the node data into page.data
 func (n *Node) serialize() error {
+	// Validate no self-references before serializing
+	if !n.isLeaf {
+		for _, childID := range n.children {
+			if childID == n.pageID {
+				return fmt.Errorf("corruption: node %d has self-reference in children", n.pageID)
+			}
+		}
+	}
+
 	// Check size
 	if n.serializedSize() > PageSize {
 		return ErrPageOverflow
@@ -437,11 +468,6 @@ func insertAt(slice [][]byte, index int, value []byte) [][]byte {
 	return slice
 }
 
-func insertChildAt(slice []PageID, index int, value PageID) []PageID {
-	slice = append(slice[:index], append([]PageID{value}, slice[index:]...)...)
-	return slice
-}
-
 // removeAt removes element at index from slice
 func removeAt(slice [][]byte, index int) [][]byte {
 	return append(slice[:index], slice[index+1:]...)
@@ -529,6 +555,10 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		if pos < int(node.numKeys) && bytes.Equal(key, node.keys[pos]) {
 			node.values[pos] = value
 			node.dirty = true
+			// Serialize after update
+			if err := node.serialize(); err != nil {
+				return nil, err
+			}
 			return node, nil
 		}
 
@@ -537,6 +567,11 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		node.values = append(node.values[:pos], append([][]byte{value}, node.values[pos:]...)...)
 		node.numKeys++
 		node.dirty = true
+
+		// Serialize after modification
+		if err := node.serialize(); err != nil {
+			return nil, err
+		}
 
 		return node, nil
 	}
@@ -571,10 +606,21 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 
 	// Handle full child with COW-aware split
 	if child.isFull() {
+		// DEBUG: Track parent pageID before split
+		parentPageIDBefore := node.pageID
+
 		// Split child using COW
-		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, node, i, child)
+		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, child)
 		if err != nil {
 			return nil, err
+		}
+
+		// DEBUG: Validate split children don't conflict with parent
+		if leftChild.pageID == parentPageIDBefore {
+			return nil, fmt.Errorf("BUG: splitChild returned leftChild.pageID=%d same as parent before COW", parentPageIDBefore)
+		}
+		if rightChild.pageID == parentPageIDBefore {
+			return nil, fmt.Errorf("BUG: splitChild returned rightChild.pageID=%d same as parent before COW", parentPageIDBefore)
 		}
 
 		// COW parent to insert middle key and update pointers
@@ -586,10 +632,30 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		// Insert middle key into parent
 		node.keys = insertAt(node.keys, i, midKey)
 		node.values = insertAt(node.values, i, midVal)
-		node.children[i] = leftChild.pageID
-		node.children = insertChildAt(node.children, i+1, rightChild.pageID)
+
+		// Build new children array atomically to avoid slice sharing issues
+		newChildren := make([]PageID, len(node.children)+1)
+		copy(newChildren[:i], node.children[:i])     // Before split point
+		newChildren[i] = leftChild.pageID            // Left child
+		newChildren[i+1] = rightChild.pageID         // Right child
+		copy(newChildren[i+2:], node.children[i+1:]) // After split point
+
+		// Validate no self-references before assigning
+		for _, childID := range newChildren {
+			if childID == node.pageID {
+				return nil, fmt.Errorf("BUG: about to create self-reference in node %d (leftChild=%d rightChild=%d i=%d)", node.pageID, leftChild.pageID, rightChild.pageID, i)
+			}
+		}
+
+		node.children = newChildren
+
 		node.numKeys++
 		node.dirty = true
+
+		// Serialize parent after modification
+		if err := node.serialize(); err != nil {
+			return nil, err
+		}
 
 		// Determine which child to use after split
 		if bytes.Compare(key, midKey) > 0 {
@@ -618,6 +684,10 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		}
 		node.children[i] = newChild.pageID
 		node.dirty = true
+		// Serialize after updating child pointer
+		if err := node.serialize(); err != nil {
+			return nil, err
+		}
 	}
 
 	return node, nil
@@ -1003,7 +1073,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 
 // splitChild performs COW on the child being split and allocates the new sibling.
 // Returns the COWed child and new sibling, along with the middle key/value.
-func (bt *BTree) splitChild(tx *Tx, parent *Node, index int, child *Node) (*Node, *Node, []byte, []byte, error) {
+func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, error) {
 	// COW the child being split
 	child, err := tx.ensureWritable(child)
 	if err != nil {
@@ -1030,31 +1100,63 @@ func (bt *BTree) splitChild(tx *Tx, parent *Node, index int, child *Node) (*Node
 	}
 
 	// Copy right half of keys/values to new node
-	newNode.keys = append(newNode.keys, child.keys[mid+1:]...)
-	newNode.values = append(newNode.values, child.values[mid+1:]...)
+	// Deep copy to avoid sharing underlying arrays
+	for i := mid + 1; i < len(child.keys); i++ {
+		keyCopy := make([]byte, len(child.keys[i]))
+		copy(keyCopy, child.keys[i])
+		newNode.keys = append(newNode.keys, keyCopy)
+
+		valCopy := make([]byte, len(child.values[i]))
+		copy(valCopy, child.values[i])
+		newNode.values = append(newNode.values, valCopy)
+	}
 
 	// If not leaf, copy right half of children
 	if !child.isLeaf {
-		newNode.children = append(newNode.children, child.children[mid+1:]...)
+		// Deep copy to avoid sharing underlying array
+		for i := mid + 1; i < len(child.children); i++ {
+			newNode.children = append(newNode.children, child.children[i])
+		}
 	}
 
 	// Extract middle key/value before truncating child
-	middleKey := child.keys[mid]
-	middleValue := child.values[mid]
+	// Deep copy to avoid reference issues
+	middleKey := make([]byte, len(child.keys[mid]))
+	copy(middleKey, child.keys[mid])
+	middleValue := make([]byte, len(child.values[mid]))
+	copy(middleValue, child.values[mid])
 
 	// Keep left half in child
-	child.keys = child.keys[:mid]
-	child.values = child.values[:mid]
+	// Deep copy to avoid sharing arrays with newNode
+	leftKeys := make([][]byte, mid)
+	copy(leftKeys, child.keys[:mid])
+	child.keys = leftKeys
+
+	leftValues := make([][]byte, mid)
+	copy(leftValues, child.values[:mid])
+	child.values = leftValues
+
 	child.numKeys = uint16(mid)
 	child.dirty = true
 
 	if !child.isLeaf {
-		child.children = child.children[:mid+1]
+		leftChildren := make([]PageID, mid+1)
+		copy(leftChildren, child.children[:mid+1])
+		child.children = leftChildren
 	}
 
-	// Cache new node
+	// Serialize nodes to their pages
+	// This ensures if they're evicted and reloaded, the page has the correct data
+	if err := child.serialize(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if err := newNode.serialize(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	// Cache newNode (right child from split)
+	// child is already cached from ensureWritable above
 	bt.cache.Put(newNodeID, newNode)
-	bt.cache.Unpin(newNodeID)
 
 	return child, newNode, middleKey, middleValue, nil
 }
