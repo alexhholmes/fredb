@@ -71,7 +71,7 @@ Currently: 49 tests passing
 - [x] Meta page format
 - [x] Free list design
 - [x] Disk page manager
-- [ ] Cache eviction
+- [x] Cache eviction
 - [ ] WAL for durability
 - [ ] MVCC transactions
 - [ ] Benchmarks
