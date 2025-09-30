@@ -36,8 +36,8 @@ type PageHeader struct {
 	Flags    uint16 // 2 bytes (leaf/branch)
 	NumKeys  uint16 // 2 bytes
 	Reserved uint32 // 4 bytes (for future use)
-	NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none)
-	PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none)
+	NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
+	PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf page
@@ -164,15 +164,15 @@ func (p *Page) ReadBranchFirstChild() PageID {
 // Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxnID: 8][NumPages: 8][Checksum: 4]
 // Total: 52 bytes
 type MetaPage struct {
-	Magic          uint32 // 4 bytes: 0x66726462 ("frdb")
-	Version        uint16 // 2 bytes: format version (1)
-	PageSize       uint16 // 2 bytes: page size (4096)
-	RootPageID     PageID // 8 bytes: root of B-tree
-	FreelistID     PageID // 8 bytes: start of freelist
-	FreelistPages  uint64 // 8 bytes: number of contiguous freelist pages
-	TxnID          uint64 // 8 bytes: transaction counter
-	NumPages       uint64 // 8 bytes: total pages allocated
-	Checksum       uint32 // 4 bytes: CRC32 of above fields
+	Magic         uint32 // 4 bytes: 0x66726462 ("frdb")
+	Version       uint16 // 2 bytes: format version (1)
+	PageSize      uint16 // 2 bytes: page size (4096)
+	RootPageID    PageID // 8 bytes: root of B-tree
+	FreelistID    PageID // 8 bytes: start of freelist
+	FreelistPages uint64 // 8 bytes: number of contiguous freelist pages
+	TxnID         uint64 // 8 bytes: transaction counter
+	NumPages      uint64 // 8 bytes: total pages allocated
+	Checksum      uint32 // 4 bytes: CRC32 of above fields
 }
 
 // WriteMeta writes metadata to the page starting at PageHeaderSize

@@ -75,14 +75,6 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	cloned.page = page
 	cloned.dirty = true
 
-	// If it's a leaf, preserve the doubly-linked list pointers from original
-	if node.isLeaf && node.page != nil {
-		header := page.Header()
-		oldHeader := node.page.Header()
-		header.NextLeaf = oldHeader.NextLeaf
-		header.PrevLeaf = oldHeader.PrevLeaf
-	}
-
 	// Track old page as freed
 	// NOTE: Phase 2 just tracks freed pages, doesn't reclaim them yet.
 	// Phase 4 will implement versioned freelist to safely reclaim pages

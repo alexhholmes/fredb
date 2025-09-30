@@ -310,8 +310,6 @@ func (n *Node) serialize() error {
 	}
 	if n.isLeaf {
 		header.Flags = LeafPageFlag
-		header.NextLeaf = n.getNextLeaf()
-		header.PrevLeaf = n.getPrevLeaf()
 	} else {
 		header.Flags = BranchPageFlag
 	}
@@ -686,23 +684,6 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 	// Update parent's child pointer to merged node
 	parent.children[parentKeyIdx] = leftNode.pageID
 
-	// Update linked list if this is a leaf merge
-	if leftNode.isLeaf {
-		// Remove rightNode from linked list
-		rightNext := rightNode.getNextLeaf()
-		leftNode.setNextLeaf(rightNext)
-
-		// Update next sibling's backpointer
-		// NOTE: Phase 2 limitation - modifying sibling without COW
-		if rightNext != 0 {
-			nextSibling, err := bt.loadNode(rightNext)
-			if err != nil {
-				return nil, nil, err
-			}
-			nextSibling.setPrevLeaf(leftNode.pageID)
-		}
-	}
-
 	// Track right node as freed (it's been merged into left)
 	tx.freed = append(tx.freed, rightNode.pageID)
 
@@ -1075,28 +1056,6 @@ func (bt *BTree) splitChild(tx *Tx, parent *Node, index int, child *Node) (*Node
 
 	if !child.isLeaf {
 		child.children = child.children[:mid+1]
-	}
-
-	// Wire up doubly-linked leaf list if this is a leaf split
-	if child.isLeaf {
-		// New node goes between child and child's old next
-		oldNext := child.getNextLeaf()
-
-		newNode.setNextLeaf(oldNext)
-		newNode.setPrevLeaf(child.pageID)
-		child.setNextLeaf(newNode.pageID)
-
-		// Update right sibling's backpointer if it exists
-		// NOTE: This modifies rightSibling, but we don't COW it here
-		// because the linked list pointers are separate from the tree structure
-		// Phase 2 limitation: leaf link updates may break snapshot isolation
-		if oldNext != 0 {
-			rightSibling, err := bt.loadNode(oldNext)
-			if err != nil {
-				return nil, nil, nil, nil, err
-			}
-			rightSibling.setPrevLeaf(newNode.pageID)
-		}
 	}
 
 	// Cache new node
