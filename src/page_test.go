@@ -6,16 +6,16 @@ import (
 )
 
 func TestPageHeaderAlignment(t *testing.T) {
-	// Verify struct sizes match expectations
+	// Verify struct sizes match expectations (no padding)
 	if size := unsafe.Sizeof(PageID(0)); size != 8 {
 		t.Errorf("PageID size = %d bytes, expected 8", size)
 	}
 
-	if size := unsafe.Sizeof(PageHeader{}); size != 16 {
-		t.Errorf("PageHeader size = %d bytes, expected 16", size)
+	if size := unsafe.Sizeof(PageHeader{}); size != 32 {
+		t.Errorf("PageHeader size = %d bytes, expected 32", size)
 	}
 
-	// Verify field offsets
+	// Verify field offsets (no padding needed)
 	var h PageHeader
 	if offset := unsafe.Offsetof(h.PageID); offset != 0 {
 		t.Errorf("PageID offset = %d, expected 0", offset)
@@ -28,6 +28,12 @@ func TestPageHeaderAlignment(t *testing.T) {
 	}
 	if offset := unsafe.Offsetof(h.Reserved); offset != 12 {
 		t.Errorf("Reserved offset = %d, expected 12", offset)
+	}
+	if offset := unsafe.Offsetof(h.NextLeaf); offset != 16 {
+		t.Errorf("NextLeaf offset = %d, expected 16", offset)
+	}
+	if offset := unsafe.Offsetof(h.PrevLeaf); offset != 24 {
+		t.Errorf("PrevLeaf offset = %d, expected 24", offset)
 	}
 }
 
@@ -69,10 +75,12 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		Flags:    0x1234,              // 2 bytes
 		NumKeys:  0x5678,              // 2 bytes
 		Reserved: 0x9ABCDEF0,          // 4 bytes
+		NextLeaf: 0xFEDCBA9876543210, // 8 bytes
+		PrevLeaf: 0x0011223344556677, // 8 bytes
 	}
 	page.WriteHeader(&hdr)
 
-	// Verify actual byte layout (little-endian)
+	// Verify actual byte layout (little-endian, no padding)
 	expected := []byte{
 		// PageID (8 bytes, little-endian)
 		0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
@@ -82,6 +90,10 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		0x78, 0x56,
 		// Reserved (4 bytes, little-endian)
 		0xF0, 0xDE, 0xBC, 0x9A,
+		// NextLeaf (8 bytes, little-endian)
+		0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
+		// PrevLeaf (8 bytes, little-endian)
+		0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
 	}
 
 	for i, expectedByte := range expected {

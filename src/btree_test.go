@@ -1212,3 +1212,96 @@ func BenchmarkBTreeRandomInsert(b *testing.B) {
 	// - Insert keys in random order
 	b.Skip("Not implemented")
 }
+
+// validateSiblingPointers validates the integrity of the doubly-linked leaf list
+// Returns error if sibling pointers are inconsistent
+func validateSiblingPointers(bt *BTree) error {
+	// Find leftmost leaf by descending left from root
+	node := bt.root
+	for !node.isLeaf {
+		if len(node.children) == 0 {
+			return fmt.Errorf("branch node has no children")
+		}
+		child, err := bt.loadNode(node.children[0])
+		if err != nil {
+			return fmt.Errorf("failed to load leftmost child: %v", err)
+		}
+		node = child
+	}
+
+	// Traverse right using NextLeaf pointers
+	visitedForward := []PageID{}
+	for node != nil {
+		visitedForward = append(visitedForward, node.pageID)
+
+		nextID := node.getNextLeaf()
+		if nextID == 0 {
+			break
+		}
+
+		nextNode, err := bt.loadNode(nextID)
+		if err != nil {
+			return fmt.Errorf("failed to load next node %d: %v", nextID, err)
+		}
+
+		// Verify backpointer
+		if nextNode.getPrevLeaf() != node.pageID {
+			return fmt.Errorf("inconsistent backpointer: node %d -> next %d, but %d -> prev %d",
+				node.pageID, nextID, nextID, nextNode.getPrevLeaf())
+		}
+
+		node = nextNode
+	}
+
+	// Find rightmost leaf by descending right from root
+	node = bt.root
+	for !node.isLeaf {
+		lastChildIdx := len(node.children) - 1
+		child, err := bt.loadNode(node.children[lastChildIdx])
+		if err != nil {
+			return fmt.Errorf("failed to load rightmost child: %v", err)
+		}
+		node = child
+	}
+
+	// Traverse left using PrevLeaf pointers
+	visitedBackward := []PageID{}
+	for node != nil {
+		visitedBackward = append(visitedBackward, node.pageID)
+
+		prevID := node.getPrevLeaf()
+		if prevID == 0 {
+			break
+		}
+
+		prevNode, err := bt.loadNode(prevID)
+		if err != nil {
+			return fmt.Errorf("failed to load prev node %d: %v", prevID, err)
+		}
+
+		// Verify forward pointer
+		if prevNode.getNextLeaf() != node.pageID {
+			return fmt.Errorf("inconsistent forward pointer: node %d -> prev %d, but %d -> next %d",
+				node.pageID, prevID, prevID, prevNode.getNextLeaf())
+		}
+
+		node = prevNode
+	}
+
+	// Verify forward and backward traversals visit same nodes (in reverse order)
+	if len(visitedForward) != len(visitedBackward) {
+		return fmt.Errorf("forward traversal visited %d nodes, backward visited %d nodes",
+			len(visitedForward), len(visitedBackward))
+	}
+
+	for i := 0; i < len(visitedForward); i++ {
+		forwardNode := visitedForward[i]
+		backwardNode := visitedBackward[len(visitedBackward)-1-i]
+		if forwardNode != backwardNode {
+			return fmt.Errorf("traversal mismatch at position %d: forward=%d, backward=%d",
+				i, forwardNode, backwardNode)
+		}
+	}
+
+	return nil
+}

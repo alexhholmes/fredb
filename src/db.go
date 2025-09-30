@@ -19,6 +19,7 @@ type DB interface {
 	Get(key []byte) ([]byte, error)
 	Set(key, value []byte) error
 	Delete(key []byte) error
+	NewCursor() *Cursor
 	Close() error
 }
 
@@ -64,6 +65,13 @@ func (d *db) Delete(key []byte) error {
 	defer d.mu.Unlock()
 
 	return d.store.Delete(key)
+}
+
+func (d *db) NewCursor() *Cursor {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.store.NewCursor()
 }
 
 func (d *db) Close() error {

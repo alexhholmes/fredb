@@ -23,6 +23,42 @@ type Node struct {
 	children []PageID
 }
 
+// getNextLeaf returns the next leaf pointer for this node (0 if none)
+func (n *Node) getNextLeaf() PageID {
+	if !n.isLeaf {
+		return 0
+	}
+	header := n.page.Header()
+	return header.NextLeaf
+}
+
+// setNextLeaf sets the next leaf pointer
+func (n *Node) setNextLeaf(id PageID) {
+	if n.isLeaf {
+		header := n.page.Header()
+		header.NextLeaf = id
+		n.dirty = true
+	}
+}
+
+// getPrevLeaf returns the previous leaf pointer for this node (0 if none)
+func (n *Node) getPrevLeaf() PageID {
+	if !n.isLeaf {
+		return 0
+	}
+	header := n.page.Header()
+	return header.PrevLeaf
+}
+
+// setPrevLeaf sets the previous leaf pointer
+func (n *Node) setPrevLeaf(id PageID) {
+	if n.isLeaf {
+		header := n.page.Header()
+		header.PrevLeaf = id
+		n.dirty = true
+	}
+}
+
 // BTree is the main structure
 type BTree struct {
 	pager PageManager
@@ -170,6 +206,15 @@ func (bt *BTree) Delete(key []byte) error {
 	return nil
 }
 
+// NewCursor creates a new cursor for this B-tree
+// Cursor starts in invalid state - call Seek() to position it
+func (bt *BTree) NewCursor() *Cursor {
+	return &Cursor{
+		btree: bt,
+		valid: false,
+	}
+}
+
 // Close flushes any dirty pages and closes the B-tree
 func (bt *BTree) Close() error {
 	// Flush root if dirty
@@ -308,11 +353,15 @@ func (n *Node) serialize() error {
 
 	// Write header
 	header := &PageHeader{
-		PageID:  n.pageID,
-		NumKeys: n.numKeys,
+		PageID:   n.pageID,
+		NumKeys:  n.numKeys,
+		NextLeaf: 0,
+		PrevLeaf: 0,
 	}
 	if n.isLeaf {
 		header.Flags = LeafPageFlag
+		header.NextLeaf = n.getNextLeaf()
+		header.PrevLeaf = n.getPrevLeaf()
 	} else {
 		header.Flags = BranchPageFlag
 	}
@@ -490,6 +539,25 @@ func (bt *BTree) splitChild(parent *Node, index int, child *Node) error {
 	parent.numKeys++
 	parent.dirty = true
 
+	// Wire up doubly-linked leaf list if this is a leaf split
+	if child.isLeaf {
+		// New node goes between child and child's old next
+		oldNext := child.getNextLeaf()
+
+		newNode.setNextLeaf(oldNext)
+		newNode.setPrevLeaf(child.pageID)
+		child.setNextLeaf(newNode.pageID)
+
+		// Update right sibling's backpointer if it exists
+		if oldNext != 0 {
+			rightSibling, err := bt.loadNode(oldNext)
+			if err != nil {
+				return err
+			}
+			rightSibling.setPrevLeaf(newNode.pageID)
+		}
+	}
+
 	// Cache new node
 	bt.cache.Put(newNodeID, newNode)
 	bt.cache.Unpin(newNodeID)
@@ -666,6 +734,23 @@ func (bt *BTree) mergeNodes(leftNode, rightNode *Node, parent *Node, parentKeyId
 	parent.children = removeChildAt(parent.children, parentKeyIdx+1)
 	parent.numKeys--
 	parent.dirty = true
+
+	// Update linked list if this is a leaf merge
+	if leftNode.isLeaf {
+		// Remove rightNode from linked list
+		// Connect left directly to right's next
+		rightNext := rightNode.getNextLeaf()
+		leftNode.setNextLeaf(rightNext)
+
+		// Update next sibling's backpointer
+		if rightNext != 0 {
+			nextSibling, err := bt.loadNode(rightNext)
+			if err != nil {
+				return err
+			}
+			nextSibling.setPrevLeaf(leftNode.pageID)
+		}
+	}
 
 	// Free the right node's page
 	if err := bt.pager.FreePage(rightNode.pageID); err != nil {
