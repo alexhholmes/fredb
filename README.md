@@ -73,8 +73,8 @@ Currently: 49 tests passing
 - [x] Disk page manager
 - [x] Cache eviction
 - [ ] WAL for durability
-- [ ] MVCC transactions
-- [ ] Benchmarks
+- [x] MVCC transactions
+- [x] Benchmarks
 
 ## Inspiration
 
