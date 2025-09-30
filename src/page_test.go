@@ -227,13 +227,12 @@ func TestBranchElementByteLayout(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write branch element with known values
+	// Write branch element with known values (B+ tree: no values in branches)
 	elem := BranchElement{
-		KeyOffset:   0x1234,             // 2 bytes
-		KeySize:     0x5678,             // 2 bytes
-		ValueOffset: 0x9ABC,             // 2 bytes
-		ValueSize:   0xDEF0,             // 2 bytes
-		ChildID:     0x0123456789ABCDEF, // 8 bytes
+		KeyOffset: 0x1234,             // 2 bytes
+		KeySize:   0x5678,             // 2 bytes
+		Reserved:  0x9ABCDEF0,         // 4 bytes
+		ChildID:   0x0123456789ABCDEF, // 8 bytes
 	}
 	page.WriteBranchElement(0, &elem)
 
@@ -244,10 +243,8 @@ func TestBranchElementByteLayout(t *testing.T) {
 		0x34, 0x12,
 		// KeySize (2 bytes, little-endian)
 		0x78, 0x56,
-		// ValueOffset (2 bytes, little-endian)
-		0xBC, 0x9A,
-		// ValueSize (2 bytes, little-endian)
-		0xF0, 0xDE,
+		// Reserved (4 bytes, little-endian)
+		0xF0, 0xDE, 0xBC, 0x9A,
 		// ChildID (8 bytes, little-endian)
 		0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
 	}
@@ -270,22 +267,20 @@ func TestBranchElementRoundTrip(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write branch elements
+	// Write branch elements (B+ tree: no values in branches)
 	elem1 := BranchElement{
-		KeyOffset:   8,
-		KeySize:     5,
-		ValueOffset: 13,
-		ValueSize:   0,
-		ChildID:     100,
+		KeyOffset: 8,
+		KeySize:   5,
+		Reserved:  0,
+		ChildID:   100,
 	}
 	page.WriteBranchElement(0, &elem1)
 
 	elem2 := BranchElement{
-		KeyOffset:   13,
-		KeySize:     3,
-		ValueOffset: 16,
-		ValueSize:   0,
-		ChildID:     200,
+		KeyOffset: 13,
+		KeySize:   3,
+		Reserved:  0,
+		ChildID:   200,
 	}
 	page.WriteBranchElement(1, &elem2)
 

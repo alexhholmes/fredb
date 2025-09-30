@@ -196,6 +196,7 @@ func (bt *BTree) Close() error {
 }
 
 // searchNode recursively searches for a key in the tree
+// B+ tree: only leaf nodes contain actual data
 func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
 	// Binary search for key position
 	i := 0
@@ -203,17 +204,17 @@ func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
 		i++
 	}
 
-	// Check if key found
-	if i < int(node.numKeys) && bytes.Equal(key, node.keys[i]) {
-		// Found the key
-		return node.values[i], nil
-	}
-
-	// If leaf node, key not found
+	// If leaf node, check if key found
 	if node.isLeaf {
+		if i < int(node.numKeys) && bytes.Equal(key, node.keys[i]) {
+			// Found the key in leaf
+			return node.values[i], nil
+		}
+		// Not found in leaf
 		return nil, ErrKeyNotFound
 	}
 
+	// Branch node: continue descending (even if key matches, we need the leaf)
 	// Load child node and continue search
 	child, err := bt.loadNode(node.children[i])
 	if err != nil {
@@ -300,10 +301,11 @@ func (n *Node) serializedSize() int {
 			size += len(n.keys[i]) + len(n.values[i])
 		}
 	} else {
+		// B+ tree: branch nodes only store keys (no values)
 		size += int(n.numKeys) * BranchElementSize
 		size += 8 // children[0]
 		for i := 0; i < int(n.numKeys); i++ {
-			size += len(n.keys[i]) + len(n.values[i])
+			size += len(n.keys[i]) // Only keys, no values
 		}
 	}
 
@@ -359,33 +361,29 @@ func (n *Node) serialize() error {
 			dataOffset += uint16(len(value))
 		}
 	} else {
-		// Serialize branch node
+		// Serialize branch node (B+ tree: only keys, no values)
 		// Write children[0] first
 		if len(n.children) > 0 {
 			n.page.WriteBranchFirstChild(n.children[0])
 		}
 
-		// Write keys, values, and remaining children
+		// Write keys and remaining children (no values)
 		dataOffset := uint16(8) // Start after children[0]
 		for i := 0; i < int(n.numKeys); i++ {
 			key := n.keys[i]
-			value := n.values[i]
 
 			elem := &BranchElement{
-				KeyOffset:   dataOffset,
-				KeySize:     uint16(len(key)),
-				ValueOffset: dataOffset + uint16(len(key)),
-				ValueSize:   uint16(len(value)),
-				ChildID:     n.children[i+1],
+				KeyOffset: dataOffset,
+				KeySize:   uint16(len(key)),
+				Reserved:  0, // No values in B+ tree branches
+				ChildID:   n.children[i+1],
 			}
 			n.page.WriteBranchElement(i, elem)
 
-			// Write key and value to data area
+			// Write only key to data area (no value)
 			dataStart := n.page.DataAreaStart()
 			copy(n.page.data[dataStart+int(dataOffset):], key)
 			dataOffset += uint16(len(key))
-			copy(n.page.data[dataStart+int(dataOffset):], value)
-			dataOffset += uint16(len(value))
 		}
 	}
 
@@ -426,9 +424,9 @@ func (n *Node) deserialize() error {
 			copy(n.values[i], valueData)
 		}
 	} else {
-		// Deserialize branch node
+		// Deserialize branch node (B+ tree: only keys, no values)
 		n.keys = make([][]byte, n.numKeys)
-		n.values = make([][]byte, n.numKeys) // Branch nodes also store values for separator keys
+		n.values = make([][]byte, n.numKeys) // Empty values (B+ tree branches don't store values)
 		n.children = make([]PageID, n.numKeys+1)
 
 		// Read children[0]
@@ -449,13 +447,8 @@ func (n *Node) deserialize() error {
 			// Copy child pointer
 			n.children[i+1] = elem.ChildID
 
-			// Copy value (separator values in branch nodes)
-			valueData, err := n.page.GetValue(elem.ValueOffset, elem.ValueSize)
-			if err != nil {
-				return err
-			}
-			n.values[i] = make([]byte, len(valueData))
-			copy(n.values[i], valueData)
+			// B+ tree: Branch nodes don't store values, set to empty
+			n.values[i] = []byte{}
 		}
 	}
 
@@ -576,23 +569,13 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 	}
 
 	// Branch node - recursive COW
+	// B+ tree: branch nodes are routing only, never update here
+	// Always descend to leaf even if key matches a branch key
 	i := int(node.numKeys) - 1
 
 	// Find child to insert into
 	for i >= 0 && bytes.Compare(key, node.keys[i]) < 0 {
 		i--
-	}
-
-	// Check for update in branch
-	if i >= 0 && bytes.Equal(key, node.keys[i]) {
-		// Key exists in branch node - COW and update
-		node, err := tx.ensureWritable(node)
-		if err != nil {
-			return nil, err
-		}
-		node.values[i] = value
-		node.dirty = true
-		return node, nil
 	}
 
 	i++
@@ -995,21 +978,18 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 }
 
 // deleteFromNode recursively deletes a key from the subtree rooted at node with COW.
+// B+ tree: only delete from leaves, branch keys are routing only
 func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
-	idx := node.findKey(key)
-
-	if idx >= 0 {
-		// Key found in this node
-		if node.isLeaf {
+	// B+ tree: if this is a leaf, check if key exists and delete
+	if node.isLeaf {
+		idx := node.findKey(key)
+		if idx >= 0 {
 			return bt.deleteFromLeaf(tx, node, idx)
 		}
-		return bt.deleteFromNonLeaf(tx, node, key, idx)
-	}
-
-	// Key not in this node
-	if node.isLeaf {
 		return nil, ErrKeyNotFound
 	}
+
+	// Branch node: descend to child (never delete from branch)
 
 	// Find child where key might be
 	childIdx := 0
@@ -1069,12 +1049,32 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 
 	mid := MaxKeysPerNode / 2
 
+	// B+ tree: Extract middle key for parent routing (no value in parent)
+	middleKey := make([]byte, len(child.keys[mid]))
+	copy(middleKey, child.keys[mid])
+
+	// B+ tree semantics:
+	// - Leaf nodes: keep middle key in left child, parent gets copy for routing
+	// - Branch nodes: same behavior (routing keys only)
+	var leftKeyCount, rightKeyCount int
+	if child.isLeaf {
+		// Leaf split: left keeps [0:mid+1], right gets [mid+1:]
+		// Middle key appears in BOTH left child and parent
+		leftKeyCount = mid + 1
+		rightKeyCount = len(child.keys) - mid - 1
+	} else {
+		// Branch split: left keeps [0:mid], right gets [mid+1:]
+		// Middle key only in parent (removed from children)
+		leftKeyCount = mid
+		rightKeyCount = len(child.keys) - mid - 1
+	}
+
 	newNode := &Node{
 		page:     newNodePage,
 		pageID:   newNodeID,
 		dirty:    true,
 		isLeaf:   child.isLeaf,
-		numKeys:  uint16(len(child.keys) - mid - 1),
+		numKeys:  uint16(rightKeyCount),
 		keys:     make([][]byte, 0),
 		values:   make([][]byte, 0),
 		children: make([]PageID, 0),
@@ -1100,24 +1100,17 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 		}
 	}
 
-	// Extract middle key/value before truncating child
-	// Deep copy to avoid reference issues
-	middleKey := make([]byte, len(child.keys[mid]))
-	copy(middleKey, child.keys[mid])
-	middleValue := make([]byte, len(child.values[mid]))
-	copy(middleValue, child.values[mid])
-
-	// Keep left half in child
+	// Keep left portion in child
 	// Deep copy to avoid sharing arrays with newNode
-	leftKeys := make([][]byte, mid)
-	copy(leftKeys, child.keys[:mid])
+	leftKeys := make([][]byte, leftKeyCount)
+	copy(leftKeys, child.keys[:leftKeyCount])
 	child.keys = leftKeys
 
-	leftValues := make([][]byte, mid)
-	copy(leftValues, child.values[:mid])
+	leftValues := make([][]byte, leftKeyCount)
+	copy(leftValues, child.values[:leftKeyCount])
 	child.values = leftValues
 
-	child.numKeys = uint16(mid)
+	child.numKeys = uint16(leftKeyCount)
 	child.dirty = true
 
 	if !child.isLeaf {
@@ -1139,5 +1132,7 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 	// child is already cached from ensureWritable above
 	bt.cache.Put(newNodeID, newNode)
 
-	return child, newNode, middleKey, middleValue, nil
+	// B+ tree: Return empty value for parent (branch nodes don't store values)
+	// The middle key is only for routing purposes
+	return child, newNode, middleKey, []byte{}, nil
 }

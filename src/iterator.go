@@ -88,6 +88,7 @@ func (it *Cursor) Seek(key []byte) error {
 
 // Next advances cursor to next key
 // Returns true if advanced successfully, false if exhausted
+// B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Next() bool {
 	// Validate transaction state
 	if err := it.check(); err != nil {
@@ -115,6 +116,7 @@ func (it *Cursor) Next() bool {
 
 // Prev moves cursor to previous key
 // Returns true if moved successfully, false if at beginning
+// B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Prev() bool {
 	// Validate transaction state
 	if err := it.check(); err != nil {
@@ -156,6 +158,7 @@ func (it *Cursor) Valid() bool {
 }
 
 // nextLeaf advances to next leaf via tree navigation
+// B+ tree: skip branch nodes, only visit leaves
 func (it *Cursor) nextLeaf() error {
 	// Pop up the stack to find a parent with more children
 	for len(it.stack) > 1 {
@@ -179,6 +182,7 @@ func (it *Cursor) nextLeaf() error {
 }
 
 // prevLeaf moves to previous leaf via tree navigation
+// B+ tree: skip branch nodes, only visit leaves
 func (it *Cursor) prevLeaf() error {
 	// Pop up the stack to find a parent with more children to the left
 	for len(it.stack) > 1 {

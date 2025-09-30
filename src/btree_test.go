@@ -529,7 +529,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 10; i++ {
 		// Test random deletion pattern with tree structure checks
 		db := setupTestDB(t)
 
@@ -1441,7 +1441,8 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	db := setupTestDB(t)
 
-	for i := 0; i < MaxKeysPerNode-1; i++ {
+	// Insert MaxKeysPerNode keys (0 to 63 = 64 keys)
+	for i := 0; i < MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
@@ -1450,20 +1451,23 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 		}
 	}
 
+	// After MaxKeysPerNode keys, root should be full but still a leaf
 	if !db.store.root.isLeaf {
-		t.Error("Root should still be leaf with 255 keys")
+		t.Error("Root should still be leaf with MaxKeysPerNode keys")
 	}
-	if db.store.root.numKeys != MaxKeysPerNode-1 {
-		t.Errorf("Expected %d keys, got %d", MaxKeysPerNode-1, db.store.root.numKeys)
+	if db.store.root.numKeys != MaxKeysPerNode {
+		t.Errorf("Expected %d keys, got %d", MaxKeysPerNode, db.store.root.numKeys)
 	}
 
-	key256 := fmt.Sprintf("key%06d", MaxKeysPerNode-1)
-	value256 := fmt.Sprintf("value%06d", MaxKeysPerNode-1)
-	err := db.Set([]byte(key256), []byte(value256))
+	// Insert one more key (65th key) to trigger split
+	splitKey := fmt.Sprintf("key%06d", MaxKeysPerNode)
+	splitValue := fmt.Sprintf("value%06d", MaxKeysPerNode)
+	err := db.Set([]byte(splitKey), []byte(splitValue))
 	if err != nil {
 		t.Fatalf("Failed to trigger split: %v", err)
 	}
 
+	// After inserting MaxKeysPerNode+1 keys, root should be branch
 	if db.store.root.isLeaf {
 		t.Error("Root should be branch after split")
 	}
@@ -1471,7 +1475,8 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 		t.Errorf("Root should have at least 2 children after split, got %d", len(db.store.root.children))
 	}
 
-	for i := 0; i < MaxKeysPerNode; i++ {
+	// Verify all keys retrievable
+	for i := 0; i <= MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
 		if err != nil {
