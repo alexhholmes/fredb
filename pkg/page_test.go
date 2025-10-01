@@ -431,17 +431,18 @@ func TestGetKeyValue(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write leaf element
+	dataStart := page.DataAreaStart()
+
+	// Write leaf element with absolute offsets
 	elem := LeafElement{
-		KeyOffset:   0,
+		KeyOffset:   uint16(dataStart),
 		KeySize:     5,
-		ValueOffset: 5,
+		ValueOffset: uint16(dataStart + 5),
 		ValueSize:   10,
 	}
 	page.WriteLeafElement(0, &elem)
 
 	// Write actual key/value data in data area
-	dataStart := page.DataAreaStart()
 	key := []byte("hello")
 	value := []byte("world12345")
 	copy(page.data[dataStart:], key)
@@ -487,14 +488,14 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "valid key",
-			offset:  0,
+			name:    "valid key at data start",
+			offset:  uint16(dataStart),
 			size:    10,
 			wantErr: false,
 		},
 		{
 			name:    "key extends beyond page",
-			offset:  uint16(PageSize - dataStart - 5),
+			offset:  uint16(PageSize - 5),
 			size:    10,
 			wantErr: true,
 		},
@@ -505,8 +506,8 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "zero size",
-			offset:  0,
+			name:    "zero size at data start",
+			offset:  uint16(dataStart),
 			size:    0,
 			wantErr: false,
 		},

@@ -29,7 +29,7 @@ type PageID uint64
 // LEAF PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (40 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf       │
+// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ LeafElement[0] (12 bytes)                                           │
 // │ KeyOffset, KeySize, ValueOffset, ValueSize, Reserved                │
@@ -40,14 +40,15 @@ type PageID uint64
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ LeafElement[N-1] (12 bytes)                                         │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ Data Area (variable, packed from start):                            │
-// │   key[0] | value[0] | key[1] | value[1] | ... | key[N-1] | value[N]│
+// │ Data Area (variable, packed from end backward):                     │
+// │   ← key[0] | value[0] | key[1] | value[1] | ... | key[N-1] | val[N] │
+// │   Elements grow forward →              Data grows backward ←        │
 // └─────────────────────────────────────────────────────────────────────┘
 //
 // BRANCH PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (40 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf       │
+// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[0] (16 bytes)                                         │
 // │ KeyOffset, KeySize, Reserved, ChildID                               │
@@ -58,12 +59,12 @@ type PageID uint64
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[N-1] (16 bytes)                                       │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ Data Area (variable, packed from start):                            │
-// │   children[0] (8 bytes) | key[0] | key[1] | ... | key[N-1]         │
-// │   ↑ First child          ↑ BranchElement[0..N-1] point to keys     │
-// │   children[1..N] are in BranchElement[0..N-1].ChildID              │
+// │ Data Area (variable, packed from end backward, reserve last 8):     │
+// │   ← key[0] | key[1] | ... | key[N-1]        children[0] (8 bytes)→  │
+// │   Elements grow forward →   Data grows backward ← (reserve end 8)   │
+// │   BranchElement[0..N-1].ChildID stores children[1..N]               │
+// │   children[0] is at FIXED location: last 8 bytes (PageSize-8)       │
 // └─────────────────────────────────────────────────────────────────────┘
-//
 type Page struct {
 	data [PageSize]byte
 }
@@ -151,16 +152,12 @@ func (p *Page) WriteBranchElement(idx int, e *BranchElement) {
 	*(*BranchElement)(ptr) = *e
 }
 
-// GetKey retrieves a key from the data area given an offset and size
+// GetKey retrieves a key from the data area given an absolute offset and size
 func (p *Page) GetKey(offset, size uint16) ([]byte, error) {
-	dataStart := p.DataAreaStart()
-	start := dataStart + int(offset)
+	start := int(offset)
 	end := start + int(size)
 
-	if start < dataStart {
-		return nil, ErrInvalidOffset
-	}
-	if end > PageSize {
+	if start < 0 || end > PageSize {
 		return nil, ErrPageOverflow
 	}
 	if start > end {
@@ -170,16 +167,12 @@ func (p *Page) GetKey(offset, size uint16) ([]byte, error) {
 	return p.data[start:end], nil
 }
 
-// GetValue retrieves a value from the data area given an offset and size
+// GetValue retrieves a value from the data area given an absolute offset and size
 func (p *Page) GetValue(offset, size uint16) ([]byte, error) {
-	dataStart := p.DataAreaStart()
-	start := dataStart + int(offset)
+	start := int(offset)
 	end := start + int(size)
 
-	if start < dataStart {
-		return nil, ErrInvalidOffset
-	}
-	if end > PageSize {
+	if start < 0 || end > PageSize {
 		return nil, ErrPageOverflow
 	}
 	if start > end {
@@ -189,16 +182,16 @@ func (p *Page) GetValue(offset, size uint16) ([]byte, error) {
 	return p.data[start:end], nil
 }
 
-// WriteBranchFirstChild writes the first child PageID to the start of data area
+// WriteBranchFirstChild writes the first child PageID to a fixed location at the end of the page
 func (p *Page) WriteBranchFirstChild(childID PageID) {
-	dataStart := p.DataAreaStart()
-	*(*PageID)(unsafe.Pointer(&p.data[dataStart])) = childID
+	offset := PageSize - 8
+	*(*PageID)(unsafe.Pointer(&p.data[offset])) = childID
 }
 
-// ReadBranchFirstChild reads the first child PageID from the start of data area
+// ReadBranchFirstChild reads the first child PageID from a fixed location at the end of the page
 func (p *Page) ReadBranchFirstChild() PageID {
-	dataStart := p.DataAreaStart()
-	return *(*PageID)(unsafe.Pointer(&p.data[dataStart]))
+	offset := PageSize - 8
+	return *(*PageID)(unsafe.Pointer(&p.data[offset]))
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1

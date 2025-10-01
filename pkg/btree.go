@@ -349,38 +349,47 @@ func (n *Node) serialize(txnID uint64) error {
 	n.page.WriteHeader(header)
 
 	if n.isLeaf {
-		// Serialize leaf node
-		dataOffset := uint16(0)
-		for i := 0; i < int(n.numKeys); i++ {
+		// Serialize leaf node - pack from end backward
+		dataOffset := uint16(PageSize)
+		// Process in reverse order to pack from end
+		for i := int(n.numKeys) - 1; i >= 0; i-- {
 			key := n.keys[i]
 			value := n.values[i]
 
+			// Write value first (at end)
+			dataOffset -= uint16(len(value))
+			copy(n.page.data[dataOffset:], value)
+			valueOffset := dataOffset
+
+			// Write key before value
+			dataOffset -= uint16(len(key))
+			copy(n.page.data[dataOffset:], key)
+			keyOffset := dataOffset
+
 			elem := &LeafElement{
-				KeyOffset:   dataOffset,
+				KeyOffset:   keyOffset,
 				KeySize:     uint16(len(key)),
-				ValueOffset: dataOffset + uint16(len(key)),
+				ValueOffset: valueOffset,
 				ValueSize:   uint16(len(value)),
 			}
 			n.page.WriteLeafElement(i, elem)
-
-			// Write key and value to data area
-			dataStart := n.page.DataAreaStart()
-			copy(n.page.data[dataStart+int(dataOffset):], key)
-			dataOffset += uint16(len(key))
-			copy(n.page.data[dataStart+int(dataOffset):], value)
-			dataOffset += uint16(len(value))
 		}
 	} else {
 		// Serialize branch node (B+ tree: only keys, no values)
-		// Write children[0] first
+		// Write children[0] at fixed location (last 8 bytes)
 		if len(n.children) > 0 {
 			n.page.WriteBranchFirstChild(n.children[0])
 		}
 
-		// Write keys and remaining children (no values)
-		dataOffset := uint16(8) // Start after children[0]
-		for i := 0; i < int(n.numKeys); i++ {
+		// Pack keys from end backward (reserve last 8 bytes for children[0])
+		dataOffset := uint16(PageSize - 8)
+		// Process in reverse order to pack from end
+		for i := int(n.numKeys) - 1; i >= 0; i-- {
 			key := n.keys[i]
+
+			// Write key
+			dataOffset -= uint16(len(key))
+			copy(n.page.data[dataOffset:], key)
 
 			elem := &BranchElement{
 				KeyOffset: dataOffset,
@@ -389,11 +398,6 @@ func (n *Node) serialize(txnID uint64) error {
 				ChildID:   n.children[i+1],
 			}
 			n.page.WriteBranchElement(i, elem)
-
-			// Write only key to data area (no value)
-			dataStart := n.page.DataAreaStart()
-			copy(n.page.data[dataStart+int(dataOffset):], key)
-			dataOffset += uint16(len(key))
 		}
 	}
 
