@@ -8,6 +8,8 @@ import (
 )
 
 func TestFreeListPending(t *testing.T) {
+	t.Parallel()
+
 	fl := NewFreeList()
 
 	// Add some pages to pending at different transactions
@@ -71,6 +73,8 @@ func TestFreeListPending(t *testing.T) {
 }
 
 func TestFreeListReleaseOrder(t *testing.T) {
+	t.Parallel()
+
 	fl := NewFreeList()
 
 	// Add pages at various transaction IDs
@@ -98,6 +102,8 @@ func TestFreeListReleaseOrder(t *testing.T) {
 }
 
 func TestFreeListEmptyRelease(t *testing.T) {
+	t.Parallel()
+
 	fl := NewFreeList()
 
 	// Release on empty pending should do nothing
@@ -114,6 +120,8 @@ func TestFreeListEmptyRelease(t *testing.T) {
 }
 
 func TestFreeListPendingSerialization(t *testing.T) {
+	t.Parallel()
+
 	fl := NewFreeList()
 
 	// Add both free and pending pages
@@ -181,6 +189,8 @@ func TestFreeListPendingSerialization(t *testing.T) {
 }
 
 func TestFreelistNoPageLeaks(t *testing.T) {
+	t.Parallel()
+
 	// Test that pages are properly reclaimed after delete operations
 	// with concurrent readers active
 	db := setupTestDB(t)

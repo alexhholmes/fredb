@@ -6,6 +6,8 @@ import (
 )
 
 func TestPageHeaderAlignment(t *testing.T) {
+	t.Parallel()
+
 	// Verify struct sizes match expectations (no padding)
 	if size := unsafe.Sizeof(PageID(0)); size != 8 {
 		t.Errorf("PageID size = %d bytes, expected 8", size)
@@ -38,6 +40,8 @@ func TestPageHeaderAlignment(t *testing.T) {
 }
 
 func TestPageHeaderRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header
@@ -67,6 +71,8 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 }
 
 func TestPageHeaderByteLayout(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header with known values
@@ -104,12 +110,16 @@ func TestPageHeaderByteLayout(t *testing.T) {
 }
 
 func TestLeafElementAlignment(t *testing.T) {
+	t.Parallel()
+
 	if size := unsafe.Sizeof(LeafElement{}); size != 12 {
 		t.Errorf("LeafElement size = %d bytes, expected 12", size)
 	}
 }
 
 func TestLeafElementByteLayout(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header first (need valid header for element writes)
@@ -153,6 +163,8 @@ func TestLeafElementByteLayout(t *testing.T) {
 }
 
 func TestLeafElementRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header first
@@ -211,12 +223,16 @@ func TestLeafElementRoundTrip(t *testing.T) {
 }
 
 func TestBranchElementAlignment(t *testing.T) {
+	t.Parallel()
+
 	if size := unsafe.Sizeof(BranchElement{}); size != 16 {
 		t.Errorf("BranchElement size = %d bytes, expected 16", size)
 	}
 }
 
 func TestBranchElementByteLayout(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header first (need valid header for element writes)
@@ -257,6 +273,8 @@ func TestBranchElementByteLayout(t *testing.T) {
 }
 
 func TestBranchElementRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header first
@@ -313,6 +331,8 @@ func TestBranchElementRoundTrip(t *testing.T) {
 }
 
 func TestBranchFirstChildRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header
@@ -336,6 +356,8 @@ func TestBranchFirstChildRoundTrip(t *testing.T) {
 }
 
 func TestDataAreaStart(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		flags    uint16
@@ -387,6 +409,8 @@ func TestDataAreaStart(t *testing.T) {
 }
 
 func TestGetKeyValue(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header for leaf with 1 key
@@ -432,6 +456,8 @@ func TestGetKeyValue(t *testing.T) {
 }
 
 func TestGetKeyValueBoundsChecking(t *testing.T) {
+	t.Parallel()
+
 	var page Page
 
 	// Write header for leaf with 1 key

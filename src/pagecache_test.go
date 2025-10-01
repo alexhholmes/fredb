@@ -17,6 +17,8 @@ func makeTestNode(pageID PageID) *Node {
 }
 
 func TestPageCacheBasics(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(10)
 
 	// Test cache miss
@@ -54,6 +56,8 @@ func TestPageCacheBasics(t *testing.T) {
 }
 
 func TestPageCachePinUnpin(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(10)
 
 	node1 := makeTestNode(PageID(1))
@@ -71,6 +75,8 @@ func TestPageCachePinUnpin(t *testing.T) {
 }
 
 func TestPageCacheDoublePinPanic(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(10)
 
 	node1 := makeTestNode(PageID(1))
@@ -89,6 +95,8 @@ func TestPageCacheDoublePinPanic(t *testing.T) {
 }
 
 func TestPageCachePutExisting(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(10)
 
 	node1 := makeTestNode(PageID(1))
@@ -107,6 +115,8 @@ func TestPageCachePutExisting(t *testing.T) {
 }
 
 func TestPageCacheLRUOrder(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(5)
 
 	// Add pages 1, 2, 3
@@ -147,6 +157,8 @@ func TestPageCacheLRUOrder(t *testing.T) {
 }
 
 func TestPageCacheMinSize(t *testing.T) {
+	t.Parallel()
+
 	// Request size too small
 	cache := NewPageCache(5)
 	if cache.maxSize != MinCacheSize {
@@ -155,6 +167,8 @@ func TestPageCacheMinSize(t *testing.T) {
 }
 
 func TestPageCacheMaxSize(t *testing.T) {
+	t.Parallel()
+
 	// Request size too large
 	cache := NewPageCache(100000)
 	if cache.maxSize != MaxCacheSize {
@@ -163,6 +177,8 @@ func TestPageCacheMaxSize(t *testing.T) {
 }
 
 func TestPageCacheConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(100)
 
 	// Add some nodes
@@ -193,6 +209,8 @@ func TestPageCacheConcurrentAccess(t *testing.T) {
 }
 
 func TestPageCacheEviction(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(20) // max=20, lowWater=16
 
 	// Add 19 pages
@@ -238,6 +256,8 @@ func TestPageCacheEviction(t *testing.T) {
 }
 
 func TestPageCacheEvictPinnedSkipped(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(20) // max=20, lowWater=16
 
 	// Add 18 pages, unpin all
@@ -276,6 +296,8 @@ func TestPageCacheEvictPinnedSkipped(t *testing.T) {
 }
 
 func TestPageCacheEvictDirtySkipped(t *testing.T) {
+	t.Parallel()
+
 	cache := NewPageCache(20) // max=20, lowWater=16
 
 	// Add 19 pages, mark first 3 dirty

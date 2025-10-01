@@ -8,6 +8,8 @@ import (
 )
 
 func TestDiskPageManagerBasic(t *testing.T) {
+	t.Parallel()
+
 	// Create temp file
 	tmpfile := "/tmp/test_disk.db"
 	defer os.Remove(tmpfile)
@@ -70,6 +72,8 @@ func TestDiskPageManagerBasic(t *testing.T) {
 }
 
 func TestDiskPageManagerPersistence(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_persist.db"
 	defer os.Remove(tmpfile)
 
@@ -116,6 +120,8 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 }
 
 func TestDiskPageManagerDelete(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_delete.db"
 	defer os.Remove(tmpfile)
 
@@ -159,6 +165,8 @@ func TestDiskPageManagerDelete(t *testing.T) {
 
 // TestDBFileFormat validates the on-disk format
 func TestDBFileFormat(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_db_format.db"
 	defer os.Remove(tmpfile)
 
@@ -280,6 +288,8 @@ func TestDBFileFormat(t *testing.T) {
 
 // TestDBFileHexDump creates a DB file and prints hex dump for manual inspection
 func TestDBFileHexDump(t *testing.T) {
+	t.Parallel()
+
 	if testing.Short() {
 		t.Skip("Skipping hex dump test in short mode")
 	}
@@ -388,6 +398,8 @@ func formatHexDump(data []byte) string {
 
 // TestDBCorruptionDetection validates that corrupted meta pages are detected
 func TestDBCorruptionDetection(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_db_corruption.db"
 	defer os.Remove(tmpfile)
 
@@ -446,6 +458,8 @@ func dumpBytes(label string, data []byte) string {
 
 // TestCrashRecoveryBothMetaCorrupted tests that DB fails to open when both meta pages are invalid
 func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := fmt.Sprintf("/tmp/test_both_meta_corrupt_%d.db", os.Getpid())
 	os.Remove(tmpfile) // Clean up any previous test file
 	defer os.Remove(tmpfile)
@@ -512,6 +526,8 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 
 // TestCrashRecoveryChecksumCorruption tests that corrupted checksums are detected
 func TestCrashRecoveryChecksumCorruption(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_checksum_corrupt.db"
 	defer os.Remove(tmpfile)
 
@@ -562,6 +578,8 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 
 // TestCrashRecoveryAlternatingWrites tests that meta pages alternate correctly based on TxnID
 func TestCrashRecoveryAlternatingWrites(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_alternating_meta.db"
 	defer os.Remove(tmpfile)
 
@@ -637,6 +655,8 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 
 // TestCrashRecoveryLastCommittedState tests recovery to previous valid state
 func TestCrashRecoveryLastCommittedState(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_last_committed.db"
 	defer os.Remove(tmpfile)
 
@@ -742,6 +762,8 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 }
 
 func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_crash_recovery_wrong_magic.db"
 	defer os.Remove(tmpfile)
 
@@ -793,6 +815,8 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 }
 
 func TestCrashRecoveryRootPageIDZero(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_crash_recovery_root_zero.db"
 	defer os.Remove(tmpfile)
 
@@ -856,6 +880,8 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 }
 
 func TestCrashRecoveryTruncatedFile(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_crash_recovery_truncated.db"
 	defer os.Remove(tmpfile)
 
@@ -893,6 +919,8 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 }
 
 func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_crash_recovery_same_txnid.db"
 	defer os.Remove(tmpfile)
 

@@ -7,6 +7,8 @@ import (
 )
 
 func TestCursorSequentialScan(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert keys 1-100
@@ -48,6 +50,8 @@ func TestCursorSequentialScan(t *testing.T) {
 }
 
 func TestCursorReverseScan(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert keys 1-50
@@ -107,6 +111,8 @@ func TestCursorReverseScan(t *testing.T) {
 }
 
 func TestCursorRangeScan(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert keys 10, 20, 30, ..., 100
@@ -147,6 +153,8 @@ func TestCursorRangeScan(t *testing.T) {
 }
 
 func TestCursorEmptyTree(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Empty tree - cursor should be invalid
@@ -170,6 +178,8 @@ func TestCursorEmptyTree(t *testing.T) {
 }
 
 func TestCursorSeekNotFound(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert keys: key001, key003, key005, key007, key009
@@ -219,6 +229,8 @@ func TestCursorSeekNotFound(t *testing.T) {
 }
 
 func TestCursorAcrossSplits(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert enough keys to trigger splits (200 keys)
@@ -259,6 +271,8 @@ func TestCursorAcrossSplits(t *testing.T) {
 }
 
 func TestCursorAfterMerges(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert 100 keys to create multiple nodes

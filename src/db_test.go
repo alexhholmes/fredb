@@ -11,6 +11,8 @@ import (
 // Basic DB Interface Tests
 
 func TestDBBasicOperations(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_db_basic.db"
 	defer os.Remove(tmpfile)
 
@@ -66,6 +68,8 @@ func TestDBBasicOperations(t *testing.T) {
 }
 
 func TestDBErrors(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_db_errors.db"
 	defer os.Remove(tmpfile)
 
@@ -89,6 +93,8 @@ func TestDBErrors(t *testing.T) {
 }
 
 func TestDBClose(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_db_close.db"
 	defer os.Remove(tmpfile)
 
@@ -119,6 +125,8 @@ func TestDBClose(t *testing.T) {
 // Concurrent Access Tests
 
 func TestDBConcurrency(t *testing.T) {
+	t.Parallel()
+
 	// Test concurrent access through DB interface
 	// - Launch 100 goroutines
 	// - Mix of Get/Set operations
@@ -212,6 +220,8 @@ func TestDBConcurrency(t *testing.T) {
 }
 
 func TestDBConcurrentReads(t *testing.T) {
+	t.Parallel()
+
 	// Test concurrent reads don't block each other
 	// - Insert test data
 	// - Launch multiple reader goroutines
@@ -292,6 +302,8 @@ func TestDBConcurrentReads(t *testing.T) {
 }
 
 func TestDBConcurrentWrites(t *testing.T) {
+	t.Parallel()
+
 	// Test concurrent writes are serialized correctly
 	// - Launch multiple writer goroutines
 	// - Each writes unique keys
@@ -401,6 +413,8 @@ func TestDBConcurrentWrites(t *testing.T) {
 // TestTxSnapshotIsolation tests MVCC snapshot isolation.
 // Test concurrent read/write with snapshot isolation
 func TestTxSnapshotIsolation(t *testing.T) {
+	t.Parallel()
+
 	tmpfile := "/tmp/test_tx_snapshot_isolation.db"
 	defer os.Remove(tmpfile)
 

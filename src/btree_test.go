@@ -28,6 +28,8 @@ func setupTestDB(t *testing.T) *db {
 // Basic Operations Tests
 
 func TestBTreeBasicOps(t *testing.T) {
+	t.Parallel()
+
 	// Test basic Get/Set operations
 	db := setupTestDB(t)
 
@@ -68,6 +70,8 @@ func TestBTreeBasicOps(t *testing.T) {
 }
 
 func TestBTreeUpdate(t *testing.T) {
+	t.Parallel()
+
 	// Test that Set updates existing keys rather than duplicating
 	db := setupTestDB(t)
 
@@ -117,6 +121,8 @@ func TestBTreeUpdate(t *testing.T) {
 // Node Splitting Tests
 
 func TestBTreeSplitting(t *testing.T) {
+	t.Parallel()
+
 	// Test node splitting when exceeding MaxKeysPerNode
 	db := setupTestDB(t)
 
@@ -157,6 +163,8 @@ func TestBTreeSplitting(t *testing.T) {
 }
 
 func TestBTreeMultipleSplits(t *testing.T) {
+	t.Parallel()
+
 	// Test multiple levels of splitting
 	db := setupTestDB(t)
 
@@ -217,6 +225,8 @@ func TestBTreeMultipleSplits(t *testing.T) {
 // Sequential vs Random Insert Tests
 
 func TestSequentialInsert(t *testing.T) {
+	t.Parallel()
+
 	// Test inserting keys in sequential order
 	db := setupTestDB(t)
 
@@ -257,6 +267,8 @@ func TestSequentialInsert(t *testing.T) {
 }
 
 func TestRandomInsert(t *testing.T) {
+	t.Parallel()
+
 	// Test inserting keys in random order
 	db := setupTestDB(t)
 
@@ -313,6 +325,8 @@ func TestRandomInsert(t *testing.T) {
 }
 
 func TestReverseSequentialInsert(t *testing.T) {
+	t.Parallel()
+
 	// Test inserting keys in reverse order
 	db := setupTestDB(t)
 
@@ -360,6 +374,8 @@ func TestReverseSequentialInsert(t *testing.T) {
 // Delete Tests
 
 func TestBTreeDelete(t *testing.T) {
+	t.Parallel()
+
 	// Test basic delete operations
 	db := setupTestDB(t)
 
@@ -426,6 +442,8 @@ func TestBTreeDelete(t *testing.T) {
 }
 
 func TestBTreeDeleteAll(t *testing.T) {
+	t.Parallel()
+
 	// Test deleting all keys from tree
 	db := setupTestDB(t)
 
@@ -479,6 +497,8 @@ func TestBTreeDeleteAll(t *testing.T) {
 }
 
 func TestBTreeSequentialDelete(t *testing.T) {
+	t.Parallel()
+
 	// Test sequential deletion pattern with tree structure checks
 	db := setupTestDB(t)
 
@@ -529,6 +549,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
+	t.Parallel()
+
 	for i := 0; i < 10; i++ {
 		// Test random deletion pattern with tree structure checks
 		db := setupTestDB(t)
@@ -617,6 +639,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 }
 
 func TestBTreeReverseDelete(t *testing.T) {
+	t.Parallel()
+
 	// Test reverse sequential deletion pattern
 	db := setupTestDB(t)
 
@@ -711,6 +735,8 @@ func TestLoadNode(t *testing.T) {
 // Edge Cases
 
 func TestEmptyTree(t *testing.T) {
+	t.Parallel()
+
 	// Test operations on empty tree
 	db := setupTestDB(t)
 
@@ -737,6 +763,8 @@ func TestEmptyTree(t *testing.T) {
 }
 
 func TestSingleKey(t *testing.T) {
+	t.Parallel()
+
 	// Test tree with single key
 	db := setupTestDB(t)
 
@@ -789,6 +817,8 @@ func TestSingleKey(t *testing.T) {
 }
 
 func TestDuplicateKeys(t *testing.T) {
+	t.Parallel()
+
 	// Test handling of duplicate key insertions
 	db := setupTestDB(t)
 
@@ -850,6 +880,8 @@ func TestDuplicateKeys(t *testing.T) {
 }
 
 func TestBinaryKeys(t *testing.T) {
+	t.Parallel()
+
 	// Test with non-string binary keys
 	db := setupTestDB(t)
 
@@ -910,6 +942,8 @@ func TestBinaryKeys(t *testing.T) {
 }
 
 func TestZeroLengthKeys(t *testing.T) {
+	t.Parallel()
+
 	// Test with zero-length keys
 	db := setupTestDB(t)
 
@@ -972,6 +1006,8 @@ func TestZeroLengthKeys(t *testing.T) {
 }
 
 func TestZeroLengthValues(t *testing.T) {
+	t.Parallel()
+
 	// Test with zero-length values
 	db := setupTestDB(t)
 
@@ -1046,196 +1082,9 @@ func TestZeroLengthValues(t *testing.T) {
 	}
 }
 
-// Benchmark Tests
-
-func BenchmarkBTreeGet(b *testing.B) {
-	// Benchmark Get performance
-	// - Pre-populate tree with 10000 keys
-	// - Measure random Get operations
-	b.Skip("Not implemented")
-}
-
-func BenchmarkBTreeSet(b *testing.B) {
-	// Benchmark Set performance
-	// - Measure insertion of b.N keys
-	// - Include both new keys and updates
-	b.Skip("Not implemented")
-}
-
-func BenchmarkBTreeMixed(b *testing.B) {
-	// Benchmark mixed workload (80% reads, 20% writes)
-	// - Pre-populate tree
-	// - Run mixed operations
-	tmpfile := "/tmp/bench_mixed.db"
-	_ = os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	if err != nil {
-		b.Fatalf("Failed to create DB: %v", err)
-	}
-	defer func() {
-		_ = db.Close()
-		_ = os.Remove(tmpfile)
-	}()
-
-	// Pre-populate with 10000 keys
-	numKeys := 10000
-	for i := 0; i < numKeys; i++ {
-		key := fmt.Sprintf("key%08d", i)
-		value := fmt.Sprintf("value%08d", i)
-		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			b.Fatalf("Failed to populate tree: %v", err)
-		}
-	}
-
-	// Reset timer after setup
-	b.ResetTimer()
-
-	// Run mixed workload
-	for i := 0; i < b.N; i++ {
-		// Use deterministic pattern based on iteration
-		if i%5 < 4 {
-			// 80% reads - read existing keys
-			keyNum := (i * 7) % numKeys // Deterministic key selection
-			key := fmt.Sprintf("key%08d", keyNum)
-
-			_, err := db.Get([]byte(key))
-			if err != nil {
-				b.Errorf("Read failed for key %s: %v", key, err)
-			}
-		} else {
-			// 20% writes - mix of updates and new keys
-			if i%10 < 9 {
-				// Update existing key
-				keyNum := (i * 13) % numKeys
-				key := fmt.Sprintf("key%08d", keyNum)
-				value := fmt.Sprintf("updated%08d", i)
-
-				err := db.Set([]byte(key), []byte(value))
-				if err != nil {
-					b.Errorf("Update failed for key %s: %v", key, err)
-				}
-			} else {
-				// Insert new key
-				key := fmt.Sprintf("newkey%08d", numKeys+i)
-				value := fmt.Sprintf("newvalue%08d", i)
-
-				err := db.Set([]byte(key), []byte(value))
-				if err != nil {
-					b.Errorf("Insert failed for key %s: %v", key, err)
-				}
-			}
-		}
-	}
-}
-
-func BenchmarkBTreeSequentialInsert(b *testing.B) {
-	// Benchmark sequential insertion pattern
-	// - Insert keys in ascending order
-	b.Skip("Not implemented")
-}
-
-func BenchmarkBTreeRandomInsert(b *testing.B) {
-	// Benchmark random insertion pattern
-	// - Insert keys in random order
-	b.Skip("Not implemented")
-}
-
-// validateSiblingPointers validates the integrity of the doubly-linked leaf list
-// Returns error if sibling pointers are inconsistent
-func validateSiblingPointers(bt *BTree) error {
-	// Find leftmost leaf by descending left from root
-	node := bt.root
-	for !node.isLeaf {
-		if len(node.children) == 0 {
-			return fmt.Errorf("branch node has no children")
-		}
-		child, err := bt.loadNode(node.children[0])
-		if err != nil {
-			return fmt.Errorf("failed to load leftmost child: %v", err)
-		}
-		node = child
-	}
-
-	// Traverse right using NextLeaf pointers
-	visitedForward := []PageID{}
-	for node != nil {
-		visitedForward = append(visitedForward, node.pageID)
-
-		nextID := node.getNextLeaf()
-		if nextID == 0 {
-			break
-		}
-
-		nextNode, err := bt.loadNode(nextID)
-		if err != nil {
-			return fmt.Errorf("failed to load next node %d: %v", nextID, err)
-		}
-
-		// Verify backpointer
-		if nextNode.getPrevLeaf() != node.pageID {
-			return fmt.Errorf("inconsistent backpointer: node %d -> next %d, but %d -> prev %d",
-				node.pageID, nextID, nextID, nextNode.getPrevLeaf())
-		}
-
-		node = nextNode
-	}
-
-	// Find rightmost leaf by descending right from root
-	node = bt.root
-	for !node.isLeaf {
-		lastChildIdx := len(node.children) - 1
-		child, err := bt.loadNode(node.children[lastChildIdx])
-		if err != nil {
-			return fmt.Errorf("failed to load rightmost child: %v", err)
-		}
-		node = child
-	}
-
-	// Traverse left using PrevLeaf pointers
-	visitedBackward := []PageID{}
-	for node != nil {
-		visitedBackward = append(visitedBackward, node.pageID)
-
-		prevID := node.getPrevLeaf()
-		if prevID == 0 {
-			break
-		}
-
-		prevNode, err := bt.loadNode(prevID)
-		if err != nil {
-			return fmt.Errorf("failed to load prev node %d: %v", prevID, err)
-		}
-
-		// Verify forward pointer
-		if prevNode.getNextLeaf() != node.pageID {
-			return fmt.Errorf("inconsistent forward pointer: node %d -> prev %d, but %d -> next %d",
-				node.pageID, prevID, prevID, prevNode.getNextLeaf())
-		}
-
-		node = prevNode
-	}
-
-	// Verify forward and backward traversals visit same nodes (in reverse order)
-	if len(visitedForward) != len(visitedBackward) {
-		return fmt.Errorf("forward traversal visited %d nodes, backward visited %d nodes",
-			len(visitedForward), len(visitedBackward))
-	}
-
-	for i := 0; i < len(visitedForward); i++ {
-		forwardNode := visitedForward[i]
-		backwardNode := visitedBackward[len(visitedBackward)-1-i]
-		if forwardNode != backwardNode {
-			return fmt.Errorf("traversal mismatch at position %d: forward=%d, backward=%d",
-				i, forwardNode, backwardNode)
-		}
-	}
-
-	return nil
-}
-
 func TestPageOverflowLargeKey(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Key that's too large to fit in a page
@@ -1253,6 +1102,8 @@ func TestPageOverflowLargeKey(t *testing.T) {
 }
 
 func TestPageOverflowLargeValue(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	key := []byte("small_key")
@@ -1270,6 +1121,8 @@ func TestPageOverflowLargeValue(t *testing.T) {
 }
 
 func TestPageOverflowCombinedSize(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Key + value that individually fit but combined exceed PageSize
@@ -1290,6 +1143,8 @@ func TestPageOverflowCombinedSize(t *testing.T) {
 }
 
 func TestPageOverflowBoundary(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Test key+value that exactly fits (should succeed)
@@ -1326,6 +1181,8 @@ func TestPageOverflowBoundary(t *testing.T) {
 }
 
 func TestPageOverflowMaxKeyValue(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Test with maximum reasonable key+value size
@@ -1358,6 +1215,8 @@ func TestPageOverflowMaxKeyValue(t *testing.T) {
 }
 
 func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert enough keys to create multi-level tree
@@ -1399,6 +1258,8 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 }
 
 func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	numKeys := MaxKeysPerNode * 2
@@ -1439,6 +1300,8 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 }
 
 func TestBoundaryInsert255ThenSplit(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	// Insert MaxKeysPerNode keys (0 to 63 = 64 keys)
@@ -1486,6 +1349,8 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 }
 
 func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	numKeys := MaxKeysPerNode * 2
@@ -1527,6 +1392,8 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 }
 
 func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
+	t.Parallel()
+
 	db := setupTestDB(t)
 
 	numKeys := MaxKeysPerNode * 3
