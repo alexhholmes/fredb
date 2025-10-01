@@ -49,8 +49,8 @@ db.Delete([]byte("key"))
 
 ```
 Page 0-1:  Meta pages (dual, CRC32 checksums)
-Page 2+:   Free list (dynamic growth)
-Rest:      B-tree data pages (4KB each)
+Page 2:   Free list (dynamic growth)
+Page 3+:  {Free list pages} ⊕ {B-tree data pages}, allocation order preserved
 ```
 
 ## Testing
