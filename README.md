@@ -4,7 +4,7 @@ Embedded B-tree key-value store in Go.
 
 ## Status
 
-**In Development** - Core B-tree operations complete, disk persistence in progress.
+**In Development** - Core B-tree operations, disk persistence, MVCC, complete. WAL, direct I/O, and optimizations still in-progress.
 
 ## Features
 
