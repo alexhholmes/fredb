@@ -1,4 +1,4 @@
-package src
+package pkg
 
 import (
 	"fmt"
@@ -48,7 +48,7 @@ func (f *FreeList) Allocate() PageID {
 			if pageIDs[i] == id {
 				// Remove from pending
 				f.pending[txnID] = append(pageIDs[:i], pageIDs[i+1:]...)
-				pageIDs = f.pending[txnID]  // Update reference after modification
+				pageIDs = f.pending[txnID] // Update reference after modification
 				removedCount++
 			}
 		}

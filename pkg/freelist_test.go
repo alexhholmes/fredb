@@ -1,4 +1,4 @@
-package src
+package pkg
 
 import (
 	"fmt"
@@ -190,6 +190,10 @@ func TestFreeListPendingSerialization(t *testing.T) {
 
 func TestFreelistNoPageLeaks(t *testing.T) {
 	t.Parallel()
+
+	if !*slow {
+		t.Skip("Skipping slow test; use -slow to enable")
+	}
 
 	// Test that pages are properly reclaimed after delete operations
 	// with concurrent readers active

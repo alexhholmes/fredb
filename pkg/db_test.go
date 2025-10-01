@@ -1,4 +1,4 @@
-package src
+package pkg
 
 import (
 	"fmt"
@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 )
-
-// Basic DB Interface Tests
 
 func TestDBBasicOperations(t *testing.T) {
 	t.Parallel()
@@ -125,6 +123,12 @@ func TestDBClose(t *testing.T) {
 // Concurrent Access Tests
 
 func TestDBConcurrency(t *testing.T) {
+	t.Parallel()
+
+	if !*slow {
+		t.Skip("Skipping slow concurrency test; use -slow to enable")
+	}
+
 	// Test concurrent access through DB interface
 	// - Launch 100 goroutines
 	// - Mix of Get/Set operations

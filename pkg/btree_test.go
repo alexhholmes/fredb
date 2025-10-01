@@ -1,29 +1,10 @@
-package src
+package pkg
 
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"testing"
 )
-
-// Helper to create a temporary test database
-func setupTestDB(t *testing.T) *db {
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
-	_ = os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = db.Close()
-		_ = os.Remove(tmpfile)
-	})
-
-	return db
-}
 
 // Basic Operations Tests
 
@@ -550,6 +531,10 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 func TestBTreeRandomDelete(t *testing.T) {
 	t.Parallel()
+
+	if !*slow {
+		t.Skip("Skipping slow test; use -slow to enable")
+	}
 
 	for i := 0; i < 10; i++ {
 		// Test random deletion pattern with tree structure checks
