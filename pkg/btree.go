@@ -486,13 +486,40 @@ func removeChildAt(slice []PageID, index int) []PageID {
 
 // truncateSeparatorKey truncates a separator key to reduce branch node size.
 // Separator keys in branch nodes only need to be long enough to route correctly.
-func truncateSeparatorKey(key []byte) []byte {
-	if len(key) > maxSeparatorSize {
-		truncated := make([]byte, maxSeparatorSize)
-		copy(truncated, key)
-		return truncated
+// It ensures the truncated key can still distinguish between separator and leftMax.
+// leftMax is the maximum key in the left child (can be nil if no left context).
+func truncateSeparatorKey(separator []byte, leftMax []byte) []byte {
+	if len(separator) == 0 {
+		return separator
 	}
-	return key
+
+	// If no left context, use simple truncation
+	if leftMax == nil || len(leftMax) == 0 {
+		if len(separator) > maxSeparatorSize {
+			truncated := make([]byte, maxSeparatorSize)
+			copy(truncated, separator)
+			return truncated
+		}
+		return separator
+	}
+
+	// Find first differing byte position
+	i := 0
+	for i < len(separator) && i < len(leftMax) && separator[i] == leftMax[i] {
+		i++
+	}
+
+	// Need i+1 bytes to include the distinguishing byte
+	// This ensures separator > leftMax in lexicographic order
+	minNeeded := i + 1
+	if minNeeded > len(separator) {
+		// leftMax is a prefix of separator, need full separator
+		return separator
+	}
+
+	// Take minimum of (bytes needed, maxSeparatorSize, full length)
+	// Correctness over space: if we need 18 bytes to distinguish, return 18 bytes
+	return separator[:minNeeded]
 }
 
 // findKey returns the index of key in node, or -1 if not found
@@ -848,7 +875,12 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		leftSibling.numKeys--
 
 		// Update parent separator to be the first key of right node (truncated)
-		parent.keys[parentKeyIdx] = truncateSeparatorKey(node.keys[0])
+		// leftMax is the new last key of left sibling (after removal)
+		var leftMax []byte
+		if leftSibling.numKeys > 0 {
+			leftMax = leftSibling.keys[leftSibling.numKeys-1]
+		}
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(node.keys[0], leftMax)
 
 		node.numKeys++
 	} else {
@@ -858,7 +890,12 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		node.values = append([][]byte{parent.values[parentKeyIdx]}, node.values...)
 
 		// Move the last key from left sibling to parent (truncated)
-		parent.keys[parentKeyIdx] = truncateSeparatorKey(leftSibling.keys[leftSibling.numKeys-1])
+		// leftMax is the second-to-last key of left sibling (before removal)
+		var leftMax []byte
+		if leftSibling.numKeys > 1 {
+			leftMax = leftSibling.keys[leftSibling.numKeys-2]
+		}
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(leftSibling.keys[leftSibling.numKeys-1], leftMax)
 		parent.values[parentKeyIdx] = leftSibling.values[leftSibling.numKeys-1]
 
 		// Move the last child pointer too
@@ -915,7 +952,12 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		rightSibling.numKeys--
 
 		// Update parent separator to be the first key of right sibling (truncated)
-		parent.keys[parentKeyIdx] = truncateSeparatorKey(rightSibling.keys[0])
+		// leftMax is the old last key of node (before we added the new one)
+		var leftMax []byte
+		if node.numKeys > 0 {
+			leftMax = node.keys[node.numKeys-1]
+		}
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(rightSibling.keys[0], leftMax)
 
 		node.numKeys++
 	} else {
@@ -925,7 +967,12 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		node.values = append(node.values, parent.values[parentKeyIdx])
 
 		// Move the first key from right sibling to parent (truncated)
-		parent.keys[parentKeyIdx] = truncateSeparatorKey(rightSibling.keys[0])
+		// leftMax is the old last key of node (before we added parent's key)
+		var leftMax []byte
+		if node.numKeys > 0 {
+			leftMax = node.keys[node.numKeys-1]
+		}
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(rightSibling.keys[0], leftMax)
 		parent.values[parentKeyIdx] = rightSibling.values[0]
 
 		// Move the first child pointer too
@@ -1274,7 +1321,21 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 	// The middle key is only for routing purposes
 
 	// Truncate separator key to reduce branch node size
-	middleKey = truncateSeparatorKey(middleKey)
+	// For leaf: leftMax is the last key of left child (child.keys[mid])
+	// For branch: leftMax is the last key of left child (child.keys[mid-1] since mid was removed)
+	var leftMax []byte
+	if child.isLeaf {
+		// Leaf: left keeps [0:mid+1], so last key is child.keys[mid]
+		if mid < len(child.keys) {
+			leftMax = child.keys[mid]
+		}
+	} else {
+		// Branch: left keeps [0:mid], so last key is child.keys[mid-1]
+		if mid > 0 && mid-1 < len(child.keys) {
+			leftMax = child.keys[mid-1]
+		}
+	}
+	middleKey = truncateSeparatorKey(middleKey, leftMax)
 
 	return child, newNode, middleKey, []byte{}, nil
 }
