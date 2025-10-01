@@ -12,7 +12,7 @@ const (
 	BranchPageFlag uint16 = 0x02
 	MetaPageFlag   uint16 = 0x04
 
-	PageHeaderSize    = 32 // PageID(8) + Flags(2) + NumKeys(2) + Reserved(4) + NextLeaf(8) + PrevLeaf(8)
+	PageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + NextLeaf(8) + PrevLeaf(8)
 	LeafElementSize   = 12
 	BranchElementSize = 16
 
@@ -30,12 +30,13 @@ type Page struct {
 }
 
 // PageHeader represents the fixed-size header at the start of each page
-// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Reserved: 4][NextLeaf: 8][PrevLeaf: 8]
+// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][NextLeaf: 8][PrevLeaf: 8]
 type PageHeader struct {
 	PageID   PageID // 8 bytes
 	Flags    uint16 // 2 bytes (leaf/branch)
 	NumKeys  uint16 // 2 bytes
-	Reserved uint32 // 4 bytes (for future use)
+	Padding  uint32 // 4 bytes (alignment)
+	TxnID    uint64 // 8 bytes - transaction that committed this page version
 	NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
 	PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
 }

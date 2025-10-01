@@ -96,7 +96,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		}
 
 		// Serialize the new root to its page
-		if err := newRoot.serialize(); err != nil {
+		if err := newRoot.serialize(tx.txnID); err != nil {
 			return err
 		}
 
@@ -203,8 +203,8 @@ func (tx *Tx) Commit() error {
 
 	// Write all TX-local pages to disk and flush to global cache
 	for pageID, node := range tx.pages {
-		// Serialize node to its page
-		if err := node.serialize(); err != nil {
+		// Serialize node to its page with this transaction's ID
+		if err := node.serialize(tx.txnID); err != nil {
 			return err
 		}
 
@@ -212,6 +212,9 @@ func (tx *Tx) Commit() error {
 		if err := tx.db.store.pager.WritePage(pageID, node.page); err != nil {
 			return err
 		}
+
+		// Clear dirty flag after successful write
+		node.dirty = false
 
 		// Flush to global versioned cache with this transaction's ID
 		// This makes the new version visible to future transactions
@@ -357,6 +360,10 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 
 	// Track in pending pages (for COW)
 	tx.pending = append(tx.pending, pageID)
+
+	// Invalidate any stale cache entries for this reused PageID
+	// When a page is freed and reallocated, old versions must be removed
+	tx.db.store.cache.Invalidate(pageID)
 
 	// Read the freshly allocated page
 	page, err := tx.db.store.pager.ReadPage(pageID)

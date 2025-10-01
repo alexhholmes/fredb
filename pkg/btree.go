@@ -7,7 +7,7 @@ import (
 
 const (
 	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
-	MaxKeysPerNode = 64
+	MaxKeysPerNode = 4
 	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
 )
 
@@ -184,7 +184,8 @@ func (bt *BTree) NewCursor(tx *Tx) *Cursor {
 func (bt *BTree) Close() error {
 	// Flush root if dirty
 	if bt.root != nil && bt.root.dirty {
-		if err := bt.root.serialize(); err != nil {
+		meta := bt.pager.GetMeta()
+		if err := bt.root.serialize(meta.TxnID); err != nil {
 			return err
 		}
 		if err := bt.pager.WritePage(bt.root.pageID, bt.root.page); err != nil {
@@ -303,8 +304,9 @@ func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
 		}
 	}
 
-	// Cache in versioned global cache with transaction's snapshot txnID
-	bt.cache.Put(pageID, tx.txnID, node)
+	// Cache in versioned global cache with the TxnID from the page header
+	// This is the transaction ID that committed this page version to disk
+	bt.cache.Put(pageID, header.TxnID, node)
 
 	return node, nil
 }
@@ -336,7 +338,7 @@ func (n *Node) serializedSize() int {
 }
 
 // serialize encodes the node data into page.data
-func (n *Node) serialize() error {
+func (n *Node) serialize(txnID uint64) error {
 	// Check size
 	if n.serializedSize() > PageSize {
 		return ErrPageOverflow
@@ -351,6 +353,7 @@ func (n *Node) serialize() error {
 	header := &PageHeader{
 		PageID:   n.pageID,
 		NumKeys:  n.numKeys,
+		TxnID:    txnID,
 		NextLeaf: 0,
 		PrevLeaf: 0,
 	}
@@ -571,7 +574,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 			node.values[pos] = value
 			node.dirty = true
 			// Serialize after update
-			if err := node.serialize(); err != nil {
+			if err := node.serialize(tx.txnID); err != nil {
 				return nil, err
 			}
 			return node, nil
@@ -584,7 +587,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		node.dirty = true
 
 		// Serialize after modification
-		if err := node.serialize(); err != nil {
+		if err := node.serialize(tx.txnID); err != nil {
 			return nil, err
 		}
 
@@ -640,7 +643,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		node.dirty = true
 
 		// Serialize parent after modification
-		if err := node.serialize(); err != nil {
+		if err := node.serialize(tx.txnID); err != nil {
 			return nil, err
 		}
 
@@ -674,7 +677,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		node.children[i] = newChild.pageID
 		node.dirty = true
 		// Serialize after updating child pointer
-		if err := node.serialize(); err != nil {
+		if err := node.serialize(tx.txnID); err != nil {
 			return nil, err
 		}
 	}
@@ -1184,10 +1187,10 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 
 	// Serialize nodes to their pages
 	// This ensures if they're evicted and reloaded, the page has the correct data
-	if err := child.serialize(); err != nil {
+	if err := child.serialize(tx.txnID); err != nil {
 		return nil, nil, nil, nil, err
 	}
-	if err := newNode.serialize(); err != nil {
+	if err := newNode.serialize(tx.txnID); err != nil {
 		return nil, nil, nil, nil, err
 	}
 

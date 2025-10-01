@@ -13,8 +13,8 @@ func TestPageHeaderAlignment(t *testing.T) {
 		t.Errorf("PageID size = %d bytes, expected 8", size)
 	}
 
-	if size := unsafe.Sizeof(PageHeader{}); size != 32 {
-		t.Errorf("PageHeader size = %d bytes, expected 32", size)
+	if size := unsafe.Sizeof(PageHeader{}); size != 40 {
+		t.Errorf("PageHeader size = %d bytes, expected 40", size)
 	}
 
 	// Verify field offsets (no padding needed)
@@ -28,14 +28,17 @@ func TestPageHeaderAlignment(t *testing.T) {
 	if offset := unsafe.Offsetof(h.NumKeys); offset != 10 {
 		t.Errorf("NumKeys offset = %d, expected 10", offset)
 	}
-	if offset := unsafe.Offsetof(h.Reserved); offset != 12 {
-		t.Errorf("Reserved offset = %d, expected 12", offset)
+	if offset := unsafe.Offsetof(h.Padding); offset != 12 {
+		t.Errorf("Padding offset = %d, expected 12", offset)
 	}
-	if offset := unsafe.Offsetof(h.NextLeaf); offset != 16 {
-		t.Errorf("NextLeaf offset = %d, expected 16", offset)
+	if offset := unsafe.Offsetof(h.TxnID); offset != 16 {
+		t.Errorf("TxnID offset = %d, expected 16", offset)
 	}
-	if offset := unsafe.Offsetof(h.PrevLeaf); offset != 24 {
-		t.Errorf("PrevLeaf offset = %d, expected 24", offset)
+	if offset := unsafe.Offsetof(h.NextLeaf); offset != 24 {
+		t.Errorf("NextLeaf offset = %d, expected 24", offset)
+	}
+	if offset := unsafe.Offsetof(h.PrevLeaf); offset != 32 {
+		t.Errorf("PrevLeaf offset = %d, expected 32", offset)
 	}
 }
 
@@ -46,10 +49,11 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 
 	// Write header
 	writeHdr := PageHeader{
-		PageID:   42,
-		Flags:    LeafPageFlag,
-		NumKeys:  10,
-		Reserved: 99,
+		PageID:  42,
+		Flags:   LeafPageFlag,
+		NumKeys: 10,
+		Padding: 99,
+		TxnID:   123,
 	}
 	page.WriteHeader(&writeHdr)
 
@@ -65,8 +69,11 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 	if readHdr.NumKeys != writeHdr.NumKeys {
 		t.Errorf("NumKeys: got %d, want %d", readHdr.NumKeys, writeHdr.NumKeys)
 	}
-	if readHdr.Reserved != writeHdr.Reserved {
-		t.Errorf("Reserved: got %d, want %d", readHdr.Reserved, writeHdr.Reserved)
+	if readHdr.Padding != writeHdr.Padding {
+		t.Errorf("Padding: got %d, want %d", readHdr.Padding, writeHdr.Padding)
+	}
+	if readHdr.TxnID != writeHdr.TxnID {
+		t.Errorf("TxnID: got %d, want %d", readHdr.TxnID, writeHdr.TxnID)
 	}
 }
 
@@ -80,7 +87,8 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		PageID:   0x0123456789ABCDEF, // 8 bytes
 		Flags:    0x1234,             // 2 bytes
 		NumKeys:  0x5678,             // 2 bytes
-		Reserved: 0x9ABCDEF0,         // 4 bytes
+		Padding:  0x9ABCDEF0,         // 4 bytes
+		TxnID:    0x1122334455667788, // 8 bytes
 		NextLeaf: 0xFEDCBA9876543210, // 8 bytes
 		PrevLeaf: 0x0011223344556677, // 8 bytes
 	}
@@ -94,8 +102,10 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		0x34, 0x12,
 		// NumKeys (2 bytes, little-endian)
 		0x78, 0x56,
-		// Reserved (4 bytes, little-endian)
+		// Padding (4 bytes, little-endian)
 		0xF0, 0xDE, 0xBC, 0x9A,
+		// TxnID (8 bytes, little-endian)
+		0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
 		// NextLeaf (8 bytes, little-endian)
 		0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
 		// PrevLeaf (8 bytes, little-endian)

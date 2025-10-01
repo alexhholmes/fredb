@@ -93,6 +93,17 @@ func (c *PageCache) Put(pageID PageID, txnID uint64, node *Node) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Check if this exact version already exists (race condition protection)
+	if versions, exists := c.entries[pageID]; exists {
+		for _, existing := range versions {
+			if existing.txnID == txnID {
+				// Version already cached, update LRU and return
+				c.lruList.MoveToFront(existing.lruElement)
+				return
+			}
+		}
+	}
+
 	// Create new versioned entry
 	entry := &VersionedEntry{
 		pageID:   pageID,
@@ -138,8 +149,8 @@ func (c *PageCache) FlushDirty(pager *PageManager) error {
 				continue
 			}
 
-			// Serialize node
-			if serErr := entry.node.serialize(); serErr != nil {
+			// Serialize node with the transaction ID that committed this version
+			if serErr := entry.node.serialize(entry.txnID); serErr != nil {
 				if err == nil {
 					err = serErr
 				}
@@ -184,6 +195,29 @@ func (c *PageCache) Size() int {
 		total += len(versions)
 	}
 	return total
+}
+
+// Invalidate removes all cached versions of a page.
+// Used when a PageID is reallocated to prevent stale cache hits.
+func (c *PageCache) Invalidate(pageID PageID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	versions, exists := c.entries[pageID]
+	if !exists {
+		return
+	}
+
+	// Remove all versions from LRU list
+	for _, entry := range versions {
+		if entry.lruElement != nil {
+			c.lruList.Remove(entry.lruElement)
+			c.evictions.Add(1)
+		}
+	}
+
+	// Remove pageID entirely from cache
+	delete(c.entries, pageID)
 }
 
 // evictToWaterMark evicts old versions from LRU end until at lowWater.

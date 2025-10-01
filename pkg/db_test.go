@@ -251,6 +251,7 @@ func TestDBConcurrentReads(t *testing.T) {
 	// - Launch multiple reader goroutines
 	// - Verify all complete successfully
 	tmpfile := "/tmp/test_db_concurrent_reads.db"
+	os.Remove(tmpfile) // Clean up any old test file
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
