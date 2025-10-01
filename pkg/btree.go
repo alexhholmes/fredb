@@ -76,7 +76,7 @@ func NewBTree(pager PageManager) (*BTree, error) {
 
 	bt := &BTree{
 		pager: pager,
-		cache: NewPageCache(DefaultCacheSize),
+		cache: NewPageCache(DefaultCacheSize, pager),
 	}
 
 	// Check if existing root exists

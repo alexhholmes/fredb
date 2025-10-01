@@ -19,7 +19,7 @@ func makeTestNode(pageID PageID) *Node {
 func TestPageCacheBasics(t *testing.T) {
 	t.Parallel()
 
-	cache := NewPageCache(10)
+	cache := NewPageCache(10, nil)
 
 	// Test cache miss
 	_, hit := cache.Get(PageID(1), 0)
@@ -58,7 +58,7 @@ func TestPageCacheBasics(t *testing.T) {
 func TestPageCacheMVCC(t *testing.T) {
 	t.Parallel()
 
-	cache := NewPageCache(10)
+	cache := NewPageCache(10, nil)
 
 	// Add version 1 of page 1
 	node1 := makeTestNode(PageID(1))
@@ -106,7 +106,7 @@ func TestPageCacheMinSize(t *testing.T) {
 	t.Parallel()
 
 	// Request size too small
-	cache := NewPageCache(5)
+	cache := NewPageCache(5, nil)
 	if cache.maxSize != MinCacheSize {
 		t.Errorf("Expected min size %d, got %d", MinCacheSize, cache.maxSize)
 	}
@@ -116,7 +116,7 @@ func TestPageCacheMaxSize(t *testing.T) {
 	t.Parallel()
 
 	// Request size too large
-	cache := NewPageCache(100000)
+	cache := NewPageCache(100000, nil)
 	if cache.maxSize != MaxCacheSize {
 		t.Errorf("Expected max size %d, got %d", MaxCacheSize, cache.maxSize)
 	}
@@ -125,7 +125,7 @@ func TestPageCacheMaxSize(t *testing.T) {
 func TestPageCacheEviction(t *testing.T) {
 	t.Parallel()
 
-	cache := NewPageCache(20) // max=20, lowWater=16
+	cache := NewPageCache(20, nil) // max=20, lowWater=16
 
 	// Add 19 pages
 	for i := 1; i <= 19; i++ {
@@ -161,36 +161,5 @@ func TestPageCacheEviction(t *testing.T) {
 	// Page 20 (newest) should still be there
 	if _, hit := cache.Get(PageID(20), 20); !hit {
 		t.Error("Page 20 should still be in cache")
-	}
-}
-
-func TestPageCacheEvictDirtySkipped(t *testing.T) {
-	t.Parallel()
-
-	cache := NewPageCache(20) // max=20, lowWater=16
-
-	// Add 19 pages, mark first 3 dirty
-	for i := 1; i <= 19; i++ {
-		node := makeTestNode(PageID(i))
-		if i <= 3 {
-			node.dirty = true // Pages 1-3 dirty
-		}
-		cache.Put(PageID(i), uint64(i), node)
-	}
-
-	// Add 20th page - triggers eviction
-	cache.Put(PageID(20), 20, makeTestNode(PageID(20)))
-
-	// Should evict 4 clean pages, keeping dirty pages 1-3
-	size := cache.Size()
-	if size != 16 {
-		t.Errorf("Expected size 16 after eviction, got %d", size)
-	}
-
-	// Dirty pages 1-3 should still be there
-	for i := 1; i <= 3; i++ {
-		if _, hit := cache.Get(PageID(i), uint64(i)); !hit {
-			t.Errorf("Dirty page %d should not be evicted", i)
-		}
 	}
 }

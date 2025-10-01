@@ -15,6 +15,7 @@ type PageCache struct {
 	entries  map[PageID][]*VersionedEntry     // Multiple versions per page
 	lruList  *list.List                        // Doubly-linked list (front=MRU, back=LRU)
 	mu       sync.RWMutex
+	pager    PageManager                       // For flushing dirty pages during eviction
 
 	// Atomic GetOrLoad coordination
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
@@ -52,7 +53,7 @@ const (
 )
 
 // NewPageCache creates a new page cache with the specified maximum size
-func NewPageCache(maxSize int) *PageCache {
+func NewPageCache(maxSize int, pager PageManager) *PageCache {
 	if maxSize < MinCacheSize {
 		maxSize = MinCacheSize
 	}
@@ -65,6 +66,7 @@ func NewPageCache(maxSize int) *PageCache {
 		lowWater: (maxSize * 4) / 5, // 80%
 		entries:  make(map[PageID][]*VersionedEntry),
 		lruList:  list.New(),
+		pager:    pager,
 	}
 }
 
@@ -357,10 +359,20 @@ func (c *PageCache) evictToWaterMark() {
 		entry := elem.Value.(*VersionedEntry)
 		attempts++
 
-		// Skip dirty pages for now (will be flushed during eviction in future)
+		// Flush dirty pages before evicting
 		if entry.node.dirty {
-			c.lruList.MoveToFront(elem)
-			continue
+			// Serialize and write to disk
+			if err := entry.node.serialize(entry.txnID); err == nil {
+				if err := c.pager.WritePage(entry.pageID, entry.node.page); err == nil {
+					entry.node.dirty = false
+				}
+			}
+
+			// If flush failed, skip this page and try next
+			if entry.node.dirty {
+				c.lruList.MoveToFront(elem)
+				continue
+			}
 		}
 
 		// Evict clean version
