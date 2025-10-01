@@ -16,10 +16,24 @@ type PageCache struct {
 	lruList  *list.List                        // Doubly-linked list (front=MRU, back=LRU)
 	mu       sync.RWMutex
 
+	// Atomic GetOrLoad coordination
+	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
+	generations sync.Map // map[PageID]uint64 - detect invalidation during load
+
 	// Stats
 	hits      atomic.Uint64
 	misses    atomic.Uint64
 	evictions atomic.Uint64
+}
+
+// loadState coordinates concurrent disk loads for the same PageID
+type loadState struct {
+	mu        sync.Mutex
+	loading   bool          // Is someone currently loading?
+	done      chan struct{} // Closed when load completes
+	node      *Node         // Loaded node
+	diskTxnID uint64        // TxnID read from disk
+	err       error         // Load error if any
 }
 
 // VersionedEntry represents a cached node version with MVCC tracking
@@ -203,6 +217,13 @@ func (c *PageCache) Invalidate(pageID PageID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Increment generation to invalidate in-flight loads
+	gen := c.getGeneration(pageID)
+	c.generations.Store(pageID, gen+1)
+
+	// Clear any coordination state for in-flight loads
+	c.loadStates.Delete(pageID)
+
 	versions, exists := c.entries[pageID]
 	if !exists {
 		return
@@ -218,6 +239,101 @@ func (c *PageCache) Invalidate(pageID PageID) {
 
 	// Remove pageID entirely from cache
 	delete(c.entries, pageID)
+}
+
+// GetOrLoad retrieves a node from cache or loads it from disk atomically.
+// Coordinates concurrent loads to prevent multiple threads loading the same page.
+// Returns (node, true) if version is visible, (nil, false) otherwise.
+func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
+	loadFunc func() (*Node, uint64, error)) (*Node, bool) {
+
+	// Fast path: check cache first
+	if node, hit := c.Get(pageID, txnID); hit {
+		return node, true
+	}
+
+	// Cache miss - coordinate disk load
+	// Capture generation before load to detect invalidation
+	startGen := c.getGeneration(pageID)
+
+	// LoadOrStore ensures only one loadState exists per PageID
+	stateVal, _ := c.loadStates.LoadOrStore(pageID, &loadState{
+		done: make(chan struct{}),
+	})
+	state := stateVal.(*loadState)
+
+	// Try to become the loader
+	state.mu.Lock()
+	if state.loading {
+		// Someone else is loading, wait for them
+		state.mu.Unlock()
+		<-state.done
+
+		// Check result from loader
+		if state.err != nil {
+			return nil, false
+		}
+
+		// Check if loaded version is visible to this transaction
+		if state.diskTxnID <= txnID {
+			// Loader already cached it, return from cache
+			if node, hit := c.Get(pageID, txnID); hit {
+				return node, true
+			}
+		}
+
+		return nil, false
+	}
+
+	// We're the loader
+	state.loading = true
+	state.mu.Unlock()
+
+	// Load from disk WITHOUT holding any locks (I/O)
+	node, diskTxnID, err := loadFunc()
+
+	// Store result for waiting threads
+	state.mu.Lock()
+	state.node = node
+	state.diskTxnID = diskTxnID
+	state.err = err
+	close(state.done) // Wake up waiters
+	state.mu.Unlock()
+
+	if err != nil {
+		c.loadStates.Delete(pageID)
+		return nil, false
+	}
+
+	// Check if page was invalidated during load
+	endGen := c.getGeneration(pageID)
+	if endGen != startGen {
+		// Page was freed/reallocated during load, discard
+		c.loadStates.Delete(pageID)
+		return nil, false
+	}
+
+	// Cache the result (makes it visible to future threads)
+	c.Put(pageID, diskTxnID, node)
+
+	// Cleanup coordination state
+	c.loadStates.Delete(pageID)
+
+	// Check visibility for THIS transaction
+	if diskTxnID <= txnID {
+		return node, true
+	}
+
+	return nil, false
+}
+
+// getGeneration returns the current generation counter for a PageID.
+// Used to detect invalidation during disk loads.
+func (c *PageCache) getGeneration(pageID PageID) uint64 {
+	if val, ok := c.generations.Load(pageID); ok {
+		return val.(uint64)
+	}
+	return 0
 }
 
 // evictToWaterMark evicts old versions from LRU end until at lowWater.
