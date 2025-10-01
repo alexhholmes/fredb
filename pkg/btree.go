@@ -183,9 +183,9 @@ func (bt *BTree) searchNode(tx *Tx, node *Node, key []byte) ([]byte, error) {
 	}
 	// After loop: i points to first key > search_key (or numKeys if all keys <= search_key)
 
-	// If leaf node, check if key found
+	// If leaf node, active if key found
 	if node.isLeaf {
-		// In leaf, we need to check the previous position (since loop went past equal keys)
+		// In leaf, we need to active the previous position (since loop went past equal keys)
 		if i > 0 && bytes.Equal(key, node.keys[i-1]) {
 			return node.values[i-1], nil
 		}
@@ -247,7 +247,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
 			node.children = make([]PageID, 0)
 		}
 
-		// Cycle detection: check if deserialized node references itself
+		// Cycle detection: active if deserialized node references itself
 		if !node.isLeaf {
 			for _, childID := range node.children {
 				if childID == pageID {
@@ -279,7 +279,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
 
 // isFull checks if a node is full
 func (n *Node) isFull() bool {
-	// Use key count check for both leaf and branch nodes
+	// Use key count active for both leaf and branch nodes
 	// Overflow is detected during serialize with try-rollback
 	return int(n.numKeys) >= MaxKeysPerNode
 }
@@ -1102,7 +1102,7 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 // deleteFromNode recursively deletes a key from the subtree rooted at node with COW.
 // B+ tree: only delete from leaves, branch keys are routing only
 func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
-	// B+ tree: if this is a leaf, check if key exists and delete
+	// B+ tree: if this is a leaf, active if key exists and delete
 	if node.isLeaf {
 		idx := node.findKey(key)
 		if idx >= 0 {

@@ -15,15 +15,15 @@ var (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	db       *db       // Database this transaction belongs to (concrete type for internal access)
-	txnID    uint64    // Unique transaction ID
-	writable bool      // Is this a read-write transaction?
-	meta     *MetaPage // Snapshot of metadata at transaction start
-	root     *Node     // Root node at transaction start
+	db       *db              // Database this transaction belongs to (concrete type for internal access)
+	txnID    uint64           // Unique transaction ID
+	writable bool             // Is this a read-write transaction?
+	meta     *MetaPage        // Snapshot of metadata at transaction start
+	root     *Node            // Root node at transaction start
 	pages    map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  []PageID  // Pages allocated in this transaction (for COW)
-	freed    []PageID  // Pages freed in this transaction (for freelist)
-	done     bool      // Has Commit() or Rollback() been called?
+	pending  []PageID         // Pages allocated in this transaction (for COW)
+	freed    []PageID         // Pages freed in this transaction (for freelist)
+	done     bool             // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key.
@@ -61,7 +61,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrValueTooLarge
 	}
 
-	// Also check practical limit based on page size
+	// Also active practical limit based on page size
 	// At minimum, a leaf page must hold at least one key-value pair
 	maxSize := PageSize - PageHeaderSize - LeafElementSize
 	if len(key)+len(value) > maxSize {

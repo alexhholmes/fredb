@@ -8,25 +8,55 @@ Embedded B-tree key-value store in Go.
 
 ## Features
 
-- **B-tree storage**: Order-256 B-tree with efficient splits/merges
-- **Simple API**: Get/Set/Delete operations
-- **ACID transactions**: (planned) Multi-version concurrency control
-- **Crash recovery**: (in progress) WAL + dual meta pages
-- **Concurrent**: Read-write mutex for multi-threaded access
+- **B+ tree storage**: Full keys in branch nodes, efficient range scans
+- **MVCC transactions**: Snapshot isolation with copy-on-write
+- **ACID guarantees**: Atomic commits, durable writes, isolated reads
+- **Crash recovery**: Dual meta pages with CRC32 checksums
+- **Cursor API**: Forward/reverse iteration with seek support
+- **Concurrent access**: Multiple readers + single writer
 
 ## Usage
 
 ```go
-import "github.com/alexhholmes/fredb"
+import "github.com/alexhholmes/fredb/pkg"
 
-// Create database (in-memory for now)
-db, _ := fredb.NewDB("data.db")
+// Open database
+db, _ := pkg.Open("data.db")
 defer db.Close()
 
-// Basic operations
+// Simple operations
 db.Set([]byte("key"), []byte("value"))
 value, _ := db.Get([]byte("key"))
 db.Delete([]byte("key"))
+
+// Transactions (MVCC with snapshot isolation)
+db.View(func(tx *pkg.Tx) error {
+    value, err := tx.Get([]byte("key"))
+    // Read-only transaction
+    return err
+})
+
+db.Update(func(tx *pkg.Tx) error {
+    tx.Set([]byte("key"), []byte("value"))
+    tx.Delete([]byte("old-key"))
+    // Auto-commit on success, rollback on error
+    return nil
+})
+
+// Manual transactions
+tx, _ := db.Begin(true) // writable
+defer tx.Rollback()
+tx.Set([]byte("key"), []byte("value"))
+tx.Commit()
+
+// Cursor iteration
+tx, _ := db.Begin(false) // read-only
+defer tx.Rollback()
+cursor := tx.Cursor()
+for cursor.Seek([]byte("key")); cursor.Valid(); cursor.Next() {
+    key, value := cursor.Key(), cursor.Value()
+    // Process key-value pairs
+}
 ```
 
 ## Architecture

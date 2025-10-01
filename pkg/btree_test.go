@@ -593,7 +593,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 				t.Errorf("Key %s should be deleted", key)
 			}
 
-			// Verify some non-deleted keys still exist (spot check)
+			// Verify some non-deleted keys still exist (spot active)
 			checked := 0
 			for _, k := range keys {
 				if !deleted[k] && checked < 5 {
@@ -1171,7 +1171,7 @@ func TestPageOverflowMaxKeyValue(t *testing.T) {
 
 	// Test with key at MaxKeySize = 1024 and large value
 	// Should fit: PageSize - PageHeaderSize - LeafElementSize = 4048
-	key := make([]byte, 1024) // At MaxKeySize limit
+	key := make([]byte, 1024)   // At MaxKeySize limit
 	value := make([]byte, 3000) // Total = 4024, should fit in 4048
 
 	for i := range key {

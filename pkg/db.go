@@ -87,7 +87,7 @@ func (d *db) backgroundReleaser() {
 	for {
 		select {
 		case <-ticker.C:
-			// Periodic check
+			// Periodic active
 			minTxn := d.minReaderTxn()
 			d.releasePages(minTxn)
 

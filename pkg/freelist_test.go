@@ -299,7 +299,7 @@ func TestFreelistNoPageLeaks(t *testing.T) {
 			pageGrowth, initialPages, finalPages, maxExpectedGrowth)
 	}
 
-	// Also check that freelist size is reasonable
+	// Also active that freelist size is reasonable
 	if dm, ok := db.store.pager.(*DiskPageManager); ok {
 		dm.mu.Lock()
 		freeSize := dm.freelist.Size()

@@ -20,8 +20,8 @@ type Cursor struct {
 	valid bool       // Is cursor positioned on valid key?
 }
 
-// check validates that the cursor's transaction is still active
-func (it *Cursor) check() error {
+// active validates that the cursor's transaction is still active
+func (it *Cursor) active() error {
 	if it.tx != nil {
 		return it.tx.check()
 	}
@@ -32,7 +32,7 @@ func (it *Cursor) check() error {
 // Returns error if tree traversal fails
 func (it *Cursor) Seek(key []byte) error {
 	// Validate transaction state
-	if err := it.check(); err != nil {
+	if err := it.active(); err != nil {
 		return err
 	}
 
@@ -91,7 +91,7 @@ func (it *Cursor) Seek(key []byte) error {
 // B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Next() bool {
 	// Validate transaction state
-	if err := it.check(); err != nil {
+	if err := it.active(); err != nil {
 		it.valid = false
 		return false
 	}
@@ -119,7 +119,7 @@ func (it *Cursor) Next() bool {
 // B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Prev() bool {
 	// Validate transaction state
-	if err := it.check(); err != nil {
+	if err := it.active(); err != nil {
 		it.valid = false
 		return false
 	}

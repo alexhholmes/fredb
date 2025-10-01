@@ -10,12 +10,12 @@ import (
 // Each page can have multiple versions (one per committing transaction).
 // Readers see the latest version where version.txnID <= reader.txnID.
 type PageCache struct {
-	maxSize  int                               // Max total versions (e.g., 1024)
-	lowWater int                               // Evict to this (80% of max)
-	entries  map[PageID][]*VersionedEntry     // Multiple versions per page
-	lruList  *list.List                        // Doubly-linked list (front=MRU, back=LRU)
+	maxSize  int                          // Max total versions (e.g., 1024)
+	lowWater int                          // Evict to this (80% of max)
+	entries  map[PageID][]*VersionedEntry // Multiple versions per page
+	lruList  *list.List                   // Doubly-linked list (front=MRU, back=LRU)
 	mu       sync.RWMutex
-	pager    PageManager                       // For flushing dirty pages during eviction
+	pager    PageManager // For flushing dirty pages during eviction
 
 	// Atomic GetOrLoad coordination
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
@@ -249,7 +249,7 @@ func (c *PageCache) Invalidate(pageID PageID) {
 func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
 	loadFunc func() (*Node, uint64, error)) (*Node, bool) {
 
-	// Fast path: check cache first
+	// Fast path: active cache first
 	if node, hit := c.Get(pageID, txnID); hit {
 		return node, true
 	}

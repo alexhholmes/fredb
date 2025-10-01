@@ -753,7 +753,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	}
 
 	// Verify we loaded the older state (key2 should match the older root's content)
-	// If we loaded olderRoot, check if it has key2 or not
+	// If we loaded olderRoot, active if it has key2 or not
 	_, err = db3.Get([]byte("key2"))
 	if meta3.RootPageID == olderRoot {
 		// We're at the older state, verify its actual content

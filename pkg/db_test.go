@@ -807,7 +807,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	}
 	commitMu.Unlock()
 
-	// Sample check: verify some rolled-back keys don't exist
+	// Sample active: verify some rolled-back keys don't exist
 	for i := 0; i < 10; i++ {
 		// Check explicit rollback keys
 		key := []byte(fmt.Sprintf("rollback-tx-%d-key-0", i*100))
@@ -824,7 +824,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		}
 	}
 
-	// Heuristic check for page leaks: file size should be reasonable
+	// Heuristic active for page leaks: file size should be reasonable
 	// With 100 initial keys + ~500-750 committed transactions × 5-6 keys each
 	// = ~100 + 3000-4500 = ~4000 keys total
 	// At ~4KB per page with branching, expect < 10MB
@@ -1043,7 +1043,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 			}
 		}
 
-		// Spot check some keys
+		// Spot active some keys
 		testKeys := []int{100, 125, 150, 175, 199}
 		for _, i := range testKeys {
 			key := makeKey(i)
