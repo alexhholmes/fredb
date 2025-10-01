@@ -198,24 +198,25 @@ func (bt *BTree) Close() error {
 // searchNode recursively searches for a key in the tree
 // B+ tree: only leaf nodes contain actual data
 func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
-	// Binary search for key position
+	// Find position in current node
 	i := 0
-	for i < int(node.numKeys) && bytes.Compare(key, node.keys[i]) > 0 {
+	for i < int(node.numKeys) && bytes.Compare(key, node.keys[i]) >= 0 {
 		i++
 	}
+	// After loop: i points to first key > search_key (or numKeys if all keys <= search_key)
 
 	// If leaf node, check if key found
 	if node.isLeaf {
-		if i < int(node.numKeys) && bytes.Equal(key, node.keys[i]) {
-			// Found the key in leaf
-			return node.values[i], nil
+		// In leaf, we need to check the previous position (since loop went past equal keys)
+		if i > 0 && bytes.Equal(key, node.keys[i-1]) {
+			return node.values[i-1], nil
 		}
 		// Not found in leaf
 		return nil, ErrKeyNotFound
 	}
 
-	// Branch node: continue descending (even if key matches, we need the leaf)
-	// Load child node and continue search
+	// Branch node: continue descending
+	// i is the correct child index (first child with keys >= search_key)
 	child, err := bt.loadNode(node.children[i])
 	if err != nil {
 		return nil, err
@@ -622,7 +623,8 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		}
 
 		// Determine which child to use after split
-		if bytes.Compare(key, midKey) > 0 {
+		// B+ tree: midKey is the minimum of right child, so key >= midKey goes right
+		if bytes.Compare(key, midKey) >= 0 {
 			i++
 			child = rightChild
 		} else {
@@ -690,9 +692,13 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 		return nil, nil, err
 	}
 
-	// Add parent's separator key/value to left node
-	leftNode.keys = append(leftNode.keys, parent.keys[parentKeyIdx])
-	leftNode.values = append(leftNode.values, parent.values[parentKeyIdx])
+	// B+ tree: Only pull down separator for branch nodes, not leaves
+	if !leftNode.isLeaf {
+		// Branch merge: pull down separator from parent
+		leftNode.keys = append(leftNode.keys, parent.keys[parentKeyIdx])
+		leftNode.values = append(leftNode.values, parent.values[parentKeyIdx])
+	}
+	// For leaf merge: separator is routing only, don't pull it down
 
 	// Add all keys/values from right node to left node
 	leftNode.keys = append(leftNode.keys, rightNode.keys...)
@@ -741,26 +747,42 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		return nil, nil, nil, err
 	}
 
-	// Move a key from parent to node (at beginning)
-	node.keys = append([][]byte{parent.keys[parentKeyIdx]}, node.keys...)
-	node.values = append([][]byte{parent.values[parentKeyIdx]}, node.values...)
+	if node.isLeaf {
+		// B+ tree leaf borrow: move actual data from sibling, update parent separator
+		// Move the last key/value from left sibling to beginning of node
+		node.keys = append([][]byte{leftSibling.keys[leftSibling.numKeys-1]}, node.keys...)
+		node.values = append([][]byte{leftSibling.values[leftSibling.numKeys-1]}, node.values...)
 
-	// Move the last key from left sibling to parent
-	parent.keys[parentKeyIdx] = leftSibling.keys[leftSibling.numKeys-1]
-	parent.values[parentKeyIdx] = leftSibling.values[leftSibling.numKeys-1]
+		// Remove from left sibling
+		leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
+		leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
+		leftSibling.numKeys--
 
-	// If not leaf, move the last child pointer too
-	if !node.isLeaf {
+		// Update parent separator to be the first key of right node
+		parent.keys[parentKeyIdx] = node.keys[0]
+
+		node.numKeys++
+	} else {
+		// Branch borrow: traditional B-tree style (pull down separator, push up replacement)
+		// Move a key from parent to node (at beginning)
+		node.keys = append([][]byte{parent.keys[parentKeyIdx]}, node.keys...)
+		node.values = append([][]byte{parent.values[parentKeyIdx]}, node.values...)
+
+		// Move the last key from left sibling to parent
+		parent.keys[parentKeyIdx] = leftSibling.keys[leftSibling.numKeys-1]
+		parent.values[parentKeyIdx] = leftSibling.values[leftSibling.numKeys-1]
+
+		// Move the last child pointer too
 		node.children = append([]PageID{leftSibling.children[len(leftSibling.children)-1]}, node.children...)
 		leftSibling.children = leftSibling.children[:len(leftSibling.children)-1]
+
+		// Remove the last key from left sibling
+		leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
+		leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
+		leftSibling.numKeys--
+
+		node.numKeys++
 	}
-
-	// Remove the last key from left sibling
-	leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
-	leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
-	leftSibling.numKeys--
-
-	node.numKeys++
 
 	// Mark all as dirty
 	node.dirty = true
@@ -792,26 +814,42 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		return nil, nil, nil, err
 	}
 
-	// Move a key from parent to node (at end)
-	node.keys = append(node.keys, parent.keys[parentKeyIdx])
-	node.values = append(node.values, parent.values[parentKeyIdx])
+	if node.isLeaf {
+		// B+ tree leaf borrow: move actual data from sibling, update parent separator
+		// Move the first key/value from right sibling to end of node
+		node.keys = append(node.keys, rightSibling.keys[0])
+		node.values = append(node.values, rightSibling.values[0])
 
-	// Move the first key from right sibling to parent
-	parent.keys[parentKeyIdx] = rightSibling.keys[0]
-	parent.values[parentKeyIdx] = rightSibling.values[0]
+		// Remove from right sibling
+		rightSibling.keys = rightSibling.keys[1:]
+		rightSibling.values = rightSibling.values[1:]
+		rightSibling.numKeys--
 
-	// If not leaf, move the first child pointer too
-	if !node.isLeaf {
+		// Update parent separator to be the first key of right sibling
+		parent.keys[parentKeyIdx] = rightSibling.keys[0]
+
+		node.numKeys++
+	} else {
+		// Branch borrow: traditional B-tree style (pull down separator, push up replacement)
+		// Move a key from parent to node (at end)
+		node.keys = append(node.keys, parent.keys[parentKeyIdx])
+		node.values = append(node.values, parent.values[parentKeyIdx])
+
+		// Move the first key from right sibling to parent
+		parent.keys[parentKeyIdx] = rightSibling.keys[0]
+		parent.values[parentKeyIdx] = rightSibling.values[0]
+
+		// Move the first child pointer too
 		node.children = append(node.children, rightSibling.children[0])
 		rightSibling.children = rightSibling.children[1:]
+
+		// Remove the first key from right sibling
+		rightSibling.keys = rightSibling.keys[1:]
+		rightSibling.values = rightSibling.values[1:]
+		rightSibling.numKeys--
+
+		node.numKeys++
 	}
-
-	// Remove the first key from right sibling
-	rightSibling.keys = rightSibling.keys[1:]
-	rightSibling.values = rightSibling.values[1:]
-	rightSibling.numKeys--
-
-	node.numKeys++
 
 	// Mark all as dirty
 	node.dirty = true
@@ -992,8 +1030,9 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 	// Branch node: descend to child (never delete from branch)
 
 	// Find child where key might be
+	// B+ tree: separator keys are minimums of right children, so key >= separator goes right
 	childIdx := 0
-	for childIdx < int(node.numKeys) && bytes.Compare(key, node.keys[childIdx]) > 0 {
+	for childIdx < int(node.numKeys) && bytes.Compare(key, node.keys[childIdx]) >= 0 {
 		childIdx++
 	}
 
@@ -1049,22 +1088,23 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 
 	mid := MaxKeysPerNode / 2
 
-	// B+ tree: Extract middle key for parent routing (no value in parent)
-	middleKey := make([]byte, len(child.keys[mid]))
-	copy(middleKey, child.keys[mid])
-
 	// B+ tree semantics:
-	// - Leaf nodes: keep middle key in left child, parent gets copy for routing
-	// - Branch nodes: same behavior (routing keys only)
+	// - Leaf nodes: separator is first key of right child (child.keys[mid+1])
+	// - Branch nodes: separator is middle key (child.keys[mid])
+	var middleKey []byte
 	var leftKeyCount, rightKeyCount int
 	if child.isLeaf {
 		// Leaf split: left keeps [0:mid+1], right gets [mid+1:]
-		// Middle key appears in BOTH left child and parent
+		// Separator is the first key of the right child (minimum of right subtree)
+		middleKey = make([]byte, len(child.keys[mid+1]))
+		copy(middleKey, child.keys[mid+1])
 		leftKeyCount = mid + 1
 		rightKeyCount = len(child.keys) - mid - 1
 	} else {
 		// Branch split: left keeps [0:mid], right gets [mid+1:]
-		// Middle key only in parent (removed from children)
+		// Middle key goes to parent (removed from children)
+		middleKey = make([]byte, len(child.keys[mid]))
+		copy(middleKey, child.keys[mid])
 		leftKeyCount = mid
 		rightKeyCount = len(child.keys) - mid - 1
 	}
