@@ -12,7 +12,7 @@ const (
 	BranchPageFlag uint16 = 0x02
 	MetaPageFlag   uint16 = 0x04
 
-	PageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + NextLeaf(8) + PrevLeaf(8)
+	PageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + _NextLeaf(8) + _PrevLeaf(8)
 	LeafElementSize   = 12
 	BranchElementSize = 16
 
@@ -24,21 +24,60 @@ const (
 
 type PageID uint64
 
-// Page is raw disk page
+// Page is raw disk page (4096 bytes)
+//
+// LEAF PAGE LAYOUT:
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ Header (40 bytes)                                                   │
+// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf       │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ LeafElement[0] (12 bytes)                                           │
+// │ KeyOffset, KeySize, ValueOffset, ValueSize, Reserved                │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ LeafElement[1] (12 bytes)                                           │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ ...                                                                 │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ LeafElement[N-1] (12 bytes)                                         │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Data Area (variable, packed from start):                            │
+// │   key[0] | value[0] | key[1] | value[1] | ... | key[N-1] | value[N]│
+// └─────────────────────────────────────────────────────────────────────┘
+//
+// BRANCH PAGE LAYOUT:
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ Header (40 bytes)                                                   │
+// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf       │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ BranchElement[0] (16 bytes)                                         │
+// │ KeyOffset, KeySize, Reserved, ChildID                               │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ BranchElement[1] (16 bytes)                                         │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ ...                                                                 │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ BranchElement[N-1] (16 bytes)                                       │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Data Area (variable, packed from start):                            │
+// │   children[0] (8 bytes) | key[0] | key[1] | ... | key[N-1]         │
+// │   ↑ First child          ↑ BranchElement[0..N-1] point to keys     │
+// │   children[1..N] are in BranchElement[0..N-1].ChildID              │
+// └─────────────────────────────────────────────────────────────────────┘
+//
 type Page struct {
 	data [PageSize]byte
 }
 
 // PageHeader represents the fixed-size header at the start of each page
-// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][NextLeaf: 8][PrevLeaf: 8]
+// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][_NextLeaf: 8][_PrevLeaf: 8]
 type PageHeader struct {
-	PageID   PageID // 8 bytes
-	Flags    uint16 // 2 bytes (leaf/branch)
-	NumKeys  uint16 // 2 bytes
-	Padding  uint32 // 4 bytes (alignment)
-	TxnID    uint64 // 8 bytes - transaction that committed this page version
-	NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
-	PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
+	PageID    PageID // 8 bytes
+	Flags     uint16 // 2 bytes (leaf/branch)
+	NumKeys   uint16 // 2 bytes
+	Padding   uint32 // 4 bytes (alignment)
+	TxnID     uint64 // 8 bytes - transaction that committed this page version
+	_NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
+	_PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf page

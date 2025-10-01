@@ -9,6 +9,10 @@ const (
 	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
 	MaxKeysPerNode = 64
 	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
+
+	// maxSeparatorSize limits separator keys in branch nodes
+	// Separator only needs to be long enough to distinguish the split
+	maxSeparatorSize = 16
 )
 
 // Node wraps a Page with BTree operations
@@ -57,42 +61,6 @@ func (n *Node) clone() *Node {
 	}
 
 	return cloned
-}
-
-// getNextLeaf returns the next leaf pointer for this node (0 if none)
-func (n *Node) getNextLeaf() PageID {
-	if !n.isLeaf {
-		return 0
-	}
-	header := n.page.Header()
-	return header.NextLeaf
-}
-
-// setNextLeaf sets the next leaf pointer
-func (n *Node) setNextLeaf(id PageID) {
-	if n.isLeaf {
-		header := n.page.Header()
-		header.NextLeaf = id
-		n.dirty = true
-	}
-}
-
-// getPrevLeaf returns the previous leaf pointer for this node (0 if none)
-func (n *Node) getPrevLeaf() PageID {
-	if !n.isLeaf {
-		return 0
-	}
-	header := n.page.Header()
-	return header.PrevLeaf
-}
-
-// setPrevLeaf sets the previous leaf pointer
-func (n *Node) setPrevLeaf(id PageID) {
-	if n.isLeaf {
-		header := n.page.Header()
-		header.PrevLeaf = id
-		n.dirty = true
-	}
 }
 
 // BTree is the main structure
@@ -323,12 +291,12 @@ func (n *Node) isFull() bool {
 		return int(n.numKeys) >= MaxKeysPerNode
 	}
 
-	// Branch nodes: with 64-byte truncated separators, capacity is limited by size
-	// Conservative check: with 64-byte keys, we can fit ~50 separators
-	// PageHeaderSize (40) + FirstChild (8) + N * (BranchElementSize (16) + 64) <= 4096
-	// 48 + N * 80 <= 4096
-	// N <= 50.6
-	const maxBranchKeysWithTruncation = 50
+	// Branch nodes: with 16-byte truncated separators, capacity is limited by size
+	// Conservative check: with 16-byte keys, we can fit ~126 separators
+	// PageHeaderSize (40) + FirstChild (8) + N * (BranchElementSize (16) + 16) <= 4096
+	// 48 + N * 32 <= 4096
+	// N <= 126.5
+	const maxBranchKeysWithTruncation = 126
 	return int(n.numKeys) >= maxBranchKeysWithTruncation
 }
 
@@ -367,11 +335,11 @@ func (n *Node) serialize(txnID uint64) error {
 
 	// Write header
 	header := &PageHeader{
-		PageID:   n.pageID,
-		NumKeys:  n.numKeys,
-		TxnID:    txnID,
-		NextLeaf: 0,
-		PrevLeaf: 0,
+		PageID:    n.pageID,
+		NumKeys:   n.numKeys,
+		TxnID:     txnID,
+		_NextLeaf: 0,
+		_PrevLeaf: 0,
 	}
 	if n.isLeaf {
 		header.Flags = LeafPageFlag
@@ -510,6 +478,17 @@ func removeAt(slice [][]byte, index int) [][]byte {
 // removeChildAt removes child at index from slice
 func removeChildAt(slice []PageID, index int) []PageID {
 	return append(slice[:index], slice[index+1:]...)
+}
+
+// truncateSeparatorKey truncates a separator key to reduce branch node size.
+// Separator keys in branch nodes only need to be long enough to route correctly.
+func truncateSeparatorKey(key []byte) []byte {
+	if len(key) > maxSeparatorSize {
+		truncated := make([]byte, maxSeparatorSize)
+		copy(truncated, key)
+		return truncated
+	}
+	return key
 }
 
 // findKey returns the index of key in node, or -1 if not found
@@ -864,8 +843,8 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
 		leftSibling.numKeys--
 
-		// Update parent separator to be the first key of right node
-		parent.keys[parentKeyIdx] = node.keys[0]
+		// Update parent separator to be the first key of right node (truncated)
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(node.keys[0])
 
 		node.numKeys++
 	} else {
@@ -874,8 +853,8 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		node.keys = append([][]byte{parent.keys[parentKeyIdx]}, node.keys...)
 		node.values = append([][]byte{parent.values[parentKeyIdx]}, node.values...)
 
-		// Move the last key from left sibling to parent
-		parent.keys[parentKeyIdx] = leftSibling.keys[leftSibling.numKeys-1]
+		// Move the last key from left sibling to parent (truncated)
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(leftSibling.keys[leftSibling.numKeys-1])
 		parent.values[parentKeyIdx] = leftSibling.values[leftSibling.numKeys-1]
 
 		// Move the last child pointer too
@@ -931,8 +910,8 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		rightSibling.values = rightSibling.values[1:]
 		rightSibling.numKeys--
 
-		// Update parent separator to be the first key of right sibling
-		parent.keys[parentKeyIdx] = rightSibling.keys[0]
+		// Update parent separator to be the first key of right sibling (truncated)
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(rightSibling.keys[0])
 
 		node.numKeys++
 	} else {
@@ -941,8 +920,8 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		node.keys = append(node.keys, parent.keys[parentKeyIdx])
 		node.values = append(node.values, parent.values[parentKeyIdx])
 
-		// Move the first key from right sibling to parent
-		parent.keys[parentKeyIdx] = rightSibling.keys[0]
+		// Move the first key from right sibling to parent (truncated)
+		parent.keys[parentKeyIdx] = truncateSeparatorKey(rightSibling.keys[0])
 		parent.values[parentKeyIdx] = rightSibling.values[0]
 
 		// Move the first child pointer too
@@ -1291,14 +1270,7 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 	// The middle key is only for routing purposes
 
 	// Truncate separator key to reduce branch node size
-	// Separator only needs to be long enough to distinguish the split
-	// Use max 64 bytes for separator keys in branch nodes
-	const maxSeparatorSize = 64
-	if len(middleKey) > maxSeparatorSize {
-		truncated := make([]byte, maxSeparatorSize)
-		copy(truncated, middleKey)
-		middleKey = truncated
-	}
+	middleKey = truncateSeparatorKey(middleKey)
 
 	return child, newNode, middleKey, []byte{}, nil
 }
