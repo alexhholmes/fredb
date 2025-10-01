@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"bytes"
+	"fmt"
 )
 
 const (
@@ -648,6 +649,13 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		if err != nil {
 			return nil, err
 		}
+
+		// Sanity check: ensure we're not creating a self-reference
+		if newChild.pageID == node.pageID {
+			panic(fmt.Sprintf("BUG: trying to set child to parent's own ID! parent=%d, child=%d, i=%d, depth=%d",
+				node.pageID, newChild.pageID, i, depth))
+		}
+
 		node.children[i] = newChild.pageID
 		node.dirty = true
 		// Serialize after updating child pointer
