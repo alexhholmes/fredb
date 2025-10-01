@@ -91,7 +91,7 @@ func (dm *DiskPageManager) AllocatePage() (PageID, error) {
 
 	// Initialize empty page
 	emptyPage := &Page{}
-	if err := dm.writePageAt(id, emptyPage); err != nil {
+	if err := dm.writePageAtUnsafe(id, emptyPage); err != nil {
 		return 0, err
 	}
 
@@ -132,8 +132,8 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	metaPage.WriteMeta(meta)
 	metaPageID := PageID(meta.TxnID % 2)
 
-	// Write meta page to disk
-	if err := dm.writePageAt(metaPageID, metaPage); err != nil {
+	// Write meta page to disk (unsafe - already holding lock)
+	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
@@ -182,7 +182,7 @@ func (dm *DiskPageManager) Close() error {
 	dm.freelist.Serialize(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := dm.writePageAt(PageID(dm.meta.FreelistID)+PageID(i), freelistPages[i]); err != nil {
+		if err := dm.writePageAtUnsafe(PageID(dm.meta.FreelistID)+PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
@@ -195,7 +195,7 @@ func (dm *DiskPageManager) Close() error {
 	metaPage := &Page{}
 	metaPage.WriteMeta(&dm.meta)
 	metaPageID := PageID(dm.meta.TxnID % 2)
-	if err := dm.writePageAt(metaPageID, metaPage); err != nil {
+	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
@@ -302,6 +302,9 @@ func (dm *DiskPageManager) loadExistingDB() error {
 
 // readPageAt reads a page from a specific offset
 func (dm *DiskPageManager) readPageAt(id PageID) (*Page, error) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
 	offset := int64(id) * PageSize
 	if _, err := dm.file.Seek(offset, 0); err != nil {
 		return nil, err
@@ -319,8 +322,16 @@ func (dm *DiskPageManager) readPageAt(id PageID) (*Page, error) {
 	return page, nil
 }
 
-// writePageAt writes a page to a specific offset
+// writePageAt writes a page to a specific offset (with locking)
 func (dm *DiskPageManager) writePageAt(id PageID, page *Page) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	return dm.writePageAtUnsafe(id, page)
+}
+
+// writePageAtUnsafe writes a page without acquiring the lock (caller must hold lock)
+func (dm *DiskPageManager) writePageAtUnsafe(id PageID, page *Page) error {
 	offset := int64(id) * PageSize
 	if _, err := dm.file.Seek(offset, 0); err != nil {
 		return err

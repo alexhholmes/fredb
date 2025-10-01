@@ -188,12 +188,12 @@ func (tx *Tx) Commit() error {
 		return ErrTxNotWritable
 	}
 
-	// Mark as done before acquiring lock
-	tx.done = true
-
 	// Apply transaction changes to database
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
+
+	// Capture old root for rollback if commit fails
+	oldRoot := tx.db.store.root
 
 	// Apply transaction-local root to db.store.root
 	// This makes all COW changes visible to future transactions
@@ -205,11 +205,15 @@ func (tx *Tx) Commit() error {
 	for pageID, node := range tx.pages {
 		// Serialize node to its page with this transaction's ID
 		if err := node.serialize(tx.txnID); err != nil {
+			// Restore old root on failure
+			tx.db.store.root = oldRoot
 			return err
 		}
 
 		// Write to disk
 		if err := tx.db.store.pager.WritePage(pageID, node.page); err != nil {
+			// Restore old root on failure
+			tx.db.store.root = oldRoot
 			return err
 		}
 
@@ -250,6 +254,10 @@ func (tx *Tx) Commit() error {
 	}
 
 	tx.db.writerTx = nil
+
+	// Mark transaction as done ONLY after all writes succeed
+	// This ensures Rollback can clean up if any write fails
+	tx.done = true
 
 	return nil
 }
@@ -337,41 +345,63 @@ func (tx *Tx) addFreed(pageID PageID) {
 // allocatePage allocates a new page for this transaction
 // The allocated page is tracked in tx.pending for COW semantics
 func (tx *Tx) allocatePage() (PageID, *Page, error) {
-	// Allocate from pager (uses freelist or grows file)
-	// DiskPageManager.AllocatePage() is thread-safe via mutex
-	pageID, err := tx.db.store.pager.AllocatePage()
-	if err != nil {
-		return 0, nil, err
-	}
-
-	// VALIDATE: Check for duplicate allocation (freelist corruption)
-	for _, pid := range tx.pending {
-		if pid == pageID {
-			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
-				pageID, tx.txnID, tx.pending, tx.freed)
+	// Retry allocation if we get a page that's in tx.freed
+	// This can happen when background releaser moves pages from pending to free
+	const maxRetries = 10
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Allocate from pager (uses freelist or grows file)
+		// DiskPageManager.AllocatePage() is thread-safe via mutex
+		pageID, err := tx.db.store.pager.AllocatePage()
+		if err != nil {
+			return 0, nil, err
 		}
-	}
-	for _, pid := range tx.freed {
-		if pid == pageID {
-			return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d in tx.freed (txnID=%d, pending=%v, freed=%v)",
-				pageID, tx.txnID, tx.pending, tx.freed)
+
+		// Check for duplicate in tx.pending (should never happen)
+		for _, pid := range tx.pending {
+			if pid == pageID {
+				return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+					pageID, tx.txnID, tx.pending, tx.freed)
+			}
 		}
+
+		// Check if page is in tx.freed (race with background releaser)
+		// If so, skip and retry - this page was freed by an OLD transaction,
+		// released from pending, but we've already COW'd it in THIS transaction
+		inFreed := false
+		for _, pid := range tx.freed {
+			if pid == pageID {
+				inFreed = true
+				break
+			}
+		}
+		if inFreed {
+			// Return page to freelist and retry
+			if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
+				dm.mu.Lock()
+				dm.freelist.Free(pageID)
+				dm.mu.Unlock()
+			}
+			continue
+		}
+
+		// Track in pending pages (for COW)
+		tx.pending = append(tx.pending, pageID)
+
+		// Invalidate any stale cache entries for this reused PageID
+		// When a page is freed and reallocated, old versions must be removed
+		tx.db.store.cache.Invalidate(pageID)
+
+		// Read the freshly allocated page
+		page, err := tx.db.store.pager.ReadPage(pageID)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		return pageID, page, nil
 	}
 
-	// Track in pending pages (for COW)
-	tx.pending = append(tx.pending, pageID)
-
-	// Invalidate any stale cache entries for this reused PageID
-	// When a page is freed and reallocated, old versions must be removed
-	tx.db.store.cache.Invalidate(pageID)
-
-	// Read the freshly allocated page
-	page, err := tx.db.store.pager.ReadPage(pageID)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	return pageID, page, nil
+	return 0, nil, fmt.Errorf("FATAL: failed to allocate page after %d retries (txnID=%d, pending=%v, freed=%v)",
+		maxRetries, tx.txnID, tx.pending, tx.freed)
 }
 
 // ensureWritable ensures a node is safe to modify in this transaction.
