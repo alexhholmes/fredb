@@ -17,6 +17,20 @@ var (
 	ErrInvalidChecksum    = errors.New("invalid checksum")
 	ErrDatabaseClosed     = errors.New("database is closed")
 	ErrCorruption         = errors.New("data corruption detected")
+	ErrKeyTooLarge        = errors.New("key too large")
+	ErrValueTooLarge      = errors.New("value too large")
+)
+
+const (
+	// MaxKeySize is the maximum length of a key, in bytes.
+	// Set conservatively to ensure branch nodes can hold multiple keys.
+	// With 4KB pages, limiting keys to 1KB allows ~3 keys per branch node.
+	MaxKeySize = 1024
+
+	// MaxValueSize is the maximum length of a value, in bytes.
+	// Following bbolt's limit of (1 << 31) - 2, but in practice
+	// limited by page size since we don't support overflow pages yet.
+	MaxValueSize = (1 << 31) - 2
 )
 
 type db struct {

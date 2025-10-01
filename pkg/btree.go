@@ -7,7 +7,7 @@ import (
 
 const (
 	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
-	MaxKeysPerNode = 4
+	MaxKeysPerNode = 64
 	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
 )
 
@@ -313,9 +313,23 @@ func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
 	return node, nil
 }
 
-// isFull checks if a node is full (simplified for in-memory)
+// isFull checks if a node is full
+// For branch nodes with truncated separators, check size-based capacity
+// For leaf nodes, check key count
 func (n *Node) isFull() bool {
-	return int(n.numKeys) >= MaxKeysPerNode
+	if n.isLeaf {
+		// Leaf nodes: use key count check
+		// Overflow is detected during serialize with try-rollback
+		return int(n.numKeys) >= MaxKeysPerNode
+	}
+
+	// Branch nodes: with 64-byte truncated separators, capacity is limited by size
+	// Conservative check: with 64-byte keys, we can fit ~50 separators
+	// PageHeaderSize (40) + FirstChild (8) + N * (BranchElementSize (16) + 64) <= 4096
+	// 48 + N * 80 <= 4096
+	// N <= 50.6
+	const maxBranchKeysWithTruncation = 50
+	return int(n.numKeys) >= maxBranchKeysWithTruncation
 }
 
 // serializedSize calculates the size of the serialized node
@@ -573,10 +587,17 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 
 		// Check for update
 		if pos < int(node.numKeys) && bytes.Equal(key, node.keys[pos]) {
+			// Save old value for rollback
+			oldValue := make([]byte, len(node.values[pos]))
+			copy(oldValue, node.values[pos])
+
 			node.values[pos] = value
 			node.dirty = true
-			// Serialize after update
+
+			// Try serialize after update
 			if err := node.serialize(tx.txnID); err != nil {
+				// Rollback: restore old value
+				node.values[pos] = oldValue
 				return nil, err
 			}
 			return node, nil
@@ -588,8 +609,12 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		node.numKeys++
 		node.dirty = true
 
-		// Serialize after modification
+		// Try serialize after insertion
 		if err := node.serialize(tx.txnID); err != nil {
+			// Rollback: remove the inserted key/value
+			node.keys = append(node.keys[:pos], node.keys[pos+1:]...)
+			node.values = append(node.values[:pos], node.values[pos+1:]...)
+			node.numKeys--
 			return nil, err
 		}
 
@@ -664,7 +689,60 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 
 	// Recursive insert (may COW child)
 	newChild, err := bt.insertNonFull(tx, child, key, value)
-	if err != nil {
+	if err == ErrPageOverflow {
+		// Child couldn't fit the key/value - split it and retry
+		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, child)
+		if err != nil {
+			return nil, err
+		}
+
+		// COW parent to insert middle key and update pointers
+		node, err = tx.ensureWritable(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Insert middle key into parent
+		node.keys = insertAt(node.keys, i, midKey)
+		node.values = insertAt(node.values, i, midVal)
+
+		// Build new children array
+		newChildren := make([]PageID, len(node.children)+1)
+		copy(newChildren[:i], node.children[:i])
+		newChildren[i] = leftChild.pageID
+		newChildren[i+1] = rightChild.pageID
+		copy(newChildren[i+2:], node.children[i+1:])
+
+		node.children = newChildren
+		node.numKeys++
+		node.dirty = true
+
+		// Serialize parent after modification
+		if err := node.serialize(tx.txnID); err != nil {
+			return nil, err
+		}
+
+		// Retry insert into correct child
+		var insertedChild *Node
+		if bytes.Compare(key, midKey) >= 0 {
+			i++
+			insertedChild, err = bt.insertNonFull(tx, rightChild, key, value)
+		} else {
+			insertedChild, err = bt.insertNonFull(tx, leftChild, key, value)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Update parent pointer to the child we inserted into
+		node.children[i] = insertedChild.pageID
+		node.dirty = true
+		if err := node.serialize(tx.txnID); err != nil {
+			return nil, err
+		}
+
+		return node, nil
+	} else if err != nil {
 		return nil, err
 	}
 
@@ -1116,6 +1194,15 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 
 	mid := MaxKeysPerNode / 2
 
+	// For size-based splits with few keys, ensure mid doesn't exceed key count
+	// This handles large key/value overflow cases where numKeys < MaxKeysPerNode
+	if mid >= len(child.keys)-1 {
+		mid = len(child.keys)/2 - 1
+		if mid < 0 {
+			mid = 0
+		}
+	}
+
 	// B+ tree semantics:
 	// - Leaf nodes: separator is first key of right child (child.keys[mid+1])
 	// - Branch nodes: separator is middle key (child.keys[mid])
@@ -1202,5 +1289,16 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 
 	// B+ tree: Return empty value for parent (branch nodes don't store values)
 	// The middle key is only for routing purposes
+
+	// Truncate separator key to reduce branch node size
+	// Separator only needs to be long enough to distinguish the split
+	// Use max 64 bytes for separator keys in branch nodes
+	const maxSeparatorSize = 64
+	if len(middleKey) > maxSeparatorSize {
+		truncated := make([]byte, maxSeparatorSize)
+		copy(truncated, middleKey)
+		middleKey = truncated
+	}
+
 	return child, newNode, middleKey, []byte{}, nil
 }

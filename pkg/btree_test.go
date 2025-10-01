@@ -1072,17 +1072,16 @@ func TestPageOverflowLargeKey(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Key that's too large to fit in a page
-	// Max size = PageSize - PageHeaderSize - LeafElementSize = 4096 - 32 - 12 = 4052
-	largeKey := make([]byte, 4060)
+	// Key that exceeds MaxKeySize = 1024
+	largeKey := make([]byte, 2000)
 	for i := range largeKey {
 		largeKey[i] = byte(i % 256)
 	}
 	value := []byte("small_value")
 
 	err := db.Set(largeKey, value)
-	if err != ErrPageOverflow {
-		t.Errorf("Expected ErrPageOverflow for large key, got: %v", err)
+	if err != ErrKeyTooLarge {
+		t.Errorf("Expected ErrKeyTooLarge for large key, got: %v", err)
 	}
 }
 
@@ -1110,10 +1109,10 @@ func TestPageOverflowCombinedSize(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Key + value that individually fit but combined exceed PageSize
-	// Max size = PageSize - PageHeaderSize - LeafElementSize = 4096 - 32 - 12 = 4052
-	key := make([]byte, 2100)
-	value := make([]byte, 2100)
+	// Key + value that combined exceed PageSize
+	// Key within MaxKeySize = 1024, but combined size > page limit
+	key := make([]byte, 1000)
+	value := make([]byte, 3100) // Total 4100 > 4048
 	for i := range key {
 		key[i] = byte(i % 256)
 	}
@@ -1170,12 +1169,10 @@ func TestPageOverflowMaxKeyValue(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Test with maximum reasonable key+value size
+	// Test with key at MaxKeySize = 1024 and large value
 	// Should fit: PageSize - PageHeaderSize - LeafElementSize = 4048
-	maxSize := 4048
-
-	key := make([]byte, maxSize/2)
-	value := make([]byte, maxSize/2-100) // Leave some room for overhead
+	key := make([]byte, 1024) // At MaxKeySize limit
+	value := make([]byte, 3000) // Total = 4024, should fit in 4048
 
 	for i := range key {
 		key[i] = byte(i % 256)

@@ -54,8 +54,15 @@ func (tx *Tx) Set(key, value []byte) error {
 	}
 
 	// Validate key/value size before insertion
-	// Maximum size = PageSize - PageHeaderSize - LeafElementSize
-	// = 4096 - 32 - 16 = 4048 bytes for key + value
+	if len(key) > MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > MaxValueSize {
+		return ErrValueTooLarge
+	}
+
+	// Also check practical limit based on page size
+	// At minimum, a leaf page must hold at least one key-value pair
 	maxSize := PageSize - PageHeaderSize - LeafElementSize
 	if len(key)+len(value) > maxSize {
 		return ErrPageOverflow
@@ -107,8 +114,49 @@ func (tx *Tx) Set(key, value []byte) error {
 		root = newRoot
 	}
 
-	// Insert with recursive COW
-	newRoot, err := tx.db.store.insertNonFull(tx, root, key, value)
+	// Insert with recursive COW - retry until success or non-overflow error
+	// This handles cascading splits when parent nodes also overflow
+	maxRetries := 20 // Prevent infinite loops
+	var newRoot *Node
+	var err error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		newRoot, err = tx.db.store.insertNonFull(tx, root, key, value)
+		if err != ErrPageOverflow {
+			break // Success or non-overflow error
+		}
+
+		// Root couldn't fit the new entry - split it
+		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, root)
+		if err != nil {
+			return err
+		}
+
+		// Create new root
+		newRootID, newRootPage, err := tx.allocatePage()
+		if err != nil {
+			return err
+		}
+
+		newRoot = &Node{
+			page:     newRootPage,
+			pageID:   newRootID,
+			dirty:    true,
+			isLeaf:   false,
+			numKeys:  1,
+			keys:     [][]byte{midKey},
+			values:   [][]byte{midVal},
+			children: []PageID{leftChild.pageID, rightChild.pageID},
+		}
+
+		if err := newRoot.serialize(tx.txnID); err != nil {
+			return err
+		}
+
+		tx.pages[newRootID] = newRoot
+		root = newRoot // Use new root for next retry
+	}
+
 	if err != nil {
 		return err
 	}
@@ -348,6 +396,7 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 	// Retry allocation if we get a page that's in tx.freed
 	// This can happen when background releaser moves pages from pending to free
 	const maxRetries = 10
+retryLoop:
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Allocate from pager (uses freelist or grows file)
 		// DiskPageManager.AllocatePage() is thread-safe via mutex
@@ -365,23 +414,13 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 		}
 
 		// Check if page is in tx.freed (race with background releaser)
-		// If so, skip and retry - this page was freed by an OLD transaction,
-		// released from pending, but we've already COW'd it in THIS transaction
-		inFreed := false
+		// If so, skip and retry WITHOUT returning to freelist
+		// Returning it would cause the freelist to give it back immediately, creating a loop
+		// Instead, just skip - the freelist will eventually exhaust and grow the file
 		for _, pid := range tx.freed {
 			if pid == pageID {
-				inFreed = true
-				break
+				continue retryLoop // Skip this page, try allocating again
 			}
-		}
-		if inFreed {
-			// Return page to freelist and retry
-			if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
-				dm.mu.Lock()
-				dm.freelist.Free(pageID)
-				dm.mu.Unlock()
-			}
-			continue
 		}
 
 		// Track in pending pages (for COW)

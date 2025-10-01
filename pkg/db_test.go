@@ -595,3 +595,469 @@ func TestTxSnapshotIsolation(t *testing.T) {
 		}
 	}
 }
+
+// TestTxRollbackUnderContention tests that rollbacks don't corrupt state or leak pages
+// when multiple write transactions compete and some rollback intentionally
+func TestTxRollbackUnderContention(t *testing.T) {
+	t.Parallel()
+
+	if !*slow {
+		t.Skip("Skipping slow rollback test; use -slow to enable")
+	}
+
+	tmpfile := "/tmp/test_tx_rollback_contention.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+	defer db.Close()
+
+	// Insert 100 initial keys
+	for i := 0; i < 100; i++ {
+		key := []byte(fmt.Sprintf("initial-key-%d", i))
+		value := []byte(fmt.Sprintf("initial-value-%d", i))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert initial data: %v", err)
+		}
+	}
+
+	// Track committed transactions
+	type txResult struct {
+		keys   []string
+		values []string
+		update string // Updated key
+	}
+	committedTxs := make([]txResult, 0)
+	var commitMu sync.Mutex
+
+	numGoroutines := 50
+	opsPerGoroutine := 20
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	// Stats
+	var commits, explicitRollbacks, errorRollbacks, txInProgress int64
+	var statsMu sync.Mutex
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+
+			for j := 0; j < opsPerGoroutine; j++ {
+				opID := id*opsPerGoroutine + j
+
+				// Randomly choose outcome: 50% commit, 25% explicit rollback, 25% error rollback
+				outcome := opID % 4
+
+				if outcome == 0 || outcome == 1 {
+					// 50% commit (outcome 0 or 1)
+					result := txResult{
+						keys:   make([]string, 5),
+						values: make([]string, 5),
+						update: fmt.Sprintf("initial-key-%d", opID%100),
+					}
+
+					// Use Update to commit
+					err := db.Update(func(tx *Tx) error {
+						// Write 5 new keys
+						for k := 0; k < 5; k++ {
+							key := []byte(fmt.Sprintf("tx-%d-key-%d", opID, k))
+							value := []byte(fmt.Sprintf("tx-%d-value-%d", opID, k))
+							result.keys[k] = string(key)
+							result.values[k] = string(value)
+							if err := tx.Set(key, value); err != nil {
+								return err
+							}
+						}
+
+						// Update 1 existing key
+						updateKey := []byte(result.update)
+						updateValue := []byte(fmt.Sprintf("updated-by-tx-%d", opID))
+						result.values = append(result.values, string(updateValue))
+						if err := tx.Set(updateKey, updateValue); err != nil {
+							return err
+						}
+
+						return nil
+					})
+
+					if err == ErrTxInProgress {
+						// Retry handled by outer retry logic
+						statsMu.Lock()
+						txInProgress++
+						statsMu.Unlock()
+						j-- // Retry this operation
+						continue
+					}
+
+					if err == nil {
+						// Committed successfully
+						commitMu.Lock()
+						committedTxs = append(committedTxs, result)
+						commitMu.Unlock()
+
+						statsMu.Lock()
+						commits++
+						statsMu.Unlock()
+					}
+				} else if outcome == 2 {
+					// 25% explicit rollback
+					for {
+						tx, err := db.Begin(true)
+						if err == ErrTxInProgress {
+							statsMu.Lock()
+							txInProgress++
+							statsMu.Unlock()
+							continue
+						}
+						if err != nil {
+							t.Errorf("Failed to begin tx: %v", err)
+							break
+						}
+
+						// Write some keys (will be rolled back)
+						for k := 0; k < 5; k++ {
+							key := []byte(fmt.Sprintf("rollback-tx-%d-key-%d", opID, k))
+							value := []byte(fmt.Sprintf("rollback-tx-%d-value-%d", opID, k))
+							if err := tx.Set(key, value); err != nil {
+								t.Errorf("Set failed in rollback test: %v", err)
+							}
+						}
+
+						// Explicit rollback
+						if err := tx.Rollback(); err != nil {
+							t.Errorf("Rollback failed: %v", err)
+						}
+
+						statsMu.Lock()
+						explicitRollbacks++
+						statsMu.Unlock()
+						break
+					}
+				} else {
+					// 25% error rollback (via Update returning error)
+					err := db.Update(func(tx *Tx) error {
+						// Write some keys
+						for k := 0; k < 5; k++ {
+							key := []byte(fmt.Sprintf("error-tx-%d-key-%d", opID, k))
+							value := []byte(fmt.Sprintf("error-tx-%d-value-%d", opID, k))
+							if err := tx.Set(key, value); err != nil {
+								return err
+							}
+						}
+
+						// Return error to trigger rollback
+						return fmt.Errorf("intentional error for rollback test")
+					})
+
+					if err == ErrTxInProgress {
+						statsMu.Lock()
+						txInProgress++
+						statsMu.Unlock()
+						j-- // Retry
+						continue
+					}
+
+					if err != nil {
+						// Expected error - rollback happened
+						statsMu.Lock()
+						errorRollbacks++
+						statsMu.Unlock()
+					}
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Log statistics
+	t.Logf("Stats: commits=%d, explicit_rollbacks=%d, error_rollbacks=%d, tx_in_progress_retries=%d",
+		commits, explicitRollbacks, errorRollbacks, txInProgress)
+
+	// Verify all committed keys exist with correct values
+	commitMu.Lock()
+	for txIdx, result := range committedTxs {
+		// Verify new keys
+		for i := 0; i < 5; i++ {
+			val, err := db.Get([]byte(result.keys[i]))
+			if err != nil {
+				t.Errorf("Committed tx %d: key %s not found: %v", txIdx, result.keys[i], err)
+				continue
+			}
+			if string(val) != result.values[i] {
+				t.Errorf("Committed tx %d: key %s value mismatch: got %s, expected %s",
+					txIdx, result.keys[i], string(val), result.values[i])
+			}
+		}
+
+		// Verify updated key
+		val, err := db.Get([]byte(result.update))
+		if err != nil {
+			t.Errorf("Committed tx %d: updated key %s not found: %v", txIdx, result.update, err)
+		} else {
+			// Value should be from SOME committed transaction (last writer wins)
+			// Just verify it's not the original value
+			if string(val) == fmt.Sprintf("initial-value-%s", result.update[12:]) {
+				t.Logf("Warning: Updated key %s still has initial value (overwritten by later tx?)", result.update)
+			}
+		}
+	}
+	commitMu.Unlock()
+
+	// Sample check: verify some rolled-back keys don't exist
+	for i := 0; i < 10; i++ {
+		// Check explicit rollback keys
+		key := []byte(fmt.Sprintf("rollback-tx-%d-key-0", i*100))
+		_, err := db.Get(key)
+		if err != ErrKeyNotFound {
+			t.Errorf("Rolled-back key should not exist: %s, got error: %v", key, err)
+		}
+
+		// Check error rollback keys
+		key = []byte(fmt.Sprintf("error-tx-%d-key-0", i*100))
+		_, err = db.Get(key)
+		if err != ErrKeyNotFound {
+			t.Errorf("Error-rolled-back key should not exist: %s, got error: %v", key, err)
+		}
+	}
+
+	// Heuristic check for page leaks: file size should be reasonable
+	// With 100 initial keys + ~500-750 committed transactions × 5-6 keys each
+	// = ~100 + 3000-4500 = ~4000 keys total
+	// At ~4KB per page with branching, expect < 10MB
+	info, err := os.Stat(tmpfile)
+	if err != nil {
+		t.Errorf("Failed to stat db file: %v", err)
+	} else {
+		sizeMB := float64(info.Size()) / (1024 * 1024)
+		t.Logf("Database file size: %.2f MB", sizeMB)
+		if sizeMB > 10.0 {
+			t.Errorf("File size suspiciously large (%.2f MB), possible page leak", sizeMB)
+		}
+	}
+}
+
+// TestDBLargeKeysPerPage tests inserting large key-value pairs
+// where only 2 pairs fit per page (stress test for page splits)
+func TestDBLargeKeysPerPage(t *testing.T) {
+	t.Parallel()
+
+	tmpfile := "/tmp/test_db_large_keys.db"
+	defer os.Remove(tmpfile)
+
+	db, err := Open(tmpfile)
+	if err != nil {
+		t.Fatalf("Failed to create DB: %v", err)
+	}
+	defer db.Close()
+
+	// Calculate key/value size for 2 pairs per page
+	// PageSize = 4096, PageHeaderSize = 40, LeafElementSize = 16
+	// Available = 4096 - 40 = 4056
+	// For 2 pairs: 2 * 16 = 32 bytes metadata
+	// Data space = 4056 - 32 = 4024 bytes
+	// Per pair = 2012 bytes total
+	// Limit keys to 500 bytes (within MaxKeySize = 1024)
+	// Use 500+1500 = 2000 bytes per pair for ~2 pairs per page
+	keySize := 500
+	valueSize := 1500
+
+	// Helper to create large key/value
+	makeKey := func(i int) []byte {
+		key := make([]byte, keySize)
+		header := fmt.Sprintf("key-%06d-", i)
+		copy(key, header)
+		// Fill rest with pattern
+		for j := len(header); j < keySize; j++ {
+			key[j] = byte('A' + (j % 26))
+		}
+		return key
+	}
+
+	makeValue := func(i int) []byte {
+		value := make([]byte, valueSize)
+		header := fmt.Sprintf("value-%06d-", i)
+		copy(value, header)
+		// Fill rest with pattern
+		for j := len(header); j < valueSize; j++ {
+			value[j] = byte('0' + (j % 10))
+		}
+		return value
+	}
+
+	// Test 1: Insert 10 large keys (will cause multiple splits)
+	t.Run("InsertLargeKeys", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			key := makeKey(i)
+			value := makeValue(i)
+			if err := db.Set(key, value); err != nil {
+				t.Fatalf("Failed to insert large key %d: %v", i, err)
+			}
+		}
+	})
+
+	// Test 2: Read back all keys
+	t.Run("ReadLargeKeys", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			key := makeKey(i)
+			expectedValue := makeValue(i)
+
+			value, err := db.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get large key %d: %v", i, err)
+				continue
+			}
+
+			if len(value) != valueSize {
+				t.Errorf("Key %d: value size mismatch: got %d, expected %d", i, len(value), valueSize)
+			}
+
+			if string(value) != string(expectedValue) {
+				t.Errorf("Key %d: value mismatch", i)
+			}
+		}
+	})
+
+	// Test 3: Update large keys
+	t.Run("UpdateLargeKeys", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			key := makeKey(i)
+			// New value with different pattern
+			newValue := make([]byte, valueSize)
+			header := fmt.Sprintf("updated-%06d-", i)
+			copy(newValue, header)
+			for j := len(header); j < valueSize; j++ {
+				newValue[j] = byte('Z' - (j % 26))
+			}
+
+			if err := db.Set(key, newValue); err != nil {
+				t.Fatalf("Failed to update large key %d: %v", i, err)
+			}
+
+			// Verify update
+			value, err := db.Get(key)
+			if err != nil {
+				t.Errorf("Failed to get updated key %d: %v", i, err)
+				continue
+			}
+
+			if string(value) != string(newValue) {
+				t.Errorf("Key %d: updated value mismatch", i)
+			}
+		}
+	})
+
+	// Test 4: Delete large keys
+	t.Run("DeleteLargeKeys", func(t *testing.T) {
+		// Delete every other key
+		for i := 0; i < 10; i += 2 {
+			key := makeKey(i)
+			if err := db.Delete(key); err != nil {
+				t.Errorf("Failed to delete large key %d: %v", i, err)
+			}
+
+			// Verify deleted
+			_, err := db.Get(key)
+			if err != ErrKeyNotFound {
+				t.Errorf("Key %d should be deleted, got error: %v", i, err)
+			}
+		}
+
+		// Verify remaining keys still exist
+		for i := 1; i < 10; i += 2 {
+			key := makeKey(i)
+			_, err := db.Get(key)
+			if err != nil {
+				t.Errorf("Remaining key %d should exist: %v", i, err)
+			}
+		}
+	})
+
+	// Test 5: Concurrent operations with large keys
+	if *slow {
+		t.Run("ConcurrentLargeKeys", func(t *testing.T) {
+			numGoroutines := 20
+			keysPerGoroutine := 10
+			var wg sync.WaitGroup
+			wg.Add(numGoroutines)
+
+			for g := 0; g < numGoroutines; g++ {
+				go func(id int) {
+					defer wg.Done()
+
+					for j := 0; j < keysPerGoroutine; j++ {
+						keyID := id*1000 + j
+						key := makeKey(keyID)
+						value := makeValue(keyID)
+
+						// Retry on conflict
+						for {
+							err := db.Set(key, value)
+							if err == ErrTxInProgress {
+								continue
+							}
+							if err != nil {
+								t.Errorf("Goroutine %d: Set failed: %v", id, err)
+								return
+							}
+							break
+						}
+					}
+				}(g)
+			}
+
+			wg.Wait()
+
+			// Verify all concurrent writes
+			for g := 0; g < numGoroutines; g++ {
+				for j := 0; j < keysPerGoroutine; j++ {
+					keyID := g*1000 + j
+					key := makeKey(keyID)
+					expectedValue := makeValue(keyID)
+
+					value, err := db.Get(key)
+					if err != nil {
+						t.Errorf("Concurrent key %d not found: %v", keyID, err)
+						continue
+					}
+
+					if string(value) != string(expectedValue) {
+						t.Errorf("Concurrent key %d: value mismatch", keyID)
+					}
+				}
+			}
+		})
+	}
+
+	// Test 6: Fill a tree to force deep splits
+	t.Run("DeepTreeWithLargeKeys", func(t *testing.T) {
+		// Insert 100 more large keys to create a deeper tree
+		for i := 100; i < 200; i++ {
+			key := makeKey(i)
+			value := makeValue(i)
+			if err := db.Set(key, value); err != nil {
+				t.Fatalf("Failed to insert key %d in deep tree: %v", i, err)
+			}
+		}
+
+		// Spot check some keys
+		testKeys := []int{100, 125, 150, 175, 199}
+		for _, i := range testKeys {
+			key := makeKey(i)
+			expectedValue := makeValue(i)
+
+			value, err := db.Get(key)
+			if err != nil {
+				t.Errorf("Key %d not found in deep tree: %v", i, err)
+				continue
+			}
+
+			if string(value) != string(expectedValue) {
+				t.Errorf("Key %d in deep tree: value mismatch", i)
+			}
+		}
+	})
+}
