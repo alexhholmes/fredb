@@ -20,6 +20,7 @@ type Tx struct {
 	writable bool      // Is this a read-write transaction?
 	meta     *MetaPage // Snapshot of metadata at transaction start
 	root     *Node     // Root node at transaction start
+	pages    map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	pending  []PageID  // Pages allocated in this transaction (for COW)
 	freed    []PageID  // Pages freed in this transaction (for freelist)
 	done     bool      // Has Commit() or Rollback() been called?
@@ -38,8 +39,8 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	// Search from transaction's root
-	return tx.db.store.searchNode(tx.root, key)
+	// Search from transaction's root (pass tx for versioned cache access)
+	return tx.db.store.searchNode(tx, tx.root, key)
 }
 
 // Set stores a key-value pair.
@@ -99,9 +100,9 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		// Cache the new root
-		// The split children were already cached in splitChild()
-		tx.db.store.cache.Put(newRootID, newRoot)
+		// Store the new root in TX-local cache
+		// The split children were already stored in splitChild()
+		tx.pages[newRootID] = newRoot
 
 		root = newRoot
 	}
@@ -155,7 +156,7 @@ func (tx *Tx) Delete(key []byte) error {
 			tx.addFreed(newRoot.pageID)
 
 			// Load the only child as new root
-			newRoot, err = tx.db.store.loadNode(newRoot.children[0])
+			newRoot, err = tx.db.store.loadNode(tx, newRoot.children[0])
 			if err != nil {
 				return err
 			}
@@ -200,15 +201,21 @@ func (tx *Tx) Commit() error {
 		tx.db.store.root = tx.root
 	}
 
-	// Write all dirty pages to disk
-	// All pages in tx.pending should be dirty (they were created/modified in this transaction)
-	if err := tx.db.store.cache.WriteDirtyPages(tx.pending, tx.db.store.pager); err != nil {
-		return err
-	}
+	// Write all TX-local pages to disk and flush to global cache
+	for pageID, node := range tx.pages {
+		// Serialize node to its page
+		if err := node.serialize(); err != nil {
+			return err
+		}
 
-	// Unpin all pages allocated during this transaction
-	for _, pageID := range tx.pending {
-		tx.db.store.cache.Unpin(pageID)
+		// Write to disk
+		if err := tx.db.store.pager.WritePage(pageID, node.page); err != nil {
+			return err
+		}
+
+		// Flush to global versioned cache with this transaction's ID
+		// This makes the new version visible to future transactions
+		tx.db.store.cache.Put(pageID, tx.txnID, node)
 	}
 
 	// Add freed pages to pending at this transaction ID
@@ -259,11 +266,8 @@ func (tx *Tx) Rollback() error {
 	defer tx.db.mu.Unlock()
 
 	if tx.writable {
-		// Unpin all pages allocated during this transaction
-		// Since we're rolling back, we don't need them anymore
-		for _, pageID := range tx.pending {
-			tx.db.store.cache.Unpin(pageID)
-		}
+		// Clear TX-local cache - discard all uncommitted changes
+		tx.pages = nil
 
 		// Return allocated but uncommitted pages to the freelist
 		// These pages were allocated during the transaction but never used
@@ -367,7 +371,12 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 // Performs COW only if the node doesn't already belong to this transaction.
 // Returns a writable node (either the original if already owned, or a clone).
 func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
-	// Check if this node already belongs to this transaction
+	// 1. Check TX-local cache first - if already COW'd in this transaction
+	if cloned, exists := tx.pages[node.pageID]; exists {
+		return cloned, nil
+	}
+
+	// 2. Check if this node already belongs to this transaction (pending allocations)
 	// If its pageID is in tx.pending, it was allocated in this transaction
 	for _, pid := range tx.pending {
 		if pid == node.pageID {
@@ -376,7 +385,7 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 		}
 	}
 
-	// Node doesn't belong to this transaction, perform Copy-On-Write
+	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
 	cloned := node.clone()
 
 	// Allocate new page for cloned node
@@ -394,13 +403,13 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	// The caller will serialize after modifications
 
 	// Track old page as freed
-	// NOTE: Just tracks freed pages, doesn't reclaim them yet.
-	// Future work: implement versioned freelist to safely reclaim pages
-	// after all transactions that might reference them have finished.
+	// These pages will be added to freelist's pending list on commit
+	// and reclaimed when all readers that might reference them have finished
 	tx.addFreed(node.pageID)
 
-	// Cache immediately - serialization will update the page data in-place
-	tx.db.store.cache.Put(pageID, cloned)
+	// Store in TX-LOCAL cache (NOT global cache yet)
+	// Will be flushed to global cache on Commit()
+	tx.pages[pageID] = cloned
 
 	return cloned, nil
 }

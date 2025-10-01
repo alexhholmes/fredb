@@ -74,7 +74,9 @@ func TestDiskPageManagerBasic(t *testing.T) {
 func TestDiskPageManagerPersistence(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_persist.db"
+	// Use unique filename per test to avoid parallel test collisions
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
 	// Create database and insert 100 keys

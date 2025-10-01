@@ -180,6 +180,11 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 		done:     false,
 	}
 
+	// Initialize TX-local cache for write transactions
+	if writable {
+		tx.pages = make(map[PageID]*Node)
+	}
+
 	// Track active transaction
 	if writable {
 		d.writerTx = tx

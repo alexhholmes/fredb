@@ -113,11 +113,23 @@ func NewBTree(pager PageManager) (*BTree, error) {
 
 	// Check if existing root exists
 	if meta.RootPageID != 0 {
-		// Load existing root
-		root, err := bt.loadNode(meta.RootPageID)
+		// Load existing root directly (no transaction during initialization)
+		rootPage, err := pager.ReadPage(meta.RootPageID)
 		if err != nil {
 			return nil, err
 		}
+
+		root := &Node{
+			page:   rootPage,
+			pageID: meta.RootPageID,
+			dirty:  false,
+		}
+
+		// Deserialize root
+		if err := root.deserialize(); err != nil {
+			return nil, err
+		}
+
 		bt.root = root
 		// Root is never cached (always stays in bt.root)
 		return bt, nil
@@ -198,7 +210,7 @@ func (bt *BTree) Close() error {
 
 // searchNode recursively searches for a key in the tree
 // B+ tree: only leaf nodes contain actual data
-func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
+func (bt *BTree) searchNode(tx *Tx, node *Node, key []byte) ([]byte, error) {
 	// Find position in current node
 	i := 0
 	for i < int(node.numKeys) && bytes.Compare(key, node.keys[i]) >= 0 {
@@ -218,20 +230,30 @@ func (bt *BTree) searchNode(node *Node, key []byte) ([]byte, error) {
 
 	// Branch node: continue descending
 	// i is the correct child index (first child with keys >= search_key)
-	child, err := bt.loadNode(node.children[i])
+	child, err := bt.loadNode(tx, node.children[i])
 	if err != nil {
 		return nil, err
 	}
 
-	return bt.searchNode(child, key)
+	return bt.searchNode(tx, child, key)
 }
 
-// loadNode loads a node from disk or cache
-func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
-	// Check cache first
-	if cached, hit := bt.cache.Get(pageID); hit {
-		bt.cache.Unpin(pageID)
+// loadNode loads a node using hybrid cache: tx.pages → versioned global cache → disk
+func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
+	// MVCC requires a transaction for snapshot isolation
+	if tx == nil {
+		return nil, fmt.Errorf("loadNode requires a transaction (cannot be nil)")
+	}
 
+	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
+	if tx.writable && tx.pages != nil {
+		if node, exists := tx.pages[pageID]; exists {
+			return node, nil
+		}
+	}
+
+	// 2. Check versioned global cache for committed versions
+	if cached, hit := bt.cache.Get(pageID, tx.txnID); hit {
 		// Cycle detection: check if this node references itself
 		if !cached.isLeaf {
 			for _, childID := range cached.children {
@@ -244,7 +266,7 @@ func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 		return cached, nil
 	}
 
-	// Load from disk
+	// 3. Load from disk
 	page, err := bt.pager.ReadPage(pageID)
 	if err != nil {
 		return nil, err
@@ -281,9 +303,8 @@ func (bt *BTree) loadNode(pageID PageID) (*Node, error) {
 		}
 	}
 
-	// Cache it
-	bt.cache.Put(pageID, node)
-	bt.cache.Unpin(pageID)
+	// Cache in versioned global cache with transaction's snapshot txnID
+	bt.cache.Put(pageID, tx.txnID, node)
 
 	return node, nil
 }
@@ -487,11 +508,11 @@ func (n *Node) findKey(key []byte) int {
 }
 
 // findPredecessor finds the predecessor key/value in the subtree rooted at node
-func (bt *BTree) findPredecessor(node *Node) ([]byte, []byte, error) {
+func (bt *BTree) findPredecessor(tx *Tx, node *Node) ([]byte, []byte, error) {
 	// Keep going right until we reach a leaf
 	for !node.isLeaf {
 		lastChildIdx := len(node.children) - 1
-		child, err := bt.loadNode(node.children[lastChildIdx])
+		child, err := bt.loadNode(tx, node.children[lastChildIdx])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -507,10 +528,10 @@ func (bt *BTree) findPredecessor(node *Node) ([]byte, []byte, error) {
 }
 
 // findSuccessor finds the successor key/value in the subtree rooted at node
-func (bt *BTree) findSuccessor(node *Node) ([]byte, []byte, error) {
+func (bt *BTree) findSuccessor(tx *Tx, node *Node) ([]byte, []byte, error) {
 	// Keep going left until we reach a leaf
 	for !node.isLeaf {
-		child, err := bt.loadNode(node.children[0])
+		child, err := bt.loadNode(tx, node.children[0])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -583,7 +604,7 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 	i++
 
 	// Load child
-	child, err := bt.loadNode(node.children[i])
+	child, err := bt.loadNode(tx, node.children[i])
 	if err != nil {
 		return nil, err
 	}
@@ -648,12 +669,6 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 		node, err = tx.ensureWritable(node)
 		if err != nil {
 			return nil, err
-		}
-
-		// Sanity check: ensure we're not creating a self-reference
-		if newChild.pageID == node.pageID {
-			panic(fmt.Sprintf("BUG: trying to set child to parent's own ID! parent=%d, child=%d, i=%d, depth=%d",
-				node.pageID, newChild.pageID, i, depth))
 		}
 
 		node.children[i] = newChild.pageID
@@ -875,7 +890,7 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (*Node, *Node, error) {
 	// Try to borrow from left sibling
 	if childIdx > 0 {
-		leftSibling, err := bt.loadNode(parent.children[childIdx-1])
+		leftSibling, err := bt.loadNode(tx, parent.children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -891,7 +906,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 
 	// Try to borrow from right sibling
 	if childIdx < len(parent.children)-1 {
-		rightSibling, err := bt.loadNode(parent.children[childIdx+1])
+		rightSibling, err := bt.loadNode(tx, parent.children[childIdx+1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -908,7 +923,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 	// Merge with a sibling
 	if childIdx > 0 {
 		// Merge with left sibling
-		leftSibling, err := bt.loadNode(parent.children[childIdx-1])
+		leftSibling, err := bt.loadNode(tx, parent.children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -920,7 +935,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 	}
 
 	// Merge with right sibling
-	rightSibling, err := bt.loadNode(parent.children[childIdx+1])
+	rightSibling, err := bt.loadNode(tx, parent.children[childIdx+1])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -934,14 +949,14 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 // deleteFromNonLeaf deletes a key from a non-leaf node with COW semantics.
 func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*Node, error) {
 	// Try to replace with predecessor from left subtree
-	leftChild, err := bt.loadNode(node.children[idx])
+	leftChild, err := bt.loadNode(tx, node.children[idx])
 	if err != nil {
 		return nil, err
 	}
 
 	if leftChild.numKeys > MinKeysPerNode {
 		// Get predecessor
-		predKey, predVal, err := bt.findPredecessor(leftChild)
+		predKey, predVal, err := bt.findPredecessor(tx, leftChild)
 		if err != nil {
 			return nil, err
 		}
@@ -970,14 +985,14 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 	}
 
 	// Try to replace with successor from right subtree
-	rightChild, err := bt.loadNode(node.children[idx+1])
+	rightChild, err := bt.loadNode(tx, node.children[idx+1])
 	if err != nil {
 		return nil, err
 	}
 
 	if rightChild.numKeys > MinKeysPerNode {
 		// Get successor
-		succKey, succVal, err := bt.findSuccessor(rightChild)
+		succKey, succVal, err := bt.findSuccessor(tx, rightChild)
 		if err != nil {
 			return nil, err
 		}
@@ -1044,7 +1059,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 		childIdx++
 	}
 
-	child, err := bt.loadNode(node.children[childIdx])
+	child, err := bt.loadNode(tx, node.children[childIdx])
 	if err != nil {
 		return nil, err
 	}
@@ -1176,9 +1191,9 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 		return nil, nil, nil, nil, err
 	}
 
-	// Cache newNode (right child from split)
-	// child is already cached from ensureWritable above
-	bt.cache.Put(newNodeID, newNode)
+	// Cache newNode in TX-local cache (write transaction)
+	// Newly split node goes into tx.pages, not global cache yet
+	tx.pages[newNodeID] = newNode
 
 	// B+ tree: Return empty value for parent (branch nodes don't store values)
 	// The middle key is only for routing purposes
