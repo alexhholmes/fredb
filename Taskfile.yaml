@@ -5,4 +5,4 @@ tasks:
       - go test -v -count=1 ./pkg/...
   test-full:
     cmds:
-      - go test -v -count=1 ./src/... -slow
+      - go test -v -count=1 -race ./src/... -slow
