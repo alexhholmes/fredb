@@ -125,8 +125,6 @@ func TestDBClose(t *testing.T) {
 // Concurrent Access Tests
 
 func TestDBConcurrency(t *testing.T) {
-	t.Parallel()
-
 	// Test concurrent access through DB interface
 	// - Launch 100 goroutines
 	// - Mix of Get/Set operations
