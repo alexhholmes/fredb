@@ -306,12 +306,8 @@ func (dm *DiskPageManager) readPageAt(id PageID) (*Page, error) {
 	defer dm.mu.Unlock()
 
 	offset := int64(id) * PageSize
-	if _, err := dm.file.Seek(offset, 0); err != nil {
-		return nil, err
-	}
-
 	page := &Page{}
-	n, err := dm.file.Read(page.data[:])
+	n, err := dm.file.ReadAt(page.data[:], offset)
 	if err != nil {
 		return nil, err
 	}
@@ -333,11 +329,7 @@ func (dm *DiskPageManager) writePageAt(id PageID, page *Page) error {
 // writePageAtUnsafe writes a page without acquiring the lock (caller must hold lock)
 func (dm *DiskPageManager) writePageAtUnsafe(id PageID, page *Page) error {
 	offset := int64(id) * PageSize
-	if _, err := dm.file.Seek(offset, 0); err != nil {
-		return err
-	}
-
-	n, err := dm.file.Write(page.data[:])
+	n, err := dm.file.WriteAt(page.data[:], offset)
 	if err != nil {
 		return err
 	}

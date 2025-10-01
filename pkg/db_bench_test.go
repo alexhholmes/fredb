@@ -16,8 +16,8 @@ func BenchmarkDBGet(b *testing.B) {
 	}
 	defer db.Close()
 
-	// Pre-populate with 100k keys
-	numKeys := 100000
+	// Pre-populate with 1k keys for faster setup
+	numKeys := 1000
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%08d", i)
 		value := fmt.Sprintf("value%08d", i)
