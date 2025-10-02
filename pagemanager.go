@@ -31,16 +31,16 @@ type DiskPageManager struct {
 }
 
 // NewDiskPageManager opens or creates a database file
-func NewDiskPageManager(path string) (*DiskPageManager, error) {
+func NewDiskPageManager(path string, opts DBOptions) (*DiskPageManager, error) {
 	// Open file with read/write, create if not exists
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, err
 	}
 
-	// Open WAL
+	// Open WAL with sync configuration
 	walPath := path + ".wal"
-	wal, err := NewWAL(walPath)
+	wal, err := NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
 	if err != nil {
 		file.Close()
 		return nil, err
@@ -141,9 +141,19 @@ func (dm *DiskPageManager) CommitWAL(txnID uint64) error {
 	return dm.wal.AppendCommit(txnID)
 }
 
-// SyncWAL fsyncs the WAL
+// SyncWAL fsyncs the WAL (legacy method, prefer SyncWALIfNeeded)
 func (dm *DiskPageManager) SyncWAL() error {
 	return dm.wal.Sync()
+}
+
+// SyncWALIfNeeded conditionally fsyncs the WAL based on sync mode
+func (dm *DiskPageManager) SyncWALIfNeeded() error {
+	return dm.wal.SyncIfNeeded()
+}
+
+// ForceSyncWAL unconditionally fsyncs the WAL
+func (dm *DiskPageManager) ForceSyncWAL() error {
+	return dm.wal.ForceSync()
 }
 
 // TruncateWAL truncates the WAL up to the given transaction ID

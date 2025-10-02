@@ -272,8 +272,8 @@ func (tx *Tx) Commit() error {
 			return err
 		}
 
-		// Fsync WAL (this is the commit point!)
-		if err := dm.SyncWAL(); err != nil {
+		// Conditionally fsync WAL based on sync mode (this is the commit point!)
+		if err := dm.SyncWALIfNeeded(); err != nil {
 			tx.db.store.root = oldRoot
 			return err
 		}

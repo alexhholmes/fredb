@@ -13,6 +13,11 @@ type WAL struct {
 	file   *os.File
 	mu     sync.Mutex
 	offset int64 // Current write position
+
+	// Sync configuration
+	syncMode       WALSyncMode
+	bytesPerSync   int64
+	bytesSinceSync int64 // Bytes written since last fsync
 }
 
 // Record types
@@ -24,8 +29,8 @@ const (
 // Record format: [Type:1][TxnID:8][PageID:8][DataLen:4][Data:N]
 const WALRecordHeaderSize = 1 + 8 + 8 + 4
 
-// NewWAL opens or creates a WAL file
-func NewWAL(path string) (*WAL, error) {
+// NewWAL opens or creates a WAL file with the specified sync mode
+func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error) {
 	// Open WAL file with read/write, create if not exists
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
@@ -40,8 +45,11 @@ func NewWAL(path string) (*WAL, error) {
 	}
 
 	return &WAL{
-		file:   file,
-		offset: info.Size(),
+		file:           file,
+		offset:         info.Size(),
+		syncMode:       syncMode,
+		bytesPerSync:   bytesPerSync,
+		bytesSinceSync: 0,
 	}, nil
 }
 
@@ -68,8 +76,10 @@ func (w *WAL) AppendPage(txnID uint64, pageID PageID, page *Page) error {
 		return err
 	}
 
-	// Update offset
-	w.offset += int64(WALRecordHeaderSize + PageSize)
+	// Update offset and track bytes since sync
+	bytesWritten := int64(WALRecordHeaderSize + PageSize)
+	w.offset += bytesWritten
+	w.bytesSinceSync += bytesWritten
 
 	return nil
 }
@@ -92,8 +102,10 @@ func (w *WAL) AppendCommit(txnID uint64) error {
 		return err
 	}
 
-	// Update offset
-	w.offset += int64(WALRecordHeaderSize)
+	// Update offset and track bytes since sync
+	bytesWritten := int64(WALRecordHeaderSize)
+	w.offset += bytesWritten
+	w.bytesSinceSync += bytesWritten
 
 	return nil
 }
@@ -104,6 +116,51 @@ func (w *WAL) Sync() error {
 	defer w.mu.Unlock()
 
 	return w.file.Sync()
+}
+
+// SyncIfNeeded conditionally fsyncs the WAL based on sync mode configuration
+func (w *WAL) SyncIfNeeded() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	switch w.syncMode {
+	case WALSyncEveryCommit:
+		// Always sync
+		return w.syncUnsafe()
+
+	case WALSyncBytes:
+		// Sync if we've exceeded the byte threshold
+		if w.bytesSinceSync >= w.bytesPerSync {
+			return w.syncUnsafe()
+		}
+		return nil
+
+	case WALSyncOff:
+		// Never sync
+		return nil
+
+	default:
+		return fmt.Errorf("unknown WAL sync mode: %d", w.syncMode)
+	}
+}
+
+// ForceSync unconditionally fsyncs the WAL regardless of sync mode.
+// Used during Close() and checkpoint to ensure durability.
+func (w *WAL) ForceSync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.syncUnsafe()
+}
+
+// syncUnsafe performs fsync and resets the byte counter.
+// Caller must hold w.mu.
+func (w *WAL) syncUnsafe() error {
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+	w.bytesSinceSync = 0
+	return nil
 }
 
 // WALRecord represents a single WAL record

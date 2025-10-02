@@ -49,8 +49,14 @@ type db struct {
 	wg       sync.WaitGroup // Clean shutdown
 }
 
-func Open(path string) (*db, error) {
-	pager, err := NewDiskPageManager(path)
+func Open(path string, options ...DBOption) (*db, error) {
+	// Apply options
+	opts := defaultDBOptions()
+	for _, opt := range options {
+		opt(&opts)
+	}
+
+	pager, err := NewDiskPageManager(path, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -437,6 +443,13 @@ func (d *db) Close() error {
 	default:
 		close(d.stopC)
 		d.wg.Wait()
+	}
+
+	// Force sync WAL before checkpoint to ensure all data is durable
+	if dm, ok := d.store.pager.(*DiskPageManager); ok {
+		if err := dm.ForceSyncWAL(); err != nil {
+			return err
+		}
 	}
 
 	// Final checkpoint to flush WAL

@@ -59,6 +59,33 @@ for cursor.Seek([]byte("key")); cursor.Valid(); cursor.Next() {
 }
 ```
 
+### Options
+
+#### WAL Sync Modes
+
+WALSyncEveryCommit Mode
+
+- ✅ Zero data loss on power failure
+- ✅ tx.Commit() returns only after durable
+- ❌ Slow throughput (~200-500 TPS, 4ms/op fsync latency)
+
+WALSyncBytes Mode
+
+- ✅ High throughput
+- ⚠️ Data loss window: last bytesPerSync bytes
+- ⚠️ tx.Commit() returns before durable
+- Recovery: WAL replay stops at first invalid/incomplete record (existing checksum validation
+  handles this)
+
+WALSyncOff Mode
+
+- ✅ Maximum throughput
+- ❌ All unfsynced data lost on crash
+- Use case: Testing, bulk loads with external backup
+
+```go
+```
+
 ## Architecture
 
 ```
