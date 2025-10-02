@@ -582,7 +582,8 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_alternating_meta.db"
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
 	// Create DB

@@ -21,7 +21,7 @@ type Node struct {
 	isLeaf   bool
 	numKeys  uint16
 	keys     [][]byte
-	values   [][]byte
+	values   [][]byte // Empty and unused in branch nodes
 	children []PageID
 }
 
@@ -43,14 +43,16 @@ func (n *Node) clone() *Node {
 		copy(cloned.keys[i], key)
 	}
 
-	// Deep copy values
-	cloned.values = make([][]byte, len(n.values))
-	for i, val := range n.values {
-		cloned.values[i] = make([]byte, len(val))
-		copy(cloned.values[i], val)
+	// Deep copy values (leaf nodes only)
+	if n.isLeaf && len(n.values) > 0 {
+		cloned.values = make([][]byte, len(n.values))
+		for i, val := range n.values {
+			cloned.values[i] = make([]byte, len(val))
+			copy(cloned.values[i], val)
+		}
 	}
 
-	// Deep copy children (for branch nodes)
+	// Deep copy children (branch nodes only)
 	if !n.isLeaf && len(n.children) > 0 {
 		cloned.children = make([]PageID, len(n.children))
 		copy(cloned.children, n.children)
@@ -424,7 +426,7 @@ func (n *Node) deserialize() error {
 	} else {
 		// Deserialize branch node (B+ tree: only keys, no values)
 		n.keys = make([][]byte, n.numKeys)
-		n.values = make([][]byte, n.numKeys) // Empty values (B+ tree branches don't store values)
+		n.values = nil // Branch nodes don't have values
 		n.children = make([]PageID, n.numKeys+1)
 
 		// Read children[0]
@@ -444,9 +446,6 @@ func (n *Node) deserialize() error {
 
 			// Copy child pointer
 			n.children[i+1] = elem.ChildID
-
-			// B+ tree: Branch nodes don't store values, set to empty
-			n.values[i] = []byte{}
 		}
 	}
 
@@ -617,7 +616,10 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 
 		// Insert middle key into parent
 		node.keys = insertAt(node.keys, i, midKey)
-		node.values = insertAt(node.values, i, midVal)
+		// Branch nodes don't have values, skip value insertion
+		if node.isLeaf {
+			node.values = insertAt(node.values, i, midVal)
+		}
 
 		// Build new children array atomically to avoid slice sharing issues
 		newChildren := make([]PageID, len(node.children)+1)
@@ -677,7 +679,10 @@ func (bt *BTree) insertNonFull(tx *Tx, node *Node, key, value []byte) (*Node, er
 
 		// Insert middle key into parent
 		node.keys = insertAt(node.keys, i, midKey)
-		node.values = insertAt(node.values, i, midVal)
+		// Branch nodes don't have values, skip value insertion
+		if node.isLeaf {
+			node.values = insertAt(node.values, i, midVal)
+		}
 
 		// Build new children array
 		newChildren := make([]PageID, len(node.children)+1)
@@ -780,15 +785,19 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 	if !leftNode.isLeaf {
 		// Branch merge: pull down separator from parent
 		leftNode.keys = append(leftNode.keys, parent.keys[parentKeyIdx])
-		leftNode.values = append(leftNode.values, parent.values[parentKeyIdx])
+		// Branch nodes don't have values (parent.values is nil for branch)
 	}
 	// For leaf merge: separator is routing only, don't pull it down
 
-	// Add all keys/values from right node to left node
+	// Add all keys from right node to left node
 	leftNode.keys = append(leftNode.keys, rightNode.keys...)
-	leftNode.values = append(leftNode.values, rightNode.values...)
 
-	// If not leaf, copy children pointers too
+	// Add values for leaf nodes only
+	if leftNode.isLeaf {
+		leftNode.values = append(leftNode.values, rightNode.values...)
+	}
+
+	// Copy children pointers for branch nodes
 	if !leftNode.isLeaf {
 		leftNode.children = append(leftNode.children, rightNode.children...)
 	}
@@ -799,7 +808,10 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 
 	// Remove the separator key from parent
 	parent.keys = removeAt(parent.keys, parentKeyIdx)
-	parent.values = removeAt(parent.values, parentKeyIdx)
+	// Remove value for leaf parents only (parent is branch, values is nil)
+	if parent.isLeaf {
+		parent.values = removeAt(parent.values, parentKeyIdx)
+	}
 	parent.children = removeChildAt(parent.children, parentKeyIdx+1)
 	parent.numKeys--
 	parent.dirty = true
@@ -850,11 +862,11 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		// Branch borrow: traditional B-tree style (pull down separator, push up replacement)
 		// Move a key from parent to node (at beginning)
 		node.keys = append([][]byte{parent.keys[parentKeyIdx]}, node.keys...)
-		node.values = append([][]byte{parent.values[parentKeyIdx]}, node.values...)
+		// Branch nodes don't have values
 
 		// Move the last key from left sibling to parent
 		parent.keys[parentKeyIdx] = leftSibling.keys[leftSibling.numKeys-1]
-		parent.values[parentKeyIdx] = leftSibling.values[leftSibling.numKeys-1]
+		// Branch nodes don't have values
 
 		// Move the last child pointer too
 		node.children = append([]PageID{leftSibling.children[len(leftSibling.children)-1]}, node.children...)
@@ -862,7 +874,7 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 
 		// Remove the last key from left sibling
 		leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
-		leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
+		// Branch nodes don't have values
 		leftSibling.numKeys--
 
 		node.numKeys++
@@ -917,11 +929,11 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		// Branch borrow: traditional B-tree style (pull down separator, push up replacement)
 		// Move a key from parent to node (at end)
 		node.keys = append(node.keys, parent.keys[parentKeyIdx])
-		node.values = append(node.values, parent.values[parentKeyIdx])
+		// Branch nodes don't have values
 
 		// Move the first key from right sibling to parent
 		parent.keys[parentKeyIdx] = rightSibling.keys[0]
-		parent.values[parentKeyIdx] = rightSibling.values[0]
+		// Branch nodes don't have values
 
 		// Move the first child pointer too
 		node.children = append(node.children, rightSibling.children[0])
@@ -929,7 +941,7 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 
 		// Remove the first key from right sibling
 		rightSibling.keys = rightSibling.keys[1:]
-		rightSibling.values = rightSibling.values[1:]
+		// Branch nodes don't have values
 		rightSibling.numKeys--
 
 		node.numKeys++
@@ -1213,39 +1225,48 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 		children: make([]PageID, 0),
 	}
 
-	// Copy right half of keys/values to new node
+	// Copy right half of keys to new node
 	// Deep copy to avoid sharing underlying arrays
 	for i := mid + 1; i < len(child.keys); i++ {
 		keyCopy := make([]byte, len(child.keys[i]))
 		copy(keyCopy, child.keys[i])
 		newNode.keys = append(newNode.keys, keyCopy)
-
-		valCopy := make([]byte, len(child.values[i]))
-		copy(valCopy, child.values[i])
-		newNode.values = append(newNode.values, valCopy)
 	}
 
-	// If not leaf, copy right half of children
+	// Copy values for leaf nodes only
+	if child.isLeaf {
+		for i := mid + 1; i < len(child.values); i++ {
+			valCopy := make([]byte, len(child.values[i]))
+			copy(valCopy, child.values[i])
+			newNode.values = append(newNode.values, valCopy)
+		}
+	}
+
+	// Copy children for branch nodes only
 	if !child.isLeaf {
-		// Deep copy to avoid sharing underlying array
 		for i := mid + 1; i < len(child.children); i++ {
 			newNode.children = append(newNode.children, child.children[i])
 		}
 	}
 
-	// Keep left portion in child
-	// Deep copy to avoid sharing arrays with newNode
+	// Keep left portion in child - keys
 	leftKeys := make([][]byte, leftKeyCount)
 	copy(leftKeys, child.keys[:leftKeyCount])
 	child.keys = leftKeys
 
-	leftValues := make([][]byte, leftKeyCount)
-	copy(leftValues, child.values[:leftKeyCount])
-	child.values = leftValues
+	// Keep left portion in child - values (leaf only)
+	if child.isLeaf {
+		leftValues := make([][]byte, leftKeyCount)
+		copy(leftValues, child.values[:leftKeyCount])
+		child.values = leftValues
+	} else {
+		child.values = nil // Branch nodes don't have values
+	}
 
 	child.numKeys = uint16(leftKeyCount)
 	child.dirty = true
 
+	// Keep left portion in child - children (branch only)
 	if !child.isLeaf {
 		leftChildren := make([]PageID, mid+1)
 		copy(leftChildren, child.children[:mid+1])
