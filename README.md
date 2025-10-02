@@ -102,7 +102,7 @@ Currently: 49 tests passing
 - [x] Free list design
 - [x] Disk page manager
 - [x] Cache eviction
-- [ ] WAL for durability
+- [x] WAL for durability
 - [x] MVCC transactions
 - [x] Benchmarks
 
