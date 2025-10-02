@@ -136,6 +136,16 @@ func (dm *DiskPageManager) SyncWAL() error {
 	return dm.wal.Sync()
 }
 
+// TruncateWAL truncates the WAL up to the given transaction ID
+func (dm *DiskPageManager) TruncateWAL(upToTxnID uint64) error {
+	return dm.wal.Truncate(upToTxnID)
+}
+
+// ReplayWAL replays WAL transactions from the given transaction ID
+func (dm *DiskPageManager) ReplayWAL(fromTxnID uint64, applyFn func(PageID, *Page) error) error {
+	return dm.wal.Replay(fromTxnID, applyFn)
+}
+
 // GetMeta returns the current metadata
 func (dm *DiskPageManager) GetMeta() *MetaPage {
 	dm.mu.Lock()

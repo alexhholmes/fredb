@@ -74,6 +74,10 @@ func Open(path string) (*db, error) {
 	d.wg.Add(1)
 	go d.backgroundReleaser()
 
+	// Start background checkpointer goroutine
+	d.wg.Add(1)
+	go d.backgroundCheckpointer()
+
 	return d, nil
 }
 
@@ -102,6 +106,84 @@ func (d *db) backgroundReleaser() {
 			return
 		}
 	}
+}
+
+// backgroundCheckpointer periodically checkpoints the WAL to disk
+func (d *db) backgroundCheckpointer() {
+	defer d.wg.Done()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Ignore errors in background checkpoint
+			_ = d.checkpoint()
+
+		case <-d.stopC:
+			return
+		}
+	}
+}
+
+// checkpoint writes WAL transactions to main file and truncates WAL
+func (d *db) checkpoint() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	dm, ok := d.store.pager.(*DiskPageManager)
+	if !ok {
+		return nil // In-memory database, skip checkpoint
+	}
+
+	// Get current transaction boundary
+	meta := dm.GetMeta()
+	checkpointTxn := meta.CheckpointTxnID
+	currentTxn := meta.TxnID
+
+	// Nothing to checkpoint
+	if currentTxn <= checkpointTxn {
+		return nil
+	}
+
+	// Replay WAL from last checkpoint to current
+	err := dm.ReplayWAL(checkpointTxn, func(pageID PageID, page *Page) error {
+		return dm.WritePage(pageID, page)
+	})
+	if err != nil {
+		return err
+	}
+
+	// Fsync main B-tree file
+	dm.mu.Lock()
+	if err := dm.file.Sync(); err != nil {
+		dm.mu.Unlock()
+		return err
+	}
+	dm.mu.Unlock()
+
+	// Update meta with new checkpoint marker
+	newMeta := *meta
+	newMeta.CheckpointTxnID = currentTxn
+	if err := dm.PutMeta(&newMeta); err != nil {
+		return err
+	}
+
+	// Fsync meta page (PutMeta already writes, but need explicit fsync)
+	dm.mu.Lock()
+	err = dm.file.Sync()
+	dm.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	// Truncate WAL up to checkpoint
+	if err := dm.TruncateWAL(currentTxn); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // minReaderTxn returns the minimum transaction ID across all active transactions (readers + writer).
@@ -240,13 +322,18 @@ func (d *db) Update(fn func(*Tx) error) error {
 }
 
 func (d *db) Close() error {
-	// Stop background releaser
+	// Stop background goroutines
 	select {
 	case <-d.stopC:
 		// Already closed
 	default:
 		close(d.stopC)
 		d.wg.Wait()
+	}
+
+	// Final checkpoint to flush WAL
+	if err := d.checkpoint(); err != nil {
+		return err
 	}
 
 	d.mu.Lock()
