@@ -17,6 +17,9 @@ type PageCache struct {
 	mu       sync.RWMutex
 	pager    PageManager // For flushing dirty pages during eviction
 
+	// Version relocation tracking for old versions needed by long-running readers
+	versionMap *VersionMap
+
 	// Atomic GetOrLoad coordination
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
 	generations sync.Map // map[PageID]uint64 - detect invalidation during load
@@ -62,11 +65,12 @@ func NewPageCache(maxSize int, pager PageManager) *PageCache {
 	}
 
 	return &PageCache{
-		maxSize:  maxSize,
-		lowWater: (maxSize * 4) / 5, // 80%
-		entries:  make(map[PageID][]*VersionedEntry),
-		lruList:  list.New(),
-		pager:    pager,
+		maxSize:    maxSize,
+		lowWater:   (maxSize * 4) / 5, // 80%
+		entries:    make(map[PageID][]*VersionedEntry),
+		lruList:    list.New(),
+		pager:      pager,
+		versionMap: NewVersionMap(),
 	}
 }
 
@@ -255,6 +259,29 @@ func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
 		return node, true
 	}
 
+	// Cache miss - check if this version was relocated
+	relocatedPageID := c.versionMap.Get(pageID, txnID)
+	if relocatedPageID != 0 {
+		// Load from relocated page
+		page, err := c.pager.ReadPage(relocatedPageID)
+		if err == nil {
+			// Deserialize node from relocated page
+			node := &Node{
+				pageID: pageID, // Use original pageID, not relocated
+				dirty:  false,
+			}
+			header := page.Header()
+			if header.NumKeys > 0 {
+				if err := node.Deserialize(page); err == nil {
+					// Cache the relocated version
+					c.Put(pageID, txnID, node)
+					return node, true
+				}
+			}
+		}
+		// Relocation load failed, fall through to normal load
+	}
+
 	// Cache miss - coordinate disk load
 	// Capture generation before load to detect invalidation
 	startGen := c.getGeneration(pageID)
@@ -391,6 +418,17 @@ func (c *PageCache) canEvict(txnID uint64) bool {
 	return txnID <= meta.CheckpointTxnID
 }
 
+// CleanupRelocatedVersions removes VersionMap entries for versions older than minReaderTxn.
+// Called by background releaser when readers finish.
+// Returns the number of relocated versions cleaned up.
+func (c *PageCache) CleanupRelocatedVersions(minReaderTxn uint64) int {
+	// Cleanup VersionMap entries
+	// The returned page IDs are already in freelist.pending,
+	// so they'll be freed automatically when Release() is called
+	freedPages := c.versionMap.Cleanup(minReaderTxn)
+	return len(freedPages)
+}
+
 // evictToWaterMark evicts old versions from LRU end until at lowWater.
 // Must be called with write lock held.
 func (c *PageCache) evictToWaterMark() {
@@ -436,7 +474,41 @@ func (c *PageCache) evictToWaterMark() {
 			}
 		}
 
-		// Evict clean version
+		// Before evicting checkpointed version, check if we need to relocate it
+		// Relocate if there are multiple versions of this page (readers might need old version)
+		if len(c.entries[entry.pageID]) > 1 {
+			// Serialize the version
+			page, err := entry.node.Serialize(entry.txnID)
+			if err != nil {
+				// Can't serialize, skip
+				c.lruList.MoveToFront(elem)
+				continue
+			}
+
+			// Allocate a free page for relocation
+			relocatedPageID, err := c.pager.AllocatePage()
+			if err != nil {
+				// Can't allocate, skip eviction
+				c.lruList.MoveToFront(elem)
+				continue
+			}
+
+			// Write version to relocated page
+			if err := c.pager.WritePage(relocatedPageID, page); err != nil {
+				// Write failed, free the allocated page and skip
+				_ = c.pager.FreePage(relocatedPageID)
+				c.lruList.MoveToFront(elem)
+				continue
+			}
+
+			// Track relocation
+			c.versionMap.Track(entry.pageID, entry.txnID, relocatedPageID)
+
+			// Add relocated page to pending freelist (will be freed when readers done)
+			_ = c.pager.FreePending(entry.txnID, []PageID{relocatedPageID})
+		}
+
+		// Evict version from cache
 		c.lruList.Remove(elem)
 
 		// Remove from versions array

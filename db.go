@@ -223,6 +223,9 @@ func (d *db) releasePages(minTxn uint64) {
 		dm.freelist.Release(minTxn)
 		dm.mu.Unlock()
 	}
+
+	// Cleanup relocated page versions that are no longer needed
+	d.store.cache.CleanupRelocatedVersions(minTxn)
 }
 
 func (d *db) Get(key []byte) ([]byte, error) {

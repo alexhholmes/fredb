@@ -12,6 +12,7 @@ type PageManager interface {
 	WritePage(id PageID, page *Page) error
 	AllocatePage() (PageID, error)
 	FreePage(id PageID) error
+	FreePending(txnID uint64, pageIDs []PageID) error
 	GetMeta() *MetaPage
 	PutMeta(meta *MetaPage) error
 	Close() error
@@ -83,11 +84,6 @@ func (dm *DiskPageManager) ReadPage(id PageID) (*Page, error) {
 	return dm.readPageAt(id)
 }
 
-// WritePage writes a page to disk
-func (dm *DiskPageManager) WritePage(id PageID, page *Page) error {
-	return dm.writePageAt(id, page)
-}
-
 // AllocatePage allocates a new page (from freelist or grows file)
 func (dm *DiskPageManager) AllocatePage() (PageID, error) {
 	dm.mu.Lock()
@@ -118,6 +114,15 @@ func (dm *DiskPageManager) FreePage(id PageID) error {
 	defer dm.mu.Unlock()
 
 	dm.freelist.Free(id)
+	return nil
+}
+
+// FreePending adds pages to the pending freelist at the given transaction ID
+func (dm *DiskPageManager) FreePending(txnID uint64, pageIDs []PageID) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	dm.freelist.FreePending(txnID, pageIDs)
 	return nil
 }
 
@@ -269,17 +274,17 @@ func (dm *DiskPageManager) initializeNewDB() error {
 	metaPage := &Page{}
 	metaPage.WriteMeta(&dm.meta)
 
-	if err := dm.writePageAt(0, metaPage); err != nil {
+	if err := dm.WritePage(0, metaPage); err != nil {
 		return err
 	}
-	if err := dm.writePageAt(1, metaPage); err != nil {
+	if err := dm.WritePage(1, metaPage); err != nil {
 		return err
 	}
 
 	// Write empty freelist to page 2
 	freelistPages := []*Page{&Page{}}
 	dm.freelist.Serialize(freelistPages)
-	if err := dm.writePageAt(2, freelistPages[0]); err != nil {
+	if err := dm.WritePage(2, freelistPages[0]); err != nil {
 		return err
 	}
 
@@ -361,8 +366,8 @@ func (dm *DiskPageManager) readPageAt(id PageID) (*Page, error) {
 	return page, nil
 }
 
-// writePageAt writes a page to a specific offset (with locking)
-func (dm *DiskPageManager) writePageAt(id PageID, page *Page) error {
+// WritePage writes a page to a specific offset (with locking)
+func (dm *DiskPageManager) WritePage(id PageID, page *Page) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -456,6 +461,12 @@ func (m *InMemoryPageManager) AllocatePage() (PageID, error) {
 // FreePage marks a page as free (just removes from map)
 func (m *InMemoryPageManager) FreePage(id PageID) error {
 	delete(m.pages, id)
+	return nil
+}
+
+// FreePending is a no-op for in-memory storage (no pending management needed)
+func (m *InMemoryPageManager) FreePending(txnID uint64, pageIDs []PageID) error {
+	// No-op: in-memory doesn't need pending management
 	return nil
 }
 
