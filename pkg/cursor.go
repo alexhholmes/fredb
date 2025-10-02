@@ -8,9 +8,9 @@ var (
 	// Usage: cursor.Seek(pkg.START) or cursor.SeekFirst()
 	START = []byte{}
 
-	// END is a special marker for seeking to/past the last key in the database
+	// END is a special marker for seeking to the last key in the database
 	// Since max key size is MaxKeySize (1024 bytes), END is 1024 bytes of 0xFF
-	// Usage: cursor.Seek(pkg.END) positions after last key (invalid)
+	// Usage: cursor.Seek(pkg.END) positions at last key (or invalid if empty)
 	// Useful for range bounds: bytes.Compare(key, END) < 0
 	END = make([]byte, MaxKeySize) // MaxKeySize bytes of 0xFF
 )
@@ -54,9 +54,9 @@ func (it *Cursor) SeekFirst() error {
 	return it.Seek(START)
 }
 
-// SeekLast positions cursor past the last key (invalid position)
+// SeekLast positions cursor at the last key in the database
 // Equivalent to Seek(END)
-// Use Prev() after SeekLast() to position at the actual last key
+// Returns invalid cursor if database is empty
 func (it *Cursor) SeekLast() error {
 	return it.Seek(END)
 }
@@ -65,7 +65,7 @@ func (it *Cursor) SeekLast() error {
 // Returns error if tree traversal fails
 // Special cases:
 //   - Seek(START) positions at first key in database
-//   - Seek(END) positions past last key (invalid)
+//   - Seek(END) positions at last key in database (or invalid if empty)
 func (it *Cursor) Seek(key []byte) error {
 	// Validate transaction state
 	if err := it.active(); err != nil {
@@ -116,6 +116,21 @@ func (it *Cursor) Seek(key []byte) error {
 		it.value = node.values[i]
 		it.valid = true
 		return nil
+	}
+
+	// Special case: if seeking END, position on last key instead of advancing
+	if bytes.Equal(key, END) {
+		// Move back one position to get the actual last key
+		it.stack[len(it.stack)-1].childIndex--
+		if it.stack[len(it.stack)-1].childIndex >= 0 {
+			leaf := it.stack[len(it.stack)-1]
+			it.key = leaf.node.keys[leaf.childIndex]
+			it.value = leaf.node.values[leaf.childIndex]
+			it.valid = true
+			return nil
+		}
+		// Current leaf is empty, try previous leaf
+		return it.prevLeaf()
 	}
 
 	// Key not in this node - advance to next leaf

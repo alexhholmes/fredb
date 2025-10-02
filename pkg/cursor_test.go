@@ -429,18 +429,22 @@ func TestCursorSeekEND(t *testing.T) {
 
 	cursor := tx.Cursor()
 
-	// Seek(END) should position past last key (invalid)
+	// Seek(END) should position at last key
 	if err := cursor.Seek(END); err != nil {
 		t.Fatalf("Seek(END) failed: %v", err)
 	}
 
-	if cursor.Valid() {
-		t.Errorf("Expected invalid cursor after Seek(END), but got key %s", cursor.Key())
+	if !cursor.Valid() {
+		t.Fatal("Expected valid cursor after Seek(END)")
 	}
 
-	// Prev from invalid END position should not work
-	if cursor.Prev() {
-		t.Errorf("Prev() from invalid cursor should return false")
+	if !bytes.Equal(cursor.Key(), []byte("key100")) {
+		t.Errorf("Expected last key 'key100', got %s", cursor.Key())
+	}
+
+	// Verify this is actually the last key by trying Next()
+	if cursor.Next() {
+		t.Errorf("Next() after Seek(END) should return false, got key %s", cursor.Key())
 	}
 }
 
@@ -586,18 +590,26 @@ func TestCursorSeekLastFunction(t *testing.T) {
 
 	cursor := tx.Cursor()
 
-	// SeekLast() positions past last key (invalid)
+	// SeekLast() positions at last key
 	if err := cursor.SeekLast(); err != nil {
 		t.Fatalf("SeekLast() failed: %v", err)
 	}
 
-	if cursor.Valid() {
-		t.Errorf("Expected invalid cursor after SeekLast(), got key %s", cursor.Key())
+	if !cursor.Valid() {
+		t.Fatal("Expected valid cursor after SeekLast()")
 	}
 
-	// Prev() from invalid position should not work
-	if cursor.Prev() {
-		t.Error("Prev() from invalid cursor should return false")
+	if !bytes.Equal(cursor.Key(), []byte("key050")) {
+		t.Errorf("Expected last key 'key050', got %s", cursor.Key())
+	}
+
+	// Verify we can navigate backward
+	if !cursor.Prev() {
+		t.Error("Expected Prev() to succeed from last key")
+	}
+
+	if !bytes.Equal(cursor.Key(), []byte("key040")) {
+		t.Errorf("Expected 'key040' after Prev(), got %s", cursor.Key())
 	}
 }
 
@@ -630,5 +642,71 @@ func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 
 	if cursor.Valid() {
 		t.Error("Expected invalid cursor on empty tree after SeekLast()")
+	}
+}
+
+func TestCursorSeekENDComparison(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	// Create keys near the maximum size (MaxKeySize = 1024)
+	// END is 1024 bytes of 0xFF, so any valid key should compare less than END
+
+	// Key 1: 1024 bytes of 0xFE (just below END)
+	maxKey := make([]byte, MaxKeySize)
+	for i := range maxKey {
+		maxKey[i] = 0xFE
+	}
+
+	// Key 2: 1023 bytes of 0xFF + one 0xFE (also below END)
+	nearMaxKey := make([]byte, MaxKeySize)
+	for i := range nearMaxKey {
+		nearMaxKey[i] = 0xFF
+	}
+	nearMaxKey[MaxKeySize-1] = 0xFE
+
+	// Insert both keys
+	if err := db.Set(maxKey, []byte("max_value")); err != nil {
+		t.Fatalf("Failed to insert maxKey: %v", err)
+	}
+	if err := db.Set(nearMaxKey, []byte("near_max_value")); err != nil {
+		t.Fatalf("Failed to insert nearMaxKey: %v", err)
+	}
+
+	// Verify END compares greater than both keys
+	if bytes.Compare(maxKey, END) >= 0 {
+		t.Errorf("Expected maxKey < END, but got maxKey >= END")
+	}
+	if bytes.Compare(nearMaxKey, END) >= 0 {
+		t.Errorf("Expected nearMaxKey < END, but got nearMaxKey >= END")
+	}
+
+	// Verify Seek(END) positions on the last key (lexicographically)
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+	if err := cursor.Seek(END); err != nil {
+		t.Fatalf("Seek(END) failed: %v", err)
+	}
+
+	if !cursor.Valid() {
+		t.Fatal("Expected valid cursor after Seek(END)")
+	}
+
+	// The last key lexicographically should be nearMaxKey (1023 0xFF + 1 0xFE)
+	// because it compares greater than maxKey (1024 0xFE)
+	expectedLastKey := nearMaxKey
+	if !bytes.Equal(cursor.Key(), expectedLastKey) {
+		t.Errorf("Expected Seek(END) to position on nearMaxKey, got different key")
+	}
+
+	// Verify this is actually the last key
+	if cursor.Next() {
+		t.Errorf("Next() after Seek(END) should return false")
 	}
 }
