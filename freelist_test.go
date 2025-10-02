@@ -189,8 +189,6 @@ func TestFreeListPendingSerialization(t *testing.T) {
 }
 
 func TestFreelistNoPageLeaks(t *testing.T) {
-	t.Parallel()
-
 	if !*slow {
 		t.Skip("Skipping slow test; use -slow to enable")
 	}

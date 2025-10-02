@@ -145,8 +145,6 @@ func TestDBClose(t *testing.T) {
 // Concurrent Access Tests
 
 func TestDBConcurrency(t *testing.T) {
-	t.Parallel()
-
 	if !*slow {
 		t.Skip("Skipping slow concurrency test; use -slow to enable")
 	}
