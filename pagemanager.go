@@ -25,6 +25,7 @@ type DiskPageManager struct {
 	file     *os.File
 	meta     MetaPage
 	freelist *FreeList
+	wal      *WAL // Write-ahead log for durability
 }
 
 // NewDiskPageManager opens or creates a database file
@@ -35,14 +36,24 @@ func NewDiskPageManager(path string) (*DiskPageManager, error) {
 		return nil, err
 	}
 
+	// Open WAL
+	walPath := path + ".wal"
+	wal, err := NewWAL(walPath)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+
 	dm := &DiskPageManager{
 		file:     file,
 		freelist: NewFreeList(),
+		wal:      wal,
 	}
 
 	// Check if new file (empty)
 	info, err := file.Stat()
 	if err != nil {
+		wal.Close()
 		file.Close()
 		return nil, err
 	}
@@ -50,15 +61,18 @@ func NewDiskPageManager(path string) (*DiskPageManager, error) {
 	if info.Size() == 0 {
 		// New database - initialize
 		if err := dm.initializeNewDB(); err != nil {
+			wal.Close()
 			file.Close()
 			return nil, err
 		}
 	} else {
 		// Existing database - load meta and freelist
 		if err := dm.loadExistingDB(); err != nil {
+			wal.Close()
 			file.Close()
 			return nil, err
 		}
+		// TODO: Replay WAL after loading (Phase 6)
 	}
 
 	return dm, nil
@@ -107,6 +121,21 @@ func (dm *DiskPageManager) FreePage(id PageID) error {
 	return nil
 }
 
+// AppendPageWAL writes a page to the WAL
+func (dm *DiskPageManager) AppendPageWAL(txnID uint64, pageID PageID, page *Page) error {
+	return dm.wal.AppendPage(txnID, pageID, page)
+}
+
+// CommitWAL writes a commit marker to the WAL
+func (dm *DiskPageManager) CommitWAL(txnID uint64) error {
+	return dm.wal.AppendCommit(txnID)
+}
+
+// SyncWAL fsyncs the WAL
+func (dm *DiskPageManager) SyncWAL() error {
+	return dm.wal.Sync()
+}
+
 // GetMeta returns the current metadata
 func (dm *DiskPageManager) GetMeta() *MetaPage {
 	dm.mu.Lock()
@@ -137,12 +166,7 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 		return err
 	}
 
-	// Fsync to ensure durability before considering commit complete
-	if err := dm.file.Sync(); err != nil {
-		return err
-	}
-
-	// Only update in-memory meta after successful disk write and fsync
+	// Only update in-memory meta after successful disk write
 	dm.meta = *meta
 
 	return nil
@@ -199,9 +223,17 @@ func (dm *DiskPageManager) Close() error {
 		return err
 	}
 
-	// Fsync and close
-	if err := dm.file.Sync(); err != nil {
-		return err
+	// TODO: Reimplement with batching once WAL is implemented
+	// Fsync disabled for performance during development
+	// if err := dm.file.Sync(); err != nil {
+	// 	return err
+	// }
+
+	// Close WAL
+	if dm.wal != nil {
+		if err := dm.wal.Close(); err != nil {
+			return err
+		}
 	}
 
 	return dm.file.Close()
@@ -211,14 +243,15 @@ func (dm *DiskPageManager) Close() error {
 func (dm *DiskPageManager) initializeNewDB() error {
 	// Initialize meta page
 	dm.meta = MetaPage{
-		Magic:         MagicNumber,
-		Version:       FormatVersion,
-		PageSize:      PageSize,
-		RootPageID:    0, // Will be set by BTree
-		FreelistID:    2, // Page 2
-		FreelistPages: 1, // One freelist page
-		TxnID:         0, // First transaction
-		NumPages:      3, // Pages 0-1 (meta), 2 (freelist) reserved
+		Magic:           MagicNumber,
+		Version:         FormatVersion,
+		PageSize:        PageSize,
+		RootPageID:      0, // Will be set by BTree
+		FreelistID:      2, // Page 2
+		FreelistPages:   1, // One freelist page
+		TxnID:           0, // First transaction
+		CheckpointTxnID: 0, // No checkpoint yet
+		NumPages:        3, // Pages 0-1 (meta), 2 (freelist) reserved
 	}
 	dm.meta.Checksum = dm.meta.CalculateChecksum()
 
@@ -354,14 +387,15 @@ type InMemoryPageManager struct {
 // NewInMemoryPageManager creates a new in-memory page manager
 func NewInMemoryPageManager() *InMemoryPageManager {
 	meta := MetaPage{
-		Magic:         MagicNumber,
-		Version:       FormatVersion,
-		PageSize:      PageSize,
-		RootPageID:    0, // Will be set by BTree
-		FreelistID:    0, // Not used in memory
-		FreelistPages: 0, // Not used in memory
-		TxnID:         0, // First transaction
-		NumPages:      1, // Start at 1
+		Magic:           MagicNumber,
+		Version:         FormatVersion,
+		PageSize:        PageSize,
+		RootPageID:      0, // Will be set by BTree
+		FreelistID:      0, // Not used in memory
+		FreelistPages:   0, // Not used in memory
+		TxnID:           0, // First transaction
+		CheckpointTxnID: 0, // Not used in memory
+		NumPages:        1, // Start at 1
 	}
 	meta.Checksum = meta.CalculateChecksum()
 

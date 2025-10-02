@@ -10,7 +10,6 @@ const (
 
 	LeafPageFlag   uint16 = 0x01
 	BranchPageFlag uint16 = 0x02
-	MetaPageFlag   uint16 = 0x04
 
 	PageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + _NextLeaf(8) + _PrevLeaf(8)
 	LeafElementSize   = 12
@@ -195,18 +194,19 @@ func (p *Page) ReadBranchFirstChild() PageID {
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1
-// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxnID: 8][NumPages: 8][Checksum: 4]
-// Total: 52 bytes
+// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxnID: 8][CheckpointTxnID: 8][NumPages: 8][Checksum: 4]
+// Total: 60 bytes
 type MetaPage struct {
-	Magic         uint32 // 4 bytes: 0x66726462 ("frdb")
-	Version       uint16 // 2 bytes: format version (1)
-	PageSize      uint16 // 2 bytes: page size (4096)
-	RootPageID    PageID // 8 bytes: root of B-tree
-	FreelistID    PageID // 8 bytes: start of freelist
-	FreelistPages uint64 // 8 bytes: number of contiguous freelist pages
-	TxnID         uint64 // 8 bytes: transaction counter
-	NumPages      uint64 // 8 bytes: total pages allocated
-	Checksum      uint32 // 4 bytes: CRC32 of above fields
+	Magic           uint32 // 4 bytes: 0x66726462 ("frdb")
+	Version         uint16 // 2 bytes: format version (1)
+	PageSize        uint16 // 2 bytes: page size (4096)
+	RootPageID      PageID // 8 bytes: root of B-tree
+	FreelistID      PageID // 8 bytes: start of freelist
+	FreelistPages   uint64 // 8 bytes: number of contiguous freelist pages
+	TxnID           uint64 // 8 bytes: transaction counter
+	CheckpointTxnID uint64 // 8 bytes: last checkpointed transaction
+	NumPages        uint64 // 8 bytes: total pages allocated
+	Checksum        uint32 // 4 bytes: CRC32 of above fields
 }
 
 // WriteMeta writes metadata to the page starting at PageHeaderSize
@@ -226,8 +226,8 @@ func (p *Page) ReadMeta() *MetaPage {
 // CalculateChecksum computes CRC32 checksum of all fields except Checksum itself
 func (m *MetaPage) CalculateChecksum() uint32 {
 	// Create byte slice of all fields except Checksum
-	// MetaPage is 52 bytes, Checksum is last 4 bytes, so we hash first 48 bytes
-	data := make([]byte, 48)
+	// MetaPage is 60 bytes, Checksum is last 4 bytes, so we hash first 56 bytes
+	data := make([]byte, 56)
 	offset := 0
 
 	// Magic (4 bytes)
@@ -268,6 +268,12 @@ func (m *MetaPage) CalculateChecksum() uint32 {
 	// TxnID (8 bytes)
 	for i := 0; i < 8; i++ {
 		data[offset+i] = byte(m.TxnID >> (i * 8))
+	}
+	offset += 8
+
+	// CheckpointTxnID (8 bytes)
+	for i := 0; i < 8; i++ {
+		data[offset+i] = byte(m.CheckpointTxnID >> (i * 8))
 	}
 	offset += 8
 

@@ -47,9 +47,9 @@ type VersionedEntry struct {
 }
 
 const (
-	DefaultCacheSize = 1024  // 5MB (1024 pages × 4KB)
-	MinCacheSize     = 16    // Minimum: hold tree path + concurrent ops
-	MaxCacheSize     = 65536 // 320MB TODO increase if needed
+	DefaultCacheSize = 1024      // 5MB (1024 pages × 4KB)
+	MinCacheSize     = 16        // Minimum: hold tree path + concurrent ops
+	MaxCacheSize     = 335544320 // 320MB TODO increase if needed
 )
 
 // NewPageCache creates a new page cache with the specified maximum size

@@ -238,7 +238,7 @@ func (tx *Tx) Commit() error {
 		tx.db.store.root = tx.root
 	}
 
-	// Write all TX-local pages to disk and flush to global cache
+	// Write all TX-local pages to WAL (not disk!)
 	for pageID, node := range tx.pages {
 		// Serialize node to a page with this transaction's ID
 		page, err := node.Serialize(tx.txnID)
@@ -248,11 +248,13 @@ func (tx *Tx) Commit() error {
 			return err
 		}
 
-		// Write to disk
-		if err := tx.db.store.pager.WritePage(pageID, page); err != nil {
-			// Restore old root on failure
-			tx.db.store.root = oldRoot
-			return err
+		// Write to WAL instead of disk
+		if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
+			if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
+				// Restore old root on failure
+				tx.db.store.root = oldRoot
+				return err
+			}
 		}
 
 		// Clear dirty flag after successful write
@@ -261,6 +263,20 @@ func (tx *Tx) Commit() error {
 		// Flush to global versioned cache with this transaction's ID
 		// This makes the new version visible to future transactions
 		tx.db.store.cache.Put(pageID, tx.txnID, node)
+	}
+
+	// Append commit marker to WAL
+	if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
+		if err := dm.CommitWAL(tx.txnID); err != nil {
+			tx.db.store.root = oldRoot
+			return err
+		}
+
+		// Fsync WAL (this is the commit point!)
+		if err := dm.SyncWAL(); err != nil {
+			tx.db.store.root = oldRoot
+			return err
+		}
 	}
 
 	// Add freed pages to pending at this transaction ID
