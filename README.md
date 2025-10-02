@@ -74,8 +74,7 @@ WALSyncBytes Mode
 - ✅ High throughput
 - ⚠️ Data loss window: last bytesPerSync bytes
 - ⚠️ tx.Commit() returns before durable
-- Recovery: WAL replay stops at first invalid/incomplete record (existing checksum validation
-  handles this)
+- Recovery: WAL replay stops at first invalid/incomplete record 
 
 WALSyncOff Mode
 
