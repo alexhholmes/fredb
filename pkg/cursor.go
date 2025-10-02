@@ -2,6 +2,26 @@ package pkg
 
 import "bytes"
 
+// Special marker values for Seek operations
+var (
+	// START is a special marker for seeking to the first key in the database
+	// Usage: cursor.Seek(pkg.START) or cursor.SeekFirst()
+	START = []byte{}
+
+	// END is a special marker for seeking to/past the last key in the database
+	// Since max key size is MaxKeySize (1024 bytes), END is 1024 bytes of 0xFF
+	// Usage: cursor.Seek(pkg.END) positions after last key (invalid)
+	// Useful for range bounds: bytes.Compare(key, END) < 0
+	END = make([]byte, MaxKeySize) // MaxKeySize bytes of 0xFF
+)
+
+func init() {
+	// Initialize END to all 0xFF bytes
+	for i := range END {
+		END[i] = 0xFF
+	}
+}
+
 // pathElem represents one level in the cursor's navigation path from root to leaf
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
@@ -28,8 +48,24 @@ func (it *Cursor) active() error {
 	return nil
 }
 
+// SeekFirst positions cursor at the first key in the database
+// Equivalent to Seek(START)
+func (it *Cursor) SeekFirst() error {
+	return it.Seek(START)
+}
+
+// SeekLast positions cursor past the last key (invalid position)
+// Equivalent to Seek(END)
+// Use Prev() after SeekLast() to position at the actual last key
+func (it *Cursor) SeekLast() error {
+	return it.Seek(END)
+}
+
 // Seek positions cursor at first key >= target
 // Returns error if tree traversal fails
+// Special cases:
+//   - Seek(START) positions at first key in database
+//   - Seek(END) positions past last key (invalid)
 func (it *Cursor) Seek(key []byte) error {
 	// Validate transaction state
 	if err := it.active(); err != nil {

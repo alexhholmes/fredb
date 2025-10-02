@@ -360,3 +360,275 @@ func TestCursorAfterMerges(t *testing.T) {
 		t.Errorf("Expected 50 keys after deletions, got %d", count)
 	}
 }
+
+func TestCursorSeekSTART(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	// Insert keys 10, 20, 30, ..., 100
+	for i := 1; i <= 10; i++ {
+		key := []byte(fmt.Sprintf("key%03d", i*10))
+		value := []byte(fmt.Sprintf("value%d", i*10))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i*10, err)
+		}
+	}
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// Seek(START) should position at first key
+	if err := cursor.Seek(START); err != nil {
+		t.Fatalf("Seek(START) failed: %v", err)
+	}
+
+	if !cursor.Valid() {
+		t.Fatal("Expected valid cursor after Seek(START)")
+	}
+
+	if !bytes.Equal(cursor.Key(), []byte("key010")) {
+		t.Errorf("Expected first key 'key010', got %s", cursor.Key())
+	}
+
+	// Scan all keys from START
+	count := 1
+	for cursor.Next() {
+		count++
+	}
+
+	if count != 10 {
+		t.Errorf("Expected 10 keys from START, got %d", count)
+	}
+}
+
+func TestCursorSeekEND(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	// Insert keys 10, 20, 30, ..., 100
+	for i := 1; i <= 10; i++ {
+		key := []byte(fmt.Sprintf("key%03d", i*10))
+		value := []byte(fmt.Sprintf("value%d", i*10))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i*10, err)
+		}
+	}
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// Seek(END) should position past last key (invalid)
+	if err := cursor.Seek(END); err != nil {
+		t.Fatalf("Seek(END) failed: %v", err)
+	}
+
+	if cursor.Valid() {
+		t.Errorf("Expected invalid cursor after Seek(END), but got key %s", cursor.Key())
+	}
+
+	// Prev from invalid END position should not work
+	if cursor.Prev() {
+		t.Errorf("Prev() from invalid cursor should return false")
+	}
+}
+
+func TestCursorSeekSTARTEmptyTree(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// Seek(START) on empty tree should be invalid
+	if err := cursor.Seek(START); err != nil {
+		t.Fatalf("Seek(START) failed: %v", err)
+	}
+
+	if cursor.Valid() {
+		t.Error("Expected invalid cursor on empty tree")
+	}
+}
+
+func TestCursorSeekENDEmptyTree(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// Seek(END) on empty tree should be invalid
+	if err := cursor.Seek(END); err != nil {
+		t.Fatalf("Seek(END) failed: %v", err)
+	}
+
+	if cursor.Valid() {
+		t.Error("Expected invalid cursor on empty tree")
+	}
+}
+
+func TestCursorRangeScanWithSTARTEND(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	// Insert keys 1-100
+	for i := 1; i <= 100; i++ {
+		key := []byte(fmt.Sprintf("key%03d", i))
+		value := []byte(fmt.Sprintf("value%d", i))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i, err)
+		}
+	}
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// Full range scan using START and END
+	if err := cursor.Seek(START); err != nil {
+		t.Fatalf("Seek(START) failed: %v", err)
+	}
+
+	count := 0
+	for cursor.Valid() && bytes.Compare(cursor.Key(), END) < 0 {
+		count++
+		cursor.Next()
+	}
+
+	if count != 100 {
+		t.Errorf("Expected 100 keys in range [START, END), got %d", count)
+	}
+}
+
+func TestCursorSeekFirstFunction(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	// Insert keys
+	for i := 10; i <= 50; i += 10 {
+		key := []byte(fmt.Sprintf("key%03d", i))
+		value := []byte(fmt.Sprintf("value%d", i))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i, err)
+		}
+	}
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// SeekFirst() should position at first key
+	if err := cursor.SeekFirst(); err != nil {
+		t.Fatalf("SeekFirst() failed: %v", err)
+	}
+
+	if !cursor.Valid() {
+		t.Fatal("Expected valid cursor after SeekFirst()")
+	}
+
+	if !bytes.Equal(cursor.Key(), []byte("key010")) {
+		t.Errorf("Expected first key 'key010', got %s", cursor.Key())
+	}
+}
+
+func TestCursorSeekLastFunction(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	// Insert keys
+	for i := 10; i <= 50; i += 10 {
+		key := []byte(fmt.Sprintf("key%03d", i))
+		value := []byte(fmt.Sprintf("value%d", i))
+		if err := db.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i, err)
+		}
+	}
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// SeekLast() positions past last key (invalid)
+	if err := cursor.SeekLast(); err != nil {
+		t.Fatalf("SeekLast() failed: %v", err)
+	}
+
+	if cursor.Valid() {
+		t.Errorf("Expected invalid cursor after SeekLast(), got key %s", cursor.Key())
+	}
+
+	// Prev() from invalid position should not work
+	if cursor.Prev() {
+		t.Error("Prev() from invalid cursor should return false")
+	}
+}
+
+func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	cursor := tx.Cursor()
+
+	// SeekFirst() on empty tree
+	if err := cursor.SeekFirst(); err != nil {
+		t.Fatalf("SeekFirst() failed: %v", err)
+	}
+
+	if cursor.Valid() {
+		t.Error("Expected invalid cursor on empty tree after SeekFirst()")
+	}
+
+	// SeekLast() on empty tree
+	if err := cursor.SeekLast(); err != nil {
+		t.Fatalf("SeekLast() failed: %v", err)
+	}
+
+	if cursor.Valid() {
+		t.Error("Expected invalid cursor on empty tree after SeekLast()")
+	}
+}
