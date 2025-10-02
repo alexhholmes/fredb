@@ -104,6 +104,7 @@ Currently: 49 tests passing
 - [x] Cache eviction
 - [x] WAL for durability
 - [x] MVCC transactions
+- [ ] Direct I/O support
 - [x] Benchmarks
 
 ## Inspiration
