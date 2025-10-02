@@ -26,7 +26,8 @@ type DiskPageManager struct {
 	file     *os.File
 	meta     MetaPage
 	freelist *FreeList
-	wal      *WAL // Write-ahead log for durability
+	wal      *WAL     // Write-ahead log for durability
+	walPages sync.Map // PageID -> uint64 (txnID) - tracks pages in WAL but not yet on disk
 }
 
 // NewDiskPageManager opens or creates a database file
@@ -92,6 +93,8 @@ func (dm *DiskPageManager) AllocatePage() (PageID, error) {
 	// Try freelist first
 	id := dm.freelist.Allocate()
 	if id != 0 {
+		// Remove WAL latch for reused pages (they're being repurposed)
+		dm.walPages.Delete(id)
 		return id, nil
 	}
 
@@ -128,6 +131,8 @@ func (dm *DiskPageManager) FreePending(txnID uint64, pageIDs []PageID) error {
 
 // AppendPageWAL writes a page to the WAL
 func (dm *DiskPageManager) AppendPageWAL(txnID uint64, pageID PageID, page *Page) error {
+	// Mark page as having WAL-only data (latch to prevent stale disk reads)
+	dm.walPages.Store(pageID, txnID)
 	return dm.wal.AppendPage(txnID, pageID, page)
 }
 
@@ -144,6 +149,27 @@ func (dm *DiskPageManager) SyncWAL() error {
 // TruncateWAL truncates the WAL up to the given transaction ID
 func (dm *DiskPageManager) TruncateWAL(upToTxnID uint64) error {
 	return dm.wal.Truncate(upToTxnID)
+}
+
+// CleanupLatchOnWAL removes WAL page latches for pages that have been checkpointed
+// AND are visible to all active readers (txnID < minReaderTxn).
+// This allows readers to load these pages from disk instead of requiring cache/VersionMap.
+func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
+	meta := dm.GetMeta()
+	checkpointTxn := meta.CheckpointTxnID
+
+	dm.walPages.Range(func(key, value interface{}) bool {
+		pageID := key.(PageID)
+		txnID := value.(uint64)
+
+		// Only remove latch if BOTH conditions true:
+		// 1. Page is checkpointed (written to disk)
+		// 2. All active readers can see this version (no reader needs older version)
+		if txnID <= checkpointTxn && txnID < minReaderTxn {
+			dm.walPages.Delete(pageID)
+		}
+		return true // Continue iteration
+	})
 }
 
 // ReplayWAL replays WAL transactions from the given transaction ID
@@ -238,12 +264,6 @@ func (dm *DiskPageManager) Close() error {
 		return err
 	}
 
-	// TODO: Reimplement with batching once WAL is implemented
-	// Fsync disabled for performance during development
-	// if err := dm.file.Sync(); err != nil {
-	// 	return err
-	// }
-
 	// Close WAL
 	if dm.wal != nil {
 		if err := dm.wal.Close(); err != nil {
@@ -333,7 +353,7 @@ func (dm *DiskPageManager) loadExistingDB() error {
 	// Load freelist
 	freelistPages := make([]*Page, dm.meta.FreelistPages)
 	for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-		page, err := dm.readPageAt(PageID(dm.meta.FreelistID + PageID(i)))
+		page, err := dm.readPageAt(dm.meta.FreelistID + PageID(i))
 		if err != nil {
 			return err
 		}
@@ -350,6 +370,19 @@ func (dm *DiskPageManager) loadExistingDB() error {
 
 // readPageAt reads a page from a specific offset
 func (dm *DiskPageManager) readPageAt(id PageID) (*Page, error) {
+	// Check if page has WAL-only data (latch prevents reading stale disk data)
+	if _, hasWALData := dm.walPages.Load(id); hasWALData {
+		// Page exists in WAL but not yet checkpointed to disk
+		// Caller must use cache or VersionMap to get the correct version
+		return nil, fmt.Errorf("page %d in WAL, not yet on disk", id)
+	}
+
+	return dm.readPageAtUnsafe(id)
+}
+
+// readPageAtUnsafe reads a page from disk without WAL latch check
+// Used during checkpoint to read old disk versions before overwriting
+func (dm *DiskPageManager) readPageAtUnsafe(id PageID) (*Page, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 

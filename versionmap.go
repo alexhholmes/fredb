@@ -1,6 +1,8 @@
 package fredb
 
-import "sync"
+import (
+	"sync"
+)
 
 // VersionMap tracks where old page versions have been relocated
 // when evicted from cache. This allows long-running readers to access
@@ -52,6 +54,31 @@ func (vm *VersionMap) Get(originalPageID PageID, txnID uint64) PageID {
 		return versions[txnID]
 	}
 	return 0
+}
+
+// GetLatestVisible returns the relocated page ID for the latest version visible to txnID,
+// or 0 if no visible version is relocated. Used for MVCC snapshot isolation.
+func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (PageID, uint64) {
+	vm.mu.RLock()
+	defer vm.mu.RUnlock()
+
+	versions := vm.relocations[originalPageID]
+	if versions == nil {
+		return 0, 0
+	}
+
+	// Find latest version where versionTxnID <= maxTxnID
+	var latestTxnID uint64
+	var latestPageID PageID
+
+	for versionTxnID, relocatedPageID := range versions {
+		if versionTxnID <= maxTxnID && versionTxnID > latestTxnID {
+			latestTxnID = versionTxnID
+			latestPageID = relocatedPageID
+		}
+	}
+
+	return latestPageID, latestTxnID
 }
 
 // Remove removes a relocation entry (called when version is no longer needed)

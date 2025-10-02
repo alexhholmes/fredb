@@ -132,6 +132,12 @@ func (d *db) checkpoint() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Skip checkpoint if there's an active write transaction
+	// This prevents corruption from checkpoint allocating pages that are being freed
+	if d.writerTx != nil {
+		return nil
+	}
+
 	dm, ok := d.store.pager.(*DiskPageManager)
 	if !ok {
 		return nil // In-memory database, skip checkpoint
@@ -147,9 +153,54 @@ func (d *db) checkpoint() error {
 		return nil
 	}
 
+	// Get minimum reader txnID to determine which disk versions need preservation
+	minReaderTxn := d.minReaderTxnUnsafe() // Already holding d.mu
+
 	// Replay WAL from last checkpoint to current
-	err := dm.ReplayWAL(checkpointTxn, func(pageID PageID, page *Page) error {
-		return dm.WritePage(pageID, page)
+	// IMPORTANT: Before overwriting each page, check if old disk version needs preservation
+	err := dm.ReplayWAL(checkpointTxn, func(pageID PageID, newPage *Page) error {
+		// Read current disk version BEFORE overwriting
+		// Note: We need to bypass the WAL latch check for this read
+		oldPage, readErr := dm.readPageAtUnsafe(pageID)
+
+		if readErr == nil && oldPage != nil {
+			// Parse old version's TxnID
+			oldHeader := oldPage.Header()
+			oldTxnID := oldHeader.TxnID
+
+			// If any active reader might need this old version, relocate it
+			// Preserve if oldTxnID < minReaderTxn (old version still potentially visible to readers)
+			if oldTxnID < minReaderTxn && oldHeader.NumKeys > 0 {
+				// Allocate free page for relocation
+				relocPageID, allocErr := dm.AllocatePage()
+				if allocErr != nil {
+					return allocErr
+				}
+
+				// Write old disk version to relocated page
+				if writeErr := dm.WritePage(relocPageID, oldPage); writeErr != nil {
+					return writeErr
+				}
+
+				// Add to VersionMap so readers can find it
+				d.store.cache.versionMap.Track(pageID, oldTxnID, relocPageID)
+
+				// NOTE: Do NOT call FreePending here! The relocated page will be freed
+				// later by CleanupRelocatedVersions when no readers need it anymore.
+				// Calling FreePending here would cause a double-free bug.
+			}
+		}
+
+		// Now overwrite disk with new checkpointed version
+		if err := dm.WritePage(pageID, newPage); err != nil {
+			return err
+		}
+
+		// Remove WAL latch immediately after writing to disk
+		// This allows readers to access the page from disk instead of being blocked
+		dm.walPages.Delete(pageID)
+
+		return nil
 	})
 	if err != nil {
 		return err
@@ -164,9 +215,10 @@ func (d *db) checkpoint() error {
 	dm.mu.Unlock()
 
 	// Update meta with new checkpoint marker
-	newMeta := *meta
-	newMeta.CheckpointTxnID = currentTxn
-	if err := dm.PutMeta(&newMeta); err != nil {
+	// IMPORTANT: Make a copy of meta to avoid overwriting concurrent updates
+	freshMeta := *dm.GetMeta() // Dereference to copy
+	freshMeta.CheckpointTxnID = currentTxn
+	if err := dm.PutMeta(&freshMeta); err != nil {
 		return err
 	}
 
@@ -185,8 +237,10 @@ func (d *db) checkpoint() error {
 
 	// Evict checkpointed versions from cache
 	// Only evict versions older than all active readers to preserve MVCC
-	minReaderTxn := d.minReaderTxn()
 	_ = d.store.cache.EvictCheckpointed(minReaderTxn)
+
+	// Cleanup WAL page latches for checkpointed pages visible to all readers
+	dm.CleanupLatchOnWAL(minReaderTxn)
 
 	return nil
 }
@@ -196,7 +250,12 @@ func (d *db) checkpoint() error {
 func (d *db) minReaderTxn() uint64 {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	return d.minReaderTxnUnsafe()
+}
 
+// minReaderTxnUnsafe returns minimum transaction ID without acquiring lock.
+// Caller must hold d.mu (read or write lock).
+func (d *db) minReaderTxnUnsafe() uint64 {
 	// Start with minimum possible value
 	min := d.nextTxnID
 
@@ -222,6 +281,9 @@ func (d *db) releasePages(minTxn uint64) {
 		dm.mu.Lock()
 		dm.freelist.Release(minTxn)
 		dm.mu.Unlock()
+
+		// Cleanup WAL page latches for checkpointed pages visible to all readers
+		dm.CleanupLatchOnWAL(minTxn)
 	}
 
 	// Cleanup relocated page versions that are no longer needed
