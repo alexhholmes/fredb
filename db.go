@@ -183,6 +183,11 @@ func (d *db) checkpoint() error {
 		return err
 	}
 
+	// Evict checkpointed versions from cache
+	// Only evict versions older than all active readers to preserve MVCC
+	minReaderTxn := d.minReaderTxn()
+	_ = d.store.cache.EvictCheckpointed(minReaderTxn)
+
 	return nil
 }
 

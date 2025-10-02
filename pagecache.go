@@ -339,6 +339,58 @@ func (c *PageCache) getGeneration(pageID PageID) uint64 {
 	return 0
 }
 
+// EvictCheckpointed removes page versions that have been checkpointed to disk
+// AND are older than all active readers.
+// Only versions where (txnID <= CheckpointTxnID AND txnID < minReaderTxn) are safe to evict.
+// Called by background checkpointer after checkpoint completes.
+func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	meta := c.pager.GetMeta()
+	checkpointTxn := meta.CheckpointTxnID
+	evicted := 0
+
+	for pageID, versions := range c.entries {
+		// Track which versions to keep
+		keep := make([]*VersionedEntry, 0, len(versions))
+
+		for _, entry := range versions {
+			// Only evict if BOTH conditions are true:
+			// 1. Version is checkpointed (on disk)
+			// 2. Version is older than all active readers (no reader needs it)
+			if entry.txnID <= checkpointTxn && entry.txnID < minReaderTxn {
+				// Safe to evict
+				if entry.lruElement != nil {
+					c.lruList.Remove(entry.lruElement)
+				}
+				evicted++
+				c.evictions.Add(1)
+			} else {
+				// Keep version (either in WAL only or needed by reader)
+				keep = append(keep, entry)
+			}
+		}
+
+		if len(keep) == 0 {
+			// All versions evicted, remove pageID
+			delete(c.entries, pageID)
+		} else {
+			// Update versions list
+			c.entries[pageID] = keep
+		}
+	}
+
+	return evicted
+}
+
+// canEvict returns true if a page version is safe to evict.
+// A version is safe to evict if it has been checkpointed to disk.
+func (c *PageCache) canEvict(txnID uint64) bool {
+	meta := c.pager.GetMeta()
+	return txnID <= meta.CheckpointTxnID
+}
+
 // evictToWaterMark evicts old versions from LRU end until at lowWater.
 // Must be called with write lock held.
 func (c *PageCache) evictToWaterMark() {
@@ -359,6 +411,13 @@ func (c *PageCache) evictToWaterMark() {
 
 		entry := elem.Value.(*VersionedEntry)
 		attempts++
+
+		// Only evict checkpointed versions (on disk)
+		if !c.canEvict(entry.txnID) {
+			// Version only in WAL, skip
+			c.lruList.MoveToFront(elem)
+			continue
+		}
 
 		// Flush dirty pages before evicting
 		if entry.node.dirty {
