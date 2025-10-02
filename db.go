@@ -154,7 +154,20 @@ func (d *db) checkpoint() error {
 	}
 
 	// Get minimum reader txnID to determine which disk versions need preservation
-	minReaderTxn := d.minReaderTxnUnsafe() // Already holding d.mu
+	// IMPORTANT: If no readers, use currentTxn (last committed) not nextTxnID
+	// This prevents checkpoint from allocating pages freed by the just-committed transaction
+	minReaderTxn := d.minReaderTxnForCheckpoint(currentTxn)
+
+	// Before replaying WAL, temporarily prevent allocation of recently freed pages
+	// This ensures checkpoint won't allocate pages freed by transactions being checkpointed
+	dm.mu.Lock()
+	dm.freelist.PreventAllocationUpTo(currentTxn)
+	dm.mu.Unlock()
+	defer func() {
+		dm.mu.Lock()
+		dm.freelist.AllowAllAllocations()
+		dm.mu.Unlock()
+	}()
 
 	// Replay WAL from last checkpoint to current
 	// IMPORTANT: Before overwriting each page, check if old disk version needs preservation
@@ -262,6 +275,31 @@ func (d *db) minReaderTxnUnsafe() uint64 {
 	// Consider active write transaction
 	if d.writerTx != nil {
 		min = d.writerTx.txnID
+	}
+
+	// Consider all active read transactions
+	for _, tx := range d.readerTxs {
+		if tx.txnID < min {
+			min = tx.txnID
+		}
+	}
+
+	return min
+}
+
+// minReaderTxnForCheckpoint returns minimum transaction ID for checkpoint operations.
+// Unlike minReaderTxnUnsafe, this uses lastCommittedTxn as the floor when no readers exist.
+// This prevents checkpoint from allocating pages that were just freed.
+func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
+	// Start with last committed transaction as minimum
+	// This ensures pages freed by that transaction won't be reallocated during checkpoint
+	min := lastCommittedTxn
+
+	// Consider active write transaction (should not exist during checkpoint, but be safe)
+	if d.writerTx != nil {
+		if d.writerTx.txnID < min {
+			min = d.writerTx.txnID
+		}
 	}
 
 	// Consider all active read transactions

@@ -16,8 +16,9 @@ const (
 
 // FreeList tracks free pages for reuse
 type FreeList struct {
-	ids     []PageID            // sorted array of free page IDs
-	pending map[uint64][]PageID // txnID -> pages freed at that transaction
+	ids              []PageID            // sorted array of free page IDs
+	pending          map[uint64][]PageID // txnID -> pages freed at that transaction
+	preventUpToTxnID uint64              // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 }
 
 // NewFreeList creates an empty freelist
@@ -30,6 +31,20 @@ func NewFreeList() *FreeList {
 
 // Allocate returns a free page ID, or 0 if none available
 func (f *FreeList) Allocate() PageID {
+	// When prevention is active, check if there are pending pages that could be released
+	// If so, we should not allocate anything to avoid the race condition
+	if f.preventUpToTxnID > 0 {
+		// Check if there are any pending pages from transactions <= preventUpToTxnID
+		// These pages would normally be released and made available, but we're preventing that
+		for txnID := range f.pending {
+			if txnID <= f.preventUpToTxnID && len(f.pending[txnID]) > 0 {
+				// There are pending pages that could be released
+				// Don't allocate anything to avoid the race
+				return 0
+			}
+		}
+	}
+
 	if len(f.ids) == 0 {
 		return 0
 	}
@@ -325,4 +340,16 @@ func (f *FreeList) Deserialize(pages []*Page) {
 			f.pending[txnID] = pageIDs
 		}
 	}
+}
+
+// PreventAllocationUpTo prevents allocation of pages freed up to and including the specified txnID.
+// This is used during checkpoint to prevent allocating pages that were freed by transactions
+// being checkpointed, as those pages might still be needed by readers at older transaction IDs.
+func (f *FreeList) PreventAllocationUpTo(txnID uint64) {
+	f.preventUpToTxnID = txnID
+}
+
+// AllowAllAllocations clears the allocation prevention, allowing all free pages to be allocated again.
+func (f *FreeList) AllowAllAllocations() {
+	f.preventUpToTxnID = 0
 }
