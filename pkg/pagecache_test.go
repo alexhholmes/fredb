@@ -8,7 +8,6 @@ import (
 func makeTestNode(pageID PageID) *Node {
 	return &Node{
 		pageID:   pageID,
-		page:     &Page{},
 		isLeaf:   true,
 		keys:     make([][]byte, 0),
 		values:   make([][]byte, 0),

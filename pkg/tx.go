@@ -86,13 +86,12 @@ func (tx *Tx) Set(key, value []byte) error {
 		}
 
 		// Create new root using tx.allocatePage()
-		newRootID, newRootPage, err := tx.allocatePage()
+		newRootID, _, err := tx.allocatePage()
 		if err != nil {
 			return err
 		}
 
 		newRoot := &Node{
-			page:     newRootPage,
 			pageID:   newRootID,
 			dirty:    true,
 			isLeaf:   false,
@@ -100,11 +99,6 @@ func (tx *Tx) Set(key, value []byte) error {
 			keys:     [][]byte{midKey},
 			values:   [][]byte{midVal},
 			children: []PageID{leftChild.pageID, rightChild.pageID},
-		}
-
-		// Serialize the new root to its page
-		if err := newRoot.serialize(tx.txnID); err != nil {
-			return err
 		}
 
 		// Store the new root in TX-local cache
@@ -133,13 +127,12 @@ func (tx *Tx) Set(key, value []byte) error {
 		}
 
 		// Create new root
-		newRootID, newRootPage, err := tx.allocatePage()
+		newRootID, _, err := tx.allocatePage()
 		if err != nil {
 			return err
 		}
 
 		newRoot = &Node{
-			page:     newRootPage,
 			pageID:   newRootID,
 			dirty:    true,
 			isLeaf:   false,
@@ -147,10 +140,6 @@ func (tx *Tx) Set(key, value []byte) error {
 			keys:     [][]byte{midKey},
 			values:   [][]byte{midVal},
 			children: []PageID{leftChild.pageID, rightChild.pageID},
-		}
-
-		if err := newRoot.serialize(tx.txnID); err != nil {
-			return err
 		}
 
 		tx.pages[newRootID] = newRoot
@@ -251,15 +240,16 @@ func (tx *Tx) Commit() error {
 
 	// Write all TX-local pages to disk and flush to global cache
 	for pageID, node := range tx.pages {
-		// Serialize node to its page with this transaction's ID
-		if err := node.serialize(tx.txnID); err != nil {
+		// Serialize node to a page with this transaction's ID
+		page, err := node.Serialize(tx.txnID)
+		if err != nil {
 			// Restore old root on failure
 			tx.db.store.root = oldRoot
 			return err
 		}
 
 		// Write to disk
-		if err := tx.db.store.pager.WritePage(pageID, node.page); err != nil {
+		if err := tx.db.store.pager.WritePage(pageID, page); err != nil {
 			// Restore old root on failure
 			tx.db.store.root = oldRoot
 			return err
@@ -465,14 +455,13 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	cloned := node.clone()
 
 	// Allocate new page for cloned node
-	pageID, page, err := tx.allocatePage()
+	pageID, _, err := tx.allocatePage()
 	if err != nil {
 		return nil, err
 	}
 
 	// Set up cloned node with new page
 	cloned.pageID = pageID
-	cloned.page = page
 	cloned.dirty = true
 
 	// Don't serialize here - let the caller modify the node first

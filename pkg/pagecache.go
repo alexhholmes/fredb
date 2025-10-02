@@ -166,7 +166,8 @@ func (c *PageCache) FlushDirty(pager *PageManager) error {
 			}
 
 			// Serialize node with the transaction ID that committed this version
-			if serErr := entry.node.serialize(entry.txnID); serErr != nil {
+			page, serErr := entry.node.Serialize(entry.txnID)
+			if serErr != nil {
 				if err == nil {
 					err = serErr
 				}
@@ -174,7 +175,7 @@ func (c *PageCache) FlushDirty(pager *PageManager) error {
 			}
 
 			// Write to disk
-			if writeErr := (*pager).WritePage(entry.pageID, entry.node.page); writeErr != nil {
+			if writeErr := (*pager).WritePage(entry.pageID, page); writeErr != nil {
 				if err == nil {
 					err = writeErr
 				}
@@ -362,8 +363,9 @@ func (c *PageCache) evictToWaterMark() {
 		// Flush dirty pages before evicting
 		if entry.node.dirty {
 			// Serialize and write to disk
-			if err := entry.node.serialize(entry.txnID); err == nil {
-				if err := c.pager.WritePage(entry.pageID, entry.node.page); err == nil {
+			page, err := entry.node.Serialize(entry.txnID)
+			if err == nil {
+				if err := c.pager.WritePage(entry.pageID, page); err == nil {
 					entry.node.dirty = false
 				}
 			}
