@@ -1,4 +1,4 @@
-package pkg
+package fredb
 
 import (
 	"container/list"

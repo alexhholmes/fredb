@@ -2,10 +2,10 @@ version: '3'
 tasks:
   test:
     cmds:
-      - go test -v -count=1 ./pkg/...
+      - go test -v -count=1 ./...
   test-full:
     cmds:
-      - go test -v -count=1 -race ./pkg/... -slow
+      - go test -v -count=1 -race ./... -slow
   bench:
     cmds:
       - go test -v -bench=. -run=^$ ./...
