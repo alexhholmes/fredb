@@ -31,21 +31,19 @@ func NewFreeList() *FreeList {
 
 // Allocate returns a free page ID, or 0 if none available
 func (f *FreeList) Allocate() PageID {
-	// When prevention is active, check if there are pending pages that could be released
-	// If so, we should not allocate anything to avoid the race condition
-	if f.preventUpToTxnID > 0 {
-		// Check if there are any pending pages from transactions <= preventUpToTxnID
-		// These pages would normally be released and made available, but we're preventing that
-		for txnID := range f.pending {
-			if txnID <= f.preventUpToTxnID && len(f.pending[txnID]) > 0 {
-				// There are pending pages that could be released
-				// Don't allocate anything to avoid the race
-				return 0
+	if len(f.ids) == 0 {
+		// No free pages available
+		// If prevention is active and there are pending pages that could be released,
+		// return 0 to force allocation of new pages instead of using recently freed ones
+		if f.preventUpToTxnID > 0 {
+			for txnID := range f.pending {
+				if txnID <= f.preventUpToTxnID && len(f.pending[txnID]) > 0 {
+					// There are pending pages that would normally be released
+					// Don't wait for them - force new page allocation
+					return 0
+				}
 			}
 		}
-	}
-
-	if len(f.ids) == 0 {
 		return 0
 	}
 	// Pop from end
