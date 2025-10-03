@@ -110,16 +110,8 @@ func (w *WAL) AppendCommit(txnID uint64) error {
 	return nil
 }
 
-// Sync fsyncs the WAL to disk (commit point)
+// Sync conditionally fsyncs the WAL based on sync mode configuration
 func (w *WAL) Sync() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	return w.file.Sync()
-}
-
-// SyncIfNeeded conditionally fsyncs the WAL based on sync mode configuration
-func (w *WAL) SyncIfNeeded() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

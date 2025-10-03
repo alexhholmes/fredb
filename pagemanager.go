@@ -141,14 +141,9 @@ func (dm *DiskPageManager) CommitWAL(txnID uint64) error {
 	return dm.wal.AppendCommit(txnID)
 }
 
-// SyncWAL fsyncs the WAL (legacy method, prefer SyncWALIfNeeded)
+// SyncWAL conditionally fsyncs the WAL based on sync mode
 func (dm *DiskPageManager) SyncWAL() error {
 	return dm.wal.Sync()
-}
-
-// SyncWALIfNeeded conditionally fsyncs the WAL based on sync mode
-func (dm *DiskPageManager) SyncWALIfNeeded() error {
-	return dm.wal.SyncIfNeeded()
 }
 
 // ForceSyncWAL unconditionally fsyncs the WAL
