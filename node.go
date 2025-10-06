@@ -28,8 +28,8 @@ func (n *Node) isFull() bool {
 	return int(n.numKeys) >= MaxKeysPerNode
 }
 
-// serializedSize calculates the size of the serialized Node
-func (n *Node) serializedSize() int {
+// size calculates the size of the serialized Node
+func (n *Node) size() int {
 	size := pageHeaderSize
 
 	if n.isLeaf {
@@ -52,7 +52,7 @@ func (n *Node) serializedSize() int {
 // serialize encodes the Node data into a fresh Page
 func (n *Node) serialize(txnID uint64) (*Page, error) {
 	// Check size
-	if n.serializedSize() > PageSize {
+	if n.size() > PageSize {
 		return nil, ErrPageOverflow
 	}
 
