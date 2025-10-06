@@ -5,12 +5,6 @@ import (
 	"fmt"
 )
 
-const (
-	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
-	MaxKeysPerNode = 64
-	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
-)
-
 // BTree is the main structure
 type BTree struct {
 	pager PageManager

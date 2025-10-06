@@ -2,6 +2,12 @@ package fredb
 
 import "bytes"
 
+const (
+	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
+	MaxKeysPerNode = 64
+	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
+)
+
 // node represents a B-tree node with decoded page data
 type node struct {
 	pageID PageID
