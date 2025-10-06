@@ -443,22 +443,101 @@ func (c *PageCache) cleanupRelocatedVersions(minReaderTxn uint64) int {
 	return len(freedPages)
 }
 
+// countEntries returns total number of cached entries across all pages
+func (c *PageCache) countEntries() int {
+	total := 0
+	for _, versions := range c.entries {
+		total += len(versions)
+	}
+	return total
+}
+
+// flushDirtyPage writes a dirty node to disk and marks it clean.
+// Returns true if successfully flushed, false if should skip eviction.
+func (c *PageCache) flushDirtyPage(entry *versionEntry) bool {
+	if !entry.node.dirty {
+		return true // Already clean
+	}
+
+	// Serialize and write to disk
+	page, err := entry.node.serialize(entry.txnID)
+	if err != nil {
+		return false
+	}
+
+	if err := c.pager.WritePage(entry.pageID, page); err != nil {
+		return false
+	}
+
+	entry.node.dirty = false
+	return true
+}
+
+// relocateVersion writes an old version to a new location for MVCC.
+// Returns true if successfully relocated, false if should skip eviction.
+func (c *PageCache) relocateVersion(entry *versionEntry) bool {
+	// Only relocate if there are multiple versions (readers might need old version)
+	if len(c.entries[entry.pageID]) <= 1 {
+		return true // No need to relocate
+	}
+
+	// Serialize the version
+	page, err := entry.node.serialize(entry.txnID)
+	if err != nil {
+		return false
+	}
+
+	// Allocate a free page for relocation
+	relocatedPageID, err := c.pager.AllocatePage()
+	if err != nil {
+		return false
+	}
+
+	// Write version to relocated page
+	if err := c.pager.WritePage(relocatedPageID, page); err != nil {
+		_ = c.pager.FreePage(relocatedPageID)
+		return false
+	}
+
+	// Track relocation
+	c.versionMap.Track(entry.pageID, entry.txnID, relocatedPageID)
+	return true
+}
+
+// removeEntry removes a version entry from cache structures
+func (c *PageCache) removeEntry(entry *versionEntry) {
+	// Remove from LRU list
+	c.lruList.Remove(entry.lruElement)
+
+	// Remove from versions array
+	versions := c.entries[entry.pageID]
+	for i, v := range versions {
+		if v == entry {
+			c.entries[entry.pageID] = append(versions[:i], versions[i+1:]...)
+			break
+		}
+	}
+
+	// If no versions left, remove pageID entirely
+	if len(c.entries[entry.pageID]) == 0 {
+		delete(c.entries, entry.pageID)
+	}
+
+	c.evictions.Add(1)
+}
+
 // evictToWaterMark evicts old versions from LRU end until at lowWater.
 // Must be called with write lock held.
 func (c *PageCache) evictToWaterMark() {
 	target := c.lowWater
 	attempts := 0
-	maxAttempts := c.maxSize * 2 // Avoid infinite loop
-
-	totalEntries := 0
-	for _, versions := range c.entries {
-		totalEntries += len(versions)
-	}
+	maxAttempts := c.maxSize * 2
+	totalEntries := c.countEntries()
 
 	for totalEntries > target && attempts < maxAttempts {
-		elem := c.lruList.Back() // Oldest (LRU)
+		elem := c.lruList.Back()
 		if elem == nil {
-			break // Empty list
+			break
 		}
 
 		entry := elem.Value.(*versionEntry)
@@ -466,79 +545,24 @@ func (c *PageCache) evictToWaterMark() {
 
 		// Only evict checkpointed versions (on disk)
 		if !c.canEvict(entry.txnID) {
-			// Version only in WAL, skip
 			c.lruList.MoveToFront(elem)
 			continue
 		}
 
-		// Flush dirty pages before evicting
-		if entry.node.dirty {
-			// serialize and write to disk
-			page, err := entry.node.serialize(entry.txnID)
-			if err == nil {
-				if err := c.pager.WritePage(entry.pageID, page); err == nil {
-					entry.node.dirty = false
-				}
-			}
-
-			// If flush failed, skip this Page and try next
-			if entry.node.dirty {
-				c.lruList.MoveToFront(elem)
-				continue
-			}
+		// Flush if dirty
+		if !c.flushDirtyPage(entry) {
+			c.lruList.MoveToFront(elem)
+			continue
 		}
 
-		// Before evicting checkpointed version, check if we need to relocate it
-		// Relocate if there are multiple versions of this Page (readers might need old version)
-		if len(c.entries[entry.pageID]) > 1 {
-			// serialize the version
-			page, err := entry.node.serialize(entry.txnID)
-			if err != nil {
-				// Can't serialize, skip
-				c.lruList.MoveToFront(elem)
-				continue
-			}
-
-			// Allocate a free Page for relocation
-			relocatedPageID, err := c.pager.AllocatePage()
-			if err != nil {
-				// Can't allocate, skip eviction
-				c.lruList.MoveToFront(elem)
-				continue
-			}
-
-			// Write version to relocated Page
-			if err := c.pager.WritePage(relocatedPageID, page); err != nil {
-				// Write failed, free the allocated Page and skip
-				_ = c.pager.FreePage(relocatedPageID)
-				c.lruList.MoveToFront(elem)
-				continue
-			}
-
-			// Track relocation
-			// Note: relocated Page will be freed by cleanupRelocatedVersions()
-			c.versionMap.Track(entry.pageID, entry.txnID, relocatedPageID)
+		// Relocate if needed for MVCC
+		if !c.relocateVersion(entry) {
+			c.lruList.MoveToFront(elem)
+			continue
 		}
 
-		// Evict version from cache
-		c.lruList.Remove(elem)
-
-		// Remove from versions array
-		versions := c.entries[entry.pageID]
-		for i, v := range versions {
-			if v == entry {
-				// Remove this version
-				c.entries[entry.pageID] = append(versions[:i], versions[i+1:]...)
-				break
-			}
-		}
-
-		// If no versions left, remove PageID entirely
-		if len(c.entries[entry.pageID]) == 0 {
-			delete(c.entries, entry.pageID)
-		}
-
-		c.evictions.Add(1)
+		// Evict
+		c.removeEntry(entry)
 		totalEntries--
 	}
 }
