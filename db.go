@@ -390,7 +390,7 @@ func (d *DB) checkpoint() error {
 				}
 
 				// Add to VersionMap so readers can find it
-				d.store.cache.versionMap.Track(pageID, oldTxnID, relocPageID)
+				d.store.pager.TrackRelocation(pageID, oldTxnID, relocPageID)
 
 				// NOTE: Do NOT call FreePending here! The relocated Page will be freed
 				// later by cleanupRelocatedVersions when no readers need it anymore.
