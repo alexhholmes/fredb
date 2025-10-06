@@ -3,6 +3,8 @@ package fredb
 import (
 	"errors"
 	"fmt"
+
+	"fredb/internal"
 )
 
 var (
@@ -20,14 +22,14 @@ var (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	txnID    uint64           // Unique transaction ID
-	writable bool             // Is this a read-write transaction?
-	db       *DB              // Database this transaction belongs to (concrete type for internal access)
-	root     *Node            // Root Node at transaction start
-	pages    map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  []PageID         // Pages allocated in this transaction (for COW)
-	freed    []PageID         // Pages freed in this transaction (for freelist)
-	done     bool             // Has Commit() or Rollback() been called?
+	txnID    uint64                    // Unique transaction ID
+	writable bool                      // Is this a read-write transaction?
+	db       *DB                       // Database this transaction belongs to (concrete type for internal access)
+	root     *Node                     // Root Node at transaction start
+	pages    map[internal.PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending  []internal.PageID         // Pages allocated in this transaction (for COW)
+	freed    []internal.PageID         // Pages freed in this transaction (for freelist)
+	done     bool                      // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key.
@@ -67,7 +69,7 @@ func (tx *Tx) Set(key, value []byte) error {
 
 	// Also active practical limit based on Page size
 	// At minimum, a leaf Page must hold at least one key-value pair
-	maxSize := PageSize - pageHeaderSize - leafElementSize
+	maxSize := internal.PageSize - internal.PageHeaderSize - internal.LeafElementSize
 	if len(key)+len(value) > maxSize {
 		return ErrPageOverflow
 	}
@@ -102,7 +104,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			numKeys:  1,
 			keys:     [][]byte{midKey},
 			values:   [][]byte{midVal},
-			children: []PageID{leftChild.pageID, rightChild.pageID},
+			children: []internal.PageID{leftChild.pageID, rightChild.pageID},
 		}
 
 		// Store the new root in TX-local cache
@@ -143,7 +145,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			numKeys:  1,
 			keys:     [][]byte{midKey},
 			values:   [][]byte{midVal},
-			children: []PageID{leftChild.pageID, rightChild.pageID},
+			children: []internal.PageID{leftChild.pageID, rightChild.pageID},
 		}
 
 		tx.pages[newRootID] = newRoot
@@ -298,7 +300,7 @@ func (tx *Tx) Commit() error {
 		meta.RootPageID = tx.root.pageID
 	}
 	meta.TxnID = tx.txnID
-	meta.Checksum = meta.calculateChecksum()
+	meta.Checksum = meta.CalculateChecksum()
 
 	// Update pager's in-memory meta
 	if err := tx.db.store.pager.PutMeta(meta); err != nil {
@@ -378,7 +380,7 @@ func (tx *Tx) check() error {
 }
 
 // Loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(id PageID) (*Node, error) {
+func (tx *Tx) loadNode(id internal.PageID) (*Node, error) {
 	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
 		if node, exists := tx.pages[id]; exists {
@@ -401,7 +403,7 @@ func (tx *Tx) loadNode(id PageID) (*Node, error) {
 		}
 
 		// Try to deserialize - if Page is empty (new Page), header.NumKeys will be 0
-		header := page.header()
+		header := page.Header()
 		if header.NumKeys > 0 {
 			if err := node.deserialize(page); err != nil {
 				return nil, 0, err
@@ -413,7 +415,7 @@ func (tx *Tx) loadNode(id PageID) (*Node, error) {
 			node.numKeys = 0
 			node.keys = make([][]byte, 0)
 			node.values = make([][]byte, 0)
-			node.children = make([]PageID, 0)
+			node.children = make([]internal.PageID, 0)
 		}
 
 		// Cycle detection: check if deserialized Node references itself
@@ -494,7 +496,7 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 
 // Allocates a new Page for this transaction.
 // The allocated Page is tracked in tx.pending for COW semantics
-func (tx *Tx) allocatePage() (PageID, *Page, error) {
+func (tx *Tx) allocatePage() (internal.PageID, *internal.Page, error) {
 	// Retry allocation if we get a Page that's in tx.freed
 	// This can happen when background releaser moves pages from pending to free
 	const maxRetries = 10
@@ -547,7 +549,7 @@ retryLoop:
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.
 // This prevents the same Page from being freed multiple times in a transaction.
-func (tx *Tx) addFreed(pageID PageID) {
+func (tx *Tx) addFreed(pageID internal.PageID) {
 	if pageID == 0 {
 		return
 	}

@@ -2,6 +2,8 @@ package fredb
 
 import (
 	"bytes"
+
+	"fredb/internal"
 )
 
 const (
@@ -12,7 +14,7 @@ const (
 
 // Node represents a B-tree Node with decoded Page data
 type Node struct {
-	pageID PageID
+	pageID internal.PageID
 	dirty  bool
 
 	// Decoded Node data
@@ -20,7 +22,7 @@ type Node struct {
 	numKeys  uint16
 	keys     [][]byte
 	values   [][]byte // Empty and unused in branch nodes
-	children []PageID
+	children []internal.PageID
 }
 
 // isFull checks if a Node is full
@@ -32,16 +34,16 @@ func (n *Node) isFull() bool {
 
 // size calculates the size of the serialized Node
 func (n *Node) size() int {
-	size := pageHeaderSize
+	size := internal.PageHeaderSize
 
 	if n.isLeaf {
-		size += int(n.numKeys) * leafElementSize
+		size += int(n.numKeys) * internal.LeafElementSize
 		for i := 0; i < int(n.numKeys); i++ {
 			size += len(n.keys[i]) + len(n.values[i])
 		}
 	} else {
 		// B+ tree: branch nodes only store keys (no values)
-		size += int(n.numKeys) * branchElementSize
+		size += int(n.numKeys) * internal.BranchElementSize
 		size += 8 // children[0]
 		for i := 0; i < int(n.numKeys); i++ {
 			size += len(n.keys[i]) // Only keys, no values
@@ -52,33 +54,31 @@ func (n *Node) size() int {
 }
 
 // serialize encodes the Node data into a fresh Page
-func (n *Node) serialize(txnID uint64) (*Page, error) {
+func (n *Node) serialize(txnID uint64) (*internal.Page, error) {
 	// Check size
-	if n.size() > PageSize {
+	if n.size() > internal.PageSize {
 		return nil, ErrPageOverflow
 	}
 
 	// Create fresh Page
-	page := &Page{}
+	page := &internal.Page{}
 
 	// Write header
-	header := &pageHeader{
-		PageID:    n.pageID,
-		NumKeys:   n.numKeys,
-		TxnID:     txnID,
-		_NextLeaf: 0,
-		_PrevLeaf: 0,
+	header := &internal.PageHeader{
+		PageID:  n.pageID,
+		NumKeys: n.numKeys,
+		TxnID:   txnID,
 	}
 	if n.isLeaf {
-		header.Flags = LeafPageFlag
+		header.Flags = internal.LeafPageFlag
 	} else {
-		header.Flags = BranchPageFlag
+		header.Flags = internal.BranchPageFlag
 	}
-	page.writeHeader(header)
+	page.WriteHeader(header)
 
 	if n.isLeaf {
 		// serialize leaf Node - pack from end backward
-		dataOffset := uint16(PageSize)
+		dataOffset := uint16(internal.PageSize)
 		// Process in reverse order to pack from end
 		for i := int(n.numKeys) - 1; i >= 0; i-- {
 			key := n.keys[i]
@@ -86,46 +86,46 @@ func (n *Node) serialize(txnID uint64) (*Page, error) {
 
 			// Write value first (at end)
 			dataOffset -= uint16(len(value))
-			copy(page.data[dataOffset:], value)
+			copy(page.Data[dataOffset:], value)
 			valueOffset := dataOffset
 
 			// Write key before value
 			dataOffset -= uint16(len(key))
-			copy(page.data[dataOffset:], key)
+			copy(page.Data[dataOffset:], key)
 			keyOffset := dataOffset
 
-			elem := &leafElement{
+			elem := &internal.LeafElement{
 				KeyOffset:   keyOffset,
 				KeySize:     uint16(len(key)),
 				ValueOffset: valueOffset,
 				ValueSize:   uint16(len(value)),
 			}
-			page.writeLeafElement(i, elem)
+			page.WriteLeafElement(i, elem)
 		}
 	} else {
 		// serialize branch Node (B+ tree: only keys, no values)
 		// Write children[0] at fixed location (last 8 bytes)
 		if len(n.children) > 0 {
-			page.writeBranchFirstChild(n.children[0])
+			page.WriteBranchFirstChild(n.children[0])
 		}
 
 		// Pack keys from end backward (reserve last 8 bytes for children[0])
-		dataOffset := uint16(PageSize - 8)
+		dataOffset := uint16(internal.PageSize - 8)
 		// Process in reverse order to pack from end
 		for i := int(n.numKeys) - 1; i >= 0; i-- {
 			key := n.keys[i]
 
 			// Write key
 			dataOffset -= uint16(len(key))
-			copy(page.data[dataOffset:], key)
+			copy(page.Data[dataOffset:], key)
 
-			elem := &branchElement{
+			elem := &internal.BranchElement{
 				KeyOffset: dataOffset,
 				KeySize:   uint16(len(key)),
 				Reserved:  0, // No values in B+ tree branches
 				ChildID:   n.children[i+1],
 			}
-			page.writeBranchElement(i, elem)
+			page.WriteBranchElement(i, elem)
 		}
 	}
 
@@ -133,11 +133,11 @@ func (n *Node) serialize(txnID uint64) (*Page, error) {
 }
 
 // deserialize decodes the Page data into Node fields
-func (n *Node) deserialize(p *Page) error {
-	header := p.header()
+func (n *Node) deserialize(p *internal.Page) error {
+	header := p.Header()
 	n.pageID = header.PageID
 	n.numKeys = header.NumKeys
-	n.isLeaf = (header.Flags & LeafPageFlag) != 0
+	n.isLeaf = (header.Flags & internal.LeafPageFlag) != 0
 
 	if n.isLeaf {
 		// deserialize leaf Node
@@ -145,12 +145,12 @@ func (n *Node) deserialize(p *Page) error {
 		n.values = make([][]byte, n.numKeys)
 		n.children = nil
 
-		elements := p.leafElements()
+		elements := p.LeafElements()
 		for i := 0; i < int(n.numKeys); i++ {
 			elem := elements[i]
 
 			// Copy key
-			keyData, err := p.getKey(elem.KeyOffset, elem.KeySize)
+			keyData, err := p.GetKey(elem.KeyOffset, elem.KeySize)
 			if err != nil {
 				return err
 			}
@@ -158,7 +158,7 @@ func (n *Node) deserialize(p *Page) error {
 			copy(n.keys[i], keyData)
 
 			// Copy value
-			valueData, err := p.getValue(elem.ValueOffset, elem.ValueSize)
+			valueData, err := p.GetValue(elem.ValueOffset, elem.ValueSize)
 			if err != nil {
 				return err
 			}
@@ -169,17 +169,17 @@ func (n *Node) deserialize(p *Page) error {
 		// deserialize branch Node (B+ tree: only keys, no values)
 		n.keys = make([][]byte, n.numKeys)
 		n.values = nil // Branch nodes don't have values
-		n.children = make([]PageID, n.numKeys+1)
+		n.children = make([]internal.PageID, n.numKeys+1)
 
 		// Read children[0]
-		n.children[0] = p.readBranchFirstChild()
+		n.children[0] = p.ReadBranchFirstChild()
 
-		elements := p.branchElements()
+		elements := p.BranchElements()
 		for i := 0; i < int(n.numKeys); i++ {
 			elem := elements[i]
 
 			// Copy key
-			keyData, err := p.getKey(elem.KeyOffset, elem.KeySize)
+			keyData, err := p.GetKey(elem.KeyOffset, elem.KeySize)
 			if err != nil {
 				return err
 			}
@@ -241,7 +241,7 @@ func (n *Node) clone() *Node {
 
 	// Deep copy children (branch nodes only)
 	if !n.isLeaf && len(n.children) > 0 {
-		cloned.children = make([]PageID, len(n.children))
+		cloned.children = make([]internal.PageID, len(n.children))
 		copy(cloned.children, n.children)
 	}
 

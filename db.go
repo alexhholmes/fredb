@@ -5,16 +5,18 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"fredb/internal"
 )
 
 var (
 	ErrKeyNotFound        = errors.New("key not found")
-	ErrPageOverflow       = errors.New("page overflow: serialized data exceeds page size")
-	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
-	ErrInvalidMagicNumber = errors.New("invalid magic number")
-	ErrInvalidVersion     = errors.New("invalid format version")
-	ErrInvalidPageSize    = errors.New("invalid Page size")
-	ErrInvalidChecksum    = errors.New("invalid checksum")
+	ErrPageOverflow       = internal.ErrPageOverflow
+	ErrInvalidOffset      = internal.ErrInvalidOffset
+	ErrInvalidMagicNumber = internal.ErrInvalidMagicNumber
+	ErrInvalidVersion     = internal.ErrInvalidVersion
+	ErrInvalidPageSize    = internal.ErrInvalidPageSize
+	ErrInvalidChecksum    = internal.ErrInvalidChecksum
 	ErrDatabaseClosed     = errors.New("database is closed")
 	ErrCorruption         = errors.New("data corruption detected")
 	ErrKeyTooLarge        = errors.New("key too large")
@@ -110,14 +112,14 @@ func (d *DB) recoverFromWAL(cache *PageCache) error {
 	meta := d.store.pager.GetMeta()
 	checkpointTxn := meta.CheckpointTxnID
 
-	return d.wal.Replay(checkpointTxn, func(pageID PageID, page *Page) error {
+	return d.wal.Replay(checkpointTxn, func(pageID internal.PageID, page *internal.Page) error {
 		// Create empty node and deserialize page data into it
 		node := &Node{}
 		if err := node.deserialize(page); err != nil {
 			return err
 		}
 
-		header := page.header()
+		header := page.Header()
 
 		// Load into cache as hot version (ready for next reader)
 		cache.Put(pageID, header.TxnID, node)
@@ -179,14 +181,14 @@ func (d *DB) Begin(writable bool) (*Tx, error) {
 		txnID:    txnID,
 		writable: writable,
 		root:     d.store.root, // Capture snapshot for MVCC isolation
-		pending:  make([]PageID, 0),
-		freed:    make([]PageID, 0),
+		pending:  make([]internal.PageID, 0),
+		freed:    make([]internal.PageID, 0),
 		done:     false,
 	}
 
 	// Initialize TX-local cache for write transactions
 	if writable {
-		tx.pages = make(map[PageID]*Node)
+		tx.pages = make(map[internal.PageID]*Node)
 	}
 
 	// Track active transaction
@@ -351,18 +353,18 @@ func (d *DB) checkpoint() error {
 
 	// Replay WAL from last checkpoint to current
 	// IMPORTANT: Idempotent replay - skip pages already at correct version
-	err := d.wal.Replay(checkpointTxn, func(pageID PageID, newPage *Page) error {
+	err := d.wal.Replay(checkpointTxn, func(pageID internal.PageID, newPage *internal.Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the WAL latch check for this read
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
 
 		// Get new page version for idempotency check
-		newHeader := newPage.header()
+		newHeader := newPage.Header()
 		newTxnID := newHeader.TxnID
 
 		if readErr == nil && oldPage != nil {
 			// Parse old version's TxnID
-			oldHeader := oldPage.header()
+			oldHeader := oldPage.Header()
 			oldTxnID := oldHeader.TxnID
 
 			// IDEMPOTENCY: Skip if already applied (prevents double-apply corruption)

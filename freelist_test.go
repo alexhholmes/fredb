@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"fredb/internal"
 )
 
 func TestFreeListPending(t *testing.T) {
@@ -13,9 +15,9 @@ func TestFreeListPending(t *testing.T) {
 	fl := NewFreeList()
 
 	// Add some pages to pending at different transactions
-	fl.FreePending(10, []PageID{100, 101, 102})
-	fl.FreePending(11, []PageID{200, 201})
-	fl.FreePending(12, []PageID{300})
+	fl.FreePending(10, []internal.PageID{100, 101, 102})
+	fl.FreePending(11, []internal.PageID{200, 201})
+	fl.FreePending(12, []internal.PageID{300})
 
 	// Verify pending size
 	if fl.PendingSize() != 6 {
@@ -78,10 +80,10 @@ func TestFreeListReleaseOrder(t *testing.T) {
 	fl := NewFreeList()
 
 	// Add pages at various transaction IDs
-	fl.FreePending(50, []PageID{500})
-	fl.FreePending(10, []PageID{100})
-	fl.FreePending(30, []PageID{300})
-	fl.FreePending(20, []PageID{200})
+	fl.FreePending(50, []internal.PageID{500})
+	fl.FreePending(10, []internal.PageID{100})
+	fl.FreePending(30, []internal.PageID{300})
+	fl.FreePending(20, []internal.PageID{200})
 
 	// Release up to 25 should release txns 10 and 20
 	released := fl.Release(25)
@@ -113,7 +115,7 @@ func TestFreeListEmptyRelease(t *testing.T) {
 	}
 
 	// Add empty slice shouldn't break anything
-	fl.FreePending(10, []PageID{})
+	fl.FreePending(10, []internal.PageID{})
 	if fl.PendingSize() != 0 {
 		t.Errorf("Expected 0 pages after adding empty slice, got %d", fl.PendingSize())
 	}
@@ -129,15 +131,15 @@ func TestFreeListPendingSerialization(t *testing.T) {
 	fl.Free(20)
 	fl.Free(30)
 
-	fl.FreePending(100, []PageID{1000, 1001, 1002})
-	fl.FreePending(101, []PageID{2000, 2001})
-	fl.FreePending(105, []PageID{3000})
+	fl.FreePending(100, []internal.PageID{1000, 1001, 1002})
+	fl.FreePending(101, []internal.PageID{2000, 2001})
+	fl.FreePending(105, []internal.PageID{3000})
 
 	// serialize
 	pagesNeeded := fl.PagesNeeded()
-	pages := make([]*Page, pagesNeeded)
+	pages := make([]*internal.Page, pagesNeeded)
 	for i := 0; i < pagesNeeded; i++ {
-		pages[i] = &Page{}
+		pages[i] = &internal.Page{}
 	}
 	fl.Serialize(pages)
 

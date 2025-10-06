@@ -858,7 +858,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 	defer db.Close()
 
 	// Calculate key/value size for 2 pairs per Page
-	// PageSize = 4096, pageHeaderSize = 40, leafElementSize = 16
+	// PageSize = 4096, PageHeaderSize = 40, LeafElementSize = 16
 	// Available = 4096 - 40 = 4056
 	// For 2 pairs: 2 * 16 = 32 bytes metadata
 	// Data space = 4056 - 32 = 4024 bytes

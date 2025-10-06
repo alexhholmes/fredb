@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"fredb/internal"
 )
 
 // TestWALRecoveryBasic tests that uncommitted WAL entries are recovered after restart
@@ -168,7 +170,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Manually trigger checkpoint replay (simulates crash after Sync, before PutMeta update)
 	// This should be idempotent - running it twice should not corrupt data
-	err = db.wal.Replay(checkpointTxnID, func(pageID PageID, page *Page) error {
+	err = db.wal.Replay(checkpointTxnID, func(pageID internal.PageID, page *internal.Page) error {
 		return dm.WritePage(pageID, page)
 	})
 	if err != nil {
@@ -177,15 +179,15 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Replay AGAIN (simulating restart after crash)
 	// The idempotency check should skip pages that are already at correct version
-	err = db.wal.Replay(checkpointTxnID, func(pageID PageID, page *Page) error {
+	err = db.wal.Replay(checkpointTxnID, func(pageID internal.PageID, page *internal.Page) error {
 		// Read current disk version
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
 
-		newHeader := page.header()
+		newHeader := page.Header()
 		newTxnID := newHeader.TxnID
 
 		if readErr == nil && oldPage != nil {
-			oldHeader := oldPage.header()
+			oldHeader := oldPage.Header()
 			oldTxnID := oldHeader.TxnID
 
 			// Should skip if already applied

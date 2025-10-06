@@ -2,6 +2,8 @@ package fredb
 
 import (
 	"sync"
+
+	"fredb/internal"
 )
 
 // VersionMap tracks where old Page versions have been relocated
@@ -23,30 +25,30 @@ import (
 //   - Reader@5 can still load version@3 from Page 500
 type VersionMap struct {
 	// Map: originalPageID -> (txnID -> relocatedPageID)
-	relocations map[PageID]map[uint64]PageID
+	relocations map[internal.PageID]map[uint64]internal.PageID
 	mu          sync.RWMutex
 }
 
 // NewVersionMap creates a new version relocation tracker
 func NewVersionMap() *VersionMap {
 	return &VersionMap{
-		relocations: make(map[PageID]map[uint64]PageID),
+		relocations: make(map[internal.PageID]map[uint64]internal.PageID),
 	}
 }
 
 // Track records that a Page version has been relocated to a new location
-func (vm *VersionMap) Track(originalPageID PageID, txnID uint64, relocatedPageID PageID) {
+func (vm *VersionMap) Track(originalPageID internal.PageID, txnID uint64, relocatedPageID internal.PageID) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
 	if vm.relocations[originalPageID] == nil {
-		vm.relocations[originalPageID] = make(map[uint64]PageID)
+		vm.relocations[originalPageID] = make(map[uint64]internal.PageID)
 	}
 	vm.relocations[originalPageID][txnID] = relocatedPageID
 }
 
 // Get returns the relocated Page ID for a specific version, or 0 if not relocated
-func (vm *VersionMap) Get(originalPageID PageID, txnID uint64) PageID {
+func (vm *VersionMap) Get(originalPageID internal.PageID, txnID uint64) internal.PageID {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 
@@ -58,7 +60,7 @@ func (vm *VersionMap) Get(originalPageID PageID, txnID uint64) PageID {
 
 // GetLatestVisible returns the relocated Page ID for the latest version visible to txnID,
 // or 0 if no visible version is relocated. Used for MVCC snapshot isolation.
-func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (PageID, uint64) {
+func (vm *VersionMap) GetLatestVisible(originalPageID internal.PageID, maxTxnID uint64) (internal.PageID, uint64) {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 
@@ -69,7 +71,7 @@ func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (
 
 	// Find latest version where versionTxnID <= maxTxnID
 	var latestTxnID uint64
-	var latestPageID PageID
+	var latestPageID internal.PageID
 
 	for versionTxnID, relocatedPageID := range versions {
 		if versionTxnID <= maxTxnID && versionTxnID > latestTxnID {
@@ -82,7 +84,7 @@ func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (
 }
 
 // Remove removes a relocation entry (called when version is no longer needed)
-func (vm *VersionMap) Remove(originalPageID PageID, txnID uint64) {
+func (vm *VersionMap) Remove(originalPageID internal.PageID, txnID uint64) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
@@ -96,11 +98,11 @@ func (vm *VersionMap) Remove(originalPageID PageID, txnID uint64) {
 
 // Cleanup removes all relocations for versions older than minReaderTxn
 // Returns the relocated Page IDs that can now be freed
-func (vm *VersionMap) Cleanup(minReaderTxn uint64) []PageID {
+func (vm *VersionMap) Cleanup(minReaderTxn uint64) []internal.PageID {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	var toFree []PageID
+	var toFree []internal.PageID
 
 	for originalPageID, versions := range vm.relocations {
 		for txnID, relocatedPageID := range versions {
