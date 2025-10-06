@@ -268,7 +268,7 @@ func (d *db) checkpoint() error {
 		return nil // In-memory database, skip checkpoint
 	}
 
-	// Get current transaction boundary
+	// get current transaction boundary
 	meta := dm.GetMeta()
 	checkpointTxn := meta.CheckpointTxnID
 	currentTxn := meta.TxnID
@@ -278,7 +278,7 @@ func (d *db) checkpoint() error {
 		return nil
 	}
 
-	// Get minimum reader txnID to determine which disk versions need preservation
+	// get minimum reader txnID to determine which disk versions need preservation
 	// IMPORTANT: If no readers, use currentTxn (last committed) not nextTxnID
 	// This prevents checkpoint from allocating pages freed by the just-committed transaction
 	minReaderTxn := d.minReaderTxnForCheckpoint(currentTxn)
@@ -324,7 +324,7 @@ func (d *db) checkpoint() error {
 				d.store.cache.versionMap.Track(pageID, oldTxnID, relocPageID)
 
 				// NOTE: Do NOT call FreePending here! The relocated Page will be freed
-				// later by CleanupRelocatedVersions when no readers need it anymore.
+				// later by cleanupRelocatedVersions when no readers need it anymore.
 				// Calling FreePending here would cause a double-free bug.
 			}
 		}
@@ -375,7 +375,7 @@ func (d *db) checkpoint() error {
 
 	// Evict checkpointed versions from cache
 	// Only evict versions older than all active readers to preserve MVCC
-	_ = d.store.cache.EvictCheckpointed(minReaderTxn)
+	_ = d.store.cache.evictCheckpointed(minReaderTxn)
 
 	// Cleanup WAL Page latches for checkpointed pages visible to all readers
 	dm.CleanupLatchOnWAL(minReaderTxn)
@@ -445,7 +445,7 @@ func (d *db) releasePages(minTxn uint64) {
 	}
 
 	// Cleanup relocated Page versions that are no longer needed
-	d.store.cache.CleanupRelocatedVersions(minTxn)
+	d.store.cache.cleanupRelocatedVersions(minTxn)
 }
 
 func (d *db) Get(key []byte) ([]byte, error) {

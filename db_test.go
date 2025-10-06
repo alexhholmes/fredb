@@ -42,7 +42,7 @@ func TestDBBasicOperations(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Test Set and Get
+	// Test Set and get
 	key := []byte("test-key")
 	value := []byte("test-value")
 
@@ -99,7 +99,7 @@ func TestDBErrors(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Get non-existent key
+	// get non-existent key
 	_, err = db.Get([]byte("non-existent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
@@ -151,7 +151,7 @@ func TestDBConcurrency(t *testing.T) {
 
 	// Test concurrent access through DB interface
 	// - Launch 100 goroutines
-	// - Mix of Get/Set operations
+	// - Mix of get/Set operations
 	// - Verify no races or corruption
 	// - Check final state consistency
 	tmpfile := "/tmp/test_db_concurrency.db"
@@ -209,7 +209,7 @@ func TestDBConcurrency(t *testing.T) {
 					val, err := db.Get([]byte(key))
 					// It's OK if key not found (not written yet)
 					if err != nil && err != ErrKeyNotFound {
-						t.Errorf("Get failed with unexpected error: %v", err)
+						t.Errorf("get failed with unexpected error: %v", err)
 						return
 					}
 
@@ -293,7 +293,7 @@ func TestDBConcurrentReads(t *testing.T) {
 
 				val, err := db.Get([]byte(key))
 				if err != nil {
-					t.Errorf("Get failed for key %s: %v", key, err)
+					t.Errorf("get failed for key %s: %v", key, err)
 					return
 				}
 
@@ -635,7 +635,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	// Stats
+	// stats
 	var commits, explicitRollbacks, errorRollbacks, txInProgress int64
 	var statsMu sync.Mutex
 
@@ -772,7 +772,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	wg.Wait()
 
 	// Log statistics
-	t.Logf("Stats: commits=%d, explicit_rollbacks=%d, error_rollbacks=%d, tx_in_progress_retries=%d",
+	t.Logf("stats: commits=%d, explicit_rollbacks=%d, error_rollbacks=%d, tx_in_progress_retries=%d",
 		commits, explicitRollbacks, errorRollbacks, txInProgress)
 
 	// Verify all committed keys exist with correct values

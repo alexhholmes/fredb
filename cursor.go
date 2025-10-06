@@ -75,7 +75,7 @@ func (it *Cursor) Seek(key []byte) error {
 	it.valid = false
 	it.stack = it.stack[:0] // Clear stack
 
-	// Get root from transaction for snapshot isolation
+	// get root from transaction for snapshot isolation
 	// Use tx.root if set (modified in this tx), otherwise use btree.root
 	var node *Node
 	if it.tx != nil && it.tx.root != nil {

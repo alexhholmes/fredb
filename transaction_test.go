@@ -431,7 +431,7 @@ func TestTxOperationsAfterClose(t *testing.T) {
 	// because transaction captured snapshot
 	val, err := tx.Get([]byte("key1"))
 	if err != nil {
-		t.Logf("Get after close returned error: %v (may be expected)", err)
+		t.Logf("get after close returned error: %v (may be expected)", err)
 	} else if string(val) != "value1" {
 		t.Errorf("Expected value1, got %s", string(val))
 	}

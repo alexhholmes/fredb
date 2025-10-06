@@ -181,7 +181,7 @@ func TestFreeListPendingSerialization(t *testing.T) {
 
 	// Verify sizes match
 	if fl2.Size() != fl.Size() {
-		t.Errorf("Size mismatch: got %d, want %d", fl2.Size(), fl.Size())
+		t.Errorf("size mismatch: got %d, want %d", fl2.Size(), fl.Size())
 	}
 	if fl2.PendingSize() != fl.PendingSize() {
 		t.Errorf("PendingSize mismatch: got %d, want %d", fl2.PendingSize(), fl.PendingSize())

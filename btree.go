@@ -99,7 +99,7 @@ func (bt *BTree) close() error {
 
 	// Flush all cached nodes
 	if bt.cache != nil {
-		if err := bt.cache.FlushDirty(&bt.pager); err != nil {
+		if err := bt.cache.flushDirty(&bt.pager); err != nil {
 			return err
 		}
 	}
@@ -156,8 +156,8 @@ func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
 		}
 	}
 
-	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := bt.cache.GetOrLoad(pageID, tx.txnID, func() (*Node, uint64, error) {
+	// 2. getOrLoad atomically checks cache or coordinates disk load
+	node, found := bt.cache.getOrLoad(pageID, tx.txnID, func() (*Node, uint64, error) {
 		// Load from disk (called by at most one thread per PageID)
 		page, err := bt.pager.ReadPage(pageID)
 		if err != nil {
@@ -779,7 +779,7 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 	}
 
 	if leftChild.numKeys > MinKeysPerNode {
-		// Get predecessor
+		// get predecessor
 		predKey, predVal, err := bt.findPredecessor(tx, leftChild)
 		if err != nil {
 			return nil, err
@@ -815,7 +815,7 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 	}
 
 	if rightChild.numKeys > MinKeysPerNode {
-		// Get successor
+		// get successor
 		succKey, succVal, err := bt.findSuccessor(tx, rightChild)
 		if err != nil {
 			return nil, err

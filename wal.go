@@ -37,7 +37,7 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 		return nil, err
 	}
 
-	// Get current file size to set offset
+	// get current file size to set offset
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()

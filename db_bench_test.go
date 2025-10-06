@@ -34,7 +34,7 @@ func BenchmarkDBGet(b *testing.B) {
 		key := fmt.Sprintf("key%08d", keyNum)
 		_, err := db.Get([]byte(key))
 		if err != nil {
-			b.Errorf("Get failed: %v", err)
+			b.Errorf("get failed: %v", err)
 		}
 	}
 }
@@ -105,7 +105,7 @@ func BenchmarkDBMixed(b *testing.B) {
 			key := fmt.Sprintf("key%08d", keyNum)
 			_, err := db.Get([]byte(key))
 			if err != nil {
-				b.Errorf("Get failed: %v", err)
+				b.Errorf("get failed: %v", err)
 			}
 		} else {
 			// 20% writes
@@ -161,7 +161,7 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 			key := fmt.Sprintf("key%08d", keyNum)
 			_, err := db.Get([]byte(key))
 			if err != nil {
-				b.Errorf("Get failed: %v", err)
+				b.Errorf("get failed: %v", err)
 			}
 			i++
 		}
@@ -169,9 +169,9 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 }
 
 func BenchmarkBTreeGet(b *testing.B) {
-	// Benchmark Get performance
+	// Benchmark get performance
 	// - Pre-populate tree with 10000 keys
-	// - Measure random Get operations
+	// - Measure random get operations
 	b.Skip("Not implemented")
 }
 

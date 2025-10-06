@@ -14,7 +14,7 @@ var (
 // Tx represents a transaction on the database.
 //
 // CONCURRENCY: Transactions are NOT thread-safe and must only be used by a single
-// goroutine at a time. Calling Set/Get/Delete/Commit/Rollback concurrently from
+// goroutine at a time. Calling Set/get/Delete/Commit/Rollback concurrently from
 // multiple goroutines will cause panics and data corruption.
 //
 // Transactions provide a consistent view of the database at the point they were created.
@@ -298,7 +298,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Write meta Page to disk for persistence
-	// Get current meta from pager
+	// get current meta from pager
 	currentMeta := tx.db.store.pager.GetMeta()
 
 	// Build new meta Page with updated root and incremented TxnID
@@ -396,8 +396,8 @@ func (tx *Tx) loadNode(id PageID) (*Node, error) {
 		}
 	}
 
-	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.store.cache.GetOrLoad(id, tx.txnID, func() (*Node, uint64, error) {
+	// 2. getOrLoad atomically checks cache or coordinates disk load
+	node, found := tx.db.store.cache.getOrLoad(id, tx.txnID, func() (*Node, uint64, error) {
 		// Load from disk (called by at most one thread per id)
 		page, err := tx.db.store.pager.ReadPage(id)
 		if err != nil {
@@ -538,9 +538,9 @@ retryLoop:
 		// Track in pending pages (for COW)
 		tx.pending = append(tx.pending, pageID)
 
-		// Invalidate any stale cache entries for this reused PageID
+		// invalidate any stale cache entries for this reused PageID
 		// When a Page is freed and reallocated, old versions must be removed
-		tx.db.store.cache.Invalidate(pageID)
+		tx.db.store.cache.invalidate(pageID)
 
 		// Read the freshly allocated Page
 		page, err := tx.db.store.pager.ReadPage(pageID)

@@ -878,7 +878,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	if err == ErrKeyNotFound {
 		t.Logf("Key not found (expected with RootPageID=0)")
 	} else if err != nil {
-		t.Logf("Get returned error: %v", err)
+		t.Logf("get returned error: %v", err)
 	}
 }
 

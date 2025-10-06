@@ -11,7 +11,7 @@ import (
 func TestBTreeBasicOps(t *testing.T) {
 	t.Parallel()
 
-	// Test basic Get/Set operations
+	// Test basic get/Set operations
 	db := setupTestDB(t)
 
 	// Insert key-value pair
@@ -20,7 +20,7 @@ func TestBTreeBasicOps(t *testing.T) {
 		t.Errorf("Failed to set key1: %v", err)
 	}
 
-	// Get existing key
+	// get existing key
 	val, err := db.Get([]byte("key1"))
 	if err != nil {
 		t.Errorf("Failed to get key1: %v", err)
@@ -43,7 +43,7 @@ func TestBTreeBasicOps(t *testing.T) {
 		t.Errorf("Expected value2 after update, got %s", string(val))
 	}
 
-	// Get non-existent key (should return ErrKeyNotFound)
+	// get non-existent key (should return ErrKeyNotFound)
 	_, err = db.Get([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound, got %v", err)
@@ -68,7 +68,7 @@ func TestBTreeUpdate(t *testing.T) {
 		t.Errorf("Failed to update testkey: %v", err)
 	}
 
-	// Verify Get returns value2
+	// Verify get returns value2
 	val, err := db.Get([]byte("testkey"))
 	if err != nil {
 		t.Errorf("Failed to get testkey: %v", err)
@@ -676,7 +676,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 func TestBTreeStress(t *testing.T) {
 	// Stress test with large number of operations
 	// - Insert 10000 random key-value pairs
-	// - Perform random Get operations
+	// - Perform random get operations
 	// - Update random existing keys
 	// - Verify data integrity throughout
 	t.Skip("Not implemented")
@@ -725,7 +725,7 @@ func TestEmptyTree(t *testing.T) {
 	// Test operations on empty tree
 	db := setupTestDB(t)
 
-	// Get from empty tree (should return ErrKeyNotFound)
+	// get from empty tree (should return ErrKeyNotFound)
 	_, err := db.Get([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound from empty tree, got %v", err)
@@ -762,7 +762,7 @@ func TestSingleKey(t *testing.T) {
 		t.Errorf("Failed to set single key: %v", err)
 	}
 
-	// Get that key
+	// get that key
 	val, err := db.Get(testKey)
 	if err != nil {
 		t.Errorf("Failed to get single key: %v", err)
@@ -771,7 +771,7 @@ func TestSingleKey(t *testing.T) {
 		t.Errorf("Expected %s, got %s", string(testValue), string(val))
 	}
 
-	// Get non-existent key
+	// get non-existent key
 	_, err = db.Get([]byte("nonexistent"))
 	if err != ErrKeyNotFound {
 		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)

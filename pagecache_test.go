@@ -21,7 +21,7 @@ func TestPageCacheBasics(t *testing.T) {
 	cache := NewPageCache(10, nil)
 
 	// Test cache miss
-	_, hit := cache.Get(PageID(1), 0)
+	_, hit := cache.get(PageID(1), 0)
 	if hit {
 		t.Error("Expected cache miss for Page 1")
 	}
@@ -31,7 +31,7 @@ func TestPageCacheBasics(t *testing.T) {
 	cache.Put(PageID(1), 1, node1)
 
 	// Should now hit (for txnID >= 1)
-	retrieved, hit := cache.Get(PageID(1), 1)
+	retrieved, hit := cache.get(PageID(1), 1)
 	if !hit {
 		t.Error("Expected cache hit for Page 1")
 	}
@@ -40,12 +40,12 @@ func TestPageCacheBasics(t *testing.T) {
 	}
 
 	// Check size
-	if cache.Size() != 1 {
-		t.Errorf("Expected size 1, got %d", cache.Size())
+	if cache.size() != 1 {
+		t.Errorf("Expected size 1, got %d", cache.size())
 	}
 
 	// Check stats
-	hits, misses, _ := cache.Stats()
+	hits, misses, _ := cache.stats()
 	if hits != 1 {
 		t.Errorf("Expected 1 hit, got %d", hits)
 	}
@@ -69,7 +69,7 @@ func TestPageCacheMVCC(t *testing.T) {
 	cache.Put(PageID(1), 2, node2)
 
 	// Reader at txnID=1 should see version 1
-	retrieved, hit := cache.Get(PageID(1), 1)
+	retrieved, hit := cache.get(PageID(1), 1)
 	if !hit {
 		t.Error("Expected cache hit for txnID=1")
 	}
@@ -78,7 +78,7 @@ func TestPageCacheMVCC(t *testing.T) {
 	}
 
 	// Reader at txnID=2 should see version 2
-	retrieved, hit = cache.Get(PageID(1), 2)
+	retrieved, hit = cache.get(PageID(1), 2)
 	if !hit {
 		t.Error("Expected cache hit for txnID=2")
 	}
@@ -87,7 +87,7 @@ func TestPageCacheMVCC(t *testing.T) {
 	}
 
 	// Reader at txnID=3 should see version 2 (latest committed)
-	retrieved, hit = cache.Get(PageID(1), 3)
+	retrieved, hit = cache.get(PageID(1), 3)
 	if !hit {
 		t.Error("Expected cache hit for txnID=3")
 	}
@@ -95,9 +95,9 @@ func TestPageCacheMVCC(t *testing.T) {
 		t.Error("Expected version 2 (numKeys=5)")
 	}
 
-	// Size should be 2 (two versions)
-	if cache.Size() != 2 {
-		t.Errorf("Expected size 2, got %d", cache.Size())
+	// size should be 2 (two versions)
+	if cache.size() != 2 {
+		t.Errorf("Expected size 2, got %d", cache.size())
 	}
 }
 
@@ -131,34 +131,34 @@ func TestPageCacheEviction(t *testing.T) {
 		cache.Put(PageID(i), uint64(i), makeTestNode(PageID(i)))
 	}
 
-	if cache.Size() != 19 {
-		t.Errorf("Expected size 19, got %d", cache.Size())
+	if cache.size() != 19 {
+		t.Errorf("Expected size 19, got %d", cache.size())
 	}
 
 	// Add 20th Page - triggers eviction
 	cache.Put(PageID(20), 20, makeTestNode(PageID(20)))
 
 	// Should be at 16 now
-	size := cache.Size()
+	size := cache.size()
 	if size != 16 {
 		t.Errorf("Expected size 16 after eviction, got %d", size)
 	}
 
 	// Check eviction stats (evicted 4: pages 1-4)
-	_, _, evictions := cache.Stats()
+	_, _, evictions := cache.stats()
 	if evictions != 4 {
 		t.Errorf("Expected 4 evictions, got %d", evictions)
 	}
 
 	// Pages 1-4 (LRU) should be evicted
 	for i := 1; i <= 4; i++ {
-		if _, hit := cache.Get(PageID(i), uint64(i)); hit {
+		if _, hit := cache.get(PageID(i), uint64(i)); hit {
 			t.Errorf("Page %d should have been evicted", i)
 		}
 	}
 
 	// Page 20 (newest) should still be there
-	if _, hit := cache.Get(PageID(20), 20); !hit {
+	if _, hit := cache.get(PageID(20), 20); !hit {
 		t.Error("Page 20 should still be in cache")
 	}
 }
