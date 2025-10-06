@@ -13,7 +13,7 @@ type PageManager struct {
 	mu       sync.Mutex // Protects meta and freelist access
 	file     *os.File
 	meta     internal.MetaPage
-	freelist *FreeList
+	freelist *internal.FreeList
 }
 
 // NewPageManager opens or creates a database file
@@ -26,7 +26,7 @@ func NewPageManager(path string) (*PageManager, error) {
 
 	dm := &PageManager{
 		file:     file,
-		freelist: NewFreeList(),
+		freelist: internal.NewFreeList(),
 	}
 
 	// Check if new file (empty)

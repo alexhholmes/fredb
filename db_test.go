@@ -1064,3 +1064,129 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		}
 	})
 }
+
+func TestFreelistNoPageLeaks(t *testing.T) {
+	if !*slow {
+		t.Skip("Skipping slow test; use -slow to enable")
+	}
+
+	// Test that pages are properly reclaimed after delete operations
+	// with concurrent readers active
+	db := setupTestDB(t)
+
+	// Track initial pages
+	initialPages := db.store.pager.GetMeta().NumPages
+
+	// Start concurrent readers - they will take snapshots at various points
+	var wg sync.WaitGroup
+	stopReaders := make(chan struct{})
+
+	// Launch 3 concurrent readers that continuously read random Keys
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(readerID int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopReaders:
+					return
+				default:
+					// Begin read transaction
+					tx, err := db.Begin(false)
+					if err != nil {
+						continue
+					}
+
+					// Read a few random Keys
+					for j := 0; j < 10; j++ {
+						key := []byte(fmt.Sprintf("key%d", j))
+						tx.Get(key) // Ignore errors, some Keys may not exist
+					}
+
+					// Hold transaction briefly to simulate real reader
+					time.Sleep(time.Millisecond)
+
+					// Commit/rollback read transaction
+					tx.Rollback()
+				}
+			}
+		}(i)
+	}
+
+	// Run 10000 insert/delete cycles
+	for cycle := 0; cycle < 10000; cycle++ {
+		// Begin write transaction
+		tx, err := db.Begin(true)
+		if err != nil {
+			t.Fatalf("Failed to begin write tx at cycle %d: %v", cycle, err)
+		}
+
+		// Insert a key
+		key := []byte(fmt.Sprintf("cycle%d", cycle))
+		value := []byte(fmt.Sprintf("value%d", cycle))
+		if err := tx.Set(key, value); err != nil {
+			t.Fatalf("Failed to insert at cycle %d: %v", cycle, err)
+		}
+
+		// Commit insert
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("Failed to commit insert at cycle %d: %v", cycle, err)
+		}
+
+		// Begin another write transaction
+		tx, err = db.Begin(true)
+		if err != nil {
+			t.Fatalf("Failed to begin delete tx at cycle %d: %v", cycle, err)
+		}
+
+		// Delete the key
+		if err := tx.Delete(key); err != nil {
+			t.Fatalf("Failed to delete at cycle %d: %v", cycle, err)
+		}
+
+		// Commit delete
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("Failed to commit delete at cycle %d: %v", cycle, err)
+		}
+
+		// Periodically let background releaser run
+		if cycle%100 == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	// Stop readers
+	close(stopReaders)
+	wg.Wait()
+
+	// Give background releaser time to process final releases
+	time.Sleep(100 * time.Millisecond)
+
+	// Check final Page count
+	finalPages := db.store.pager.GetMeta().NumPages
+	pageGrowth := finalPages - initialPages
+
+	// With proper Page reclamation, growth should be minimal
+	// Allow for some growth due to B-tree structure, but not linear with operations
+	maxExpectedGrowth := uint64(400) // Generous allowance for tree overhead and MVCC
+	if pageGrowth > maxExpectedGrowth {
+		t.Errorf("Excessive Page growth detected: grew by %d pages (from %d to %d), expected <= %d",
+			pageGrowth, initialPages, finalPages, maxExpectedGrowth)
+	}
+
+	// Also active that freelist size is reasonable
+	dm := db.store.pager
+	dm.mu.Lock()
+	freeSize := dm.freelist.Size()
+	pendingSize := dm.freelist.PendingSize()
+	dm.mu.Unlock()
+
+	// After all operations complete and readers finish,
+	// pending should be empty and free list should contain reclaimed pages
+	if pendingSize > 10 {
+		t.Errorf("Pending list still has %d pages after operations complete", pendingSize)
+	}
+
+	t.Logf("Test complete: Pages grew from %d to %d (growth: %d), Free: %d, Pending: %d",
+		initialPages, finalPages, pageGrowth, freeSize, pendingSize)
+}
