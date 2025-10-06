@@ -2,6 +2,7 @@ package fredb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"fredb/internal"
@@ -10,7 +11,7 @@ import (
 // BTree is the main structure
 type BTree struct {
 	pager *PageManager
-	root  *Node
+	root  *internal.Node
 	cache *PageCache // LRU cache for non-root nodes
 }
 
@@ -31,13 +32,13 @@ func NewBTree(pager *PageManager) (*BTree, error) {
 			return nil, err
 		}
 
-		root := &Node{
-			pageID: meta.RootPageID,
-			dirty:  false,
+		root := &internal.Node{
+			PageID: meta.RootPageID,
+			Dirty:  false,
 		}
 
-		// deserialize root
-		if err := root.deserialize(rootPage); err != nil {
+		// Deserialize root
+		if err := root.Deserialize(rootPage); err != nil {
 			return nil, err
 		}
 
@@ -53,14 +54,14 @@ func NewBTree(pager *PageManager) (*BTree, error) {
 	}
 
 	// Create root Node
-	root := &Node{
-		pageID:   rootPageID,
-		dirty:    true,
-		isLeaf:   true,
-		numKeys:  0,
-		keys:     make([][]byte, 0),
-		values:   make([][]byte, 0),
-		children: make([]internal.PageID, 0),
+	root := &internal.Node{
+		PageID:   rootPageID,
+		Dirty:    true,
+		IsLeaf:   true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: make([]internal.PageID, 0),
 	}
 
 	bt.root = root
@@ -84,19 +85,19 @@ func (bt *BTree) newCursor(tx *Tx) *Cursor {
 	}
 }
 
-// close flushes any dirty pages and closes the B-tree
+// close flushes any Dirty pages and closes the B-tree
 func (bt *BTree) close() error {
-	// Flush root if dirty
-	if bt.root != nil && bt.root.dirty {
+	// Flush root if Dirty
+	if bt.root != nil && bt.root.Dirty {
 		meta := bt.pager.GetMeta()
-		page, err := bt.root.serialize(meta.TxnID)
+		page, err := bt.root.Serialize(meta.TxnID)
 		if err != nil {
 			return err
 		}
-		if err := bt.pager.WritePage(bt.root.pageID, page); err != nil {
+		if err := bt.pager.WritePage(bt.root.PageID, page); err != nil {
 			return err
 		}
-		bt.root.dirty = false
+		bt.root.Dirty = false
 	}
 
 	// Flush all cached nodes
@@ -116,27 +117,27 @@ func (bt *BTree) close() error {
 
 // searchNode recursively searches for a key in the tree
 // B+ tree: only leaf nodes contain actual data
-func (bt *BTree) searchNode(tx *Tx, node *Node, key []byte) ([]byte, error) {
+func (bt *BTree) searchNode(tx *Tx, node *internal.Node, key []byte) ([]byte, error) {
 	// Find position in current Node
 	i := 0
-	for i < int(node.numKeys) && bytes.Compare(key, node.keys[i]) >= 0 {
+	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
 		i++
 	}
-	// After loop: i points to first key > search_key (or numKeys if all keys <= search_key)
+	// After loop: i points to first key > search_key (or NumKeys if all Keys <= search_key)
 
 	// If leaf Node, active if key found
-	if node.isLeaf {
-		// In leaf, we need to active the previous position (since loop went past equal keys)
-		if i > 0 && bytes.Equal(key, node.keys[i-1]) {
-			return node.values[i-1], nil
+	if node.IsLeaf {
+		// In leaf, we need to activate the previous position (since loop went past equal Keys)
+		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
+			return node.Values[i-1], nil
 		}
 		// Not found in leaf
 		return nil, ErrKeyNotFound
 	}
 
 	// Branch Node: continue descending
-	// i is the correct child index (first child with keys >= search_key)
-	child, err := bt.loadNode(tx, node.children[i])
+	// i is the correct child index (first child with Keys >= search_key)
+	child, err := bt.loadNode(tx, node.Children[i])
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +146,7 @@ func (bt *BTree) searchNode(tx *Tx, node *Node, key []byte) ([]byte, error) {
 }
 
 // loadNode loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (bt *BTree) loadNode(tx *Tx, pageID internal.PageID) (*Node, error) {
+func (bt *BTree) loadNode(tx *Tx, pageID internal.PageID) (*internal.Node, error) {
 	// MVCC requires a transaction for snapshot isolation
 	if tx == nil {
 		return nil, fmt.Errorf("loadNode requires a transaction (cannot be nil)")
@@ -159,38 +160,38 @@ func (bt *BTree) loadNode(tx *Tx, pageID internal.PageID) (*Node, error) {
 	}
 
 	// 2. getOrLoad atomically checks cache or coordinates disk load
-	node, found := bt.cache.getOrLoad(pageID, tx.txnID, func() (*Node, uint64, error) {
+	node, found := bt.cache.getOrLoad(pageID, tx.txnID, func() (*internal.Node, uint64, error) {
 		// Load from disk (called by at most one thread per PageID)
 		page, err := bt.pager.ReadPage(pageID)
 		if err != nil {
 			return nil, 0, err
 		}
 
-		// Create Node and deserialize
-		node := &Node{
-			pageID: pageID,
-			dirty:  false,
+		// Create Node and Deserialize
+		node := &internal.Node{
+			PageID: pageID,
+			Dirty:  false,
 		}
 
-		// Try to deserialize - if Page is empty (new Page), header.NumKeys will be 0
+		// Try to Deserialize - if Page is empty (new Page), header.NumKeys will be 0
 		header := page.Header()
 		if header.NumKeys > 0 {
-			if err := node.deserialize(page); err != nil {
+			if err := node.Deserialize(page); err != nil {
 				return nil, 0, err
 			}
 		} else {
 			// New/empty Page - initialize as empty leaf
-			node.pageID = pageID
-			node.isLeaf = true
-			node.numKeys = 0
-			node.keys = make([][]byte, 0)
-			node.values = make([][]byte, 0)
-			node.children = make([]internal.PageID, 0)
+			node.PageID = pageID
+			node.IsLeaf = true
+			node.NumKeys = 0
+			node.Keys = make([][]byte, 0)
+			node.Values = make([][]byte, 0)
+			node.Children = make([]internal.PageID, 0)
 		}
 
 		// Cycle detection: active if deserialized Node references itself
-		if !node.isLeaf {
-			for _, childID := range node.children {
+		if !node.IsLeaf {
+			for _, childID := range node.Children {
 				if childID == pageID {
 					return nil, 0, ErrCorruption // Self-reference detected
 				}
@@ -207,8 +208,8 @@ func (bt *BTree) loadNode(tx *Tx, pageID internal.PageID) (*Node, error) {
 	}
 
 	// Cycle detection on cached Node (fast path)
-	if !node.isLeaf {
-		for _, childID := range node.children {
+	if !node.IsLeaf {
+		for _, childID := range node.Children {
 			if childID == pageID {
 				return nil, ErrCorruption // Self-reference detected
 			}
@@ -234,11 +235,11 @@ func removeChildAt(slice []internal.PageID, index int) []internal.PageID {
 }
 
 // findPredecessor finds the predecessor key/value in the subtree rooted at Node
-func (bt *BTree) findPredecessor(tx *Tx, current *Node) ([]byte, []byte, error) {
+func (bt *BTree) findPredecessor(tx *Tx, current *internal.Node) ([]byte, []byte, error) {
 	// Keep going right until we reach a leaf
-	for !current.isLeaf {
-		lastChildIdx := len(current.children) - 1
-		child, err := bt.loadNode(tx, current.children[lastChildIdx])
+	for !current.IsLeaf {
+		lastChildIdx := len(current.Children) - 1
+		child, err := bt.loadNode(tx, current.Children[lastChildIdx])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -246,18 +247,18 @@ func (bt *BTree) findPredecessor(tx *Tx, current *Node) ([]byte, []byte, error) 
 	}
 
 	// Return the last key/value in the leaf
-	if current.numKeys == 0 {
+	if current.NumKeys == 0 {
 		return nil, nil, ErrKeyNotFound
 	}
-	lastIdx := current.numKeys - 1
-	return current.keys[lastIdx], current.values[lastIdx], nil
+	lastIdx := current.NumKeys - 1
+	return current.Keys[lastIdx], current.Values[lastIdx], nil
 }
 
 // findSuccessor finds the successor key/value in the subtree rooted at Node
-func (bt *BTree) findSuccessor(tx *Tx, current *Node) ([]byte, []byte, error) {
+func (bt *BTree) findSuccessor(tx *Tx, current *internal.Node) ([]byte, []byte, error) {
 	// Keep going left until we reach a leaf
-	for !current.isLeaf {
-		child, err := bt.loadNode(tx, current.children[0])
+	for !current.IsLeaf {
+		child, err := bt.loadNode(tx, current.Children[0])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -265,16 +266,16 @@ func (bt *BTree) findSuccessor(tx *Tx, current *Node) ([]byte, []byte, error) {
 	}
 
 	// Return the first key/value in the leaf
-	if current.numKeys == 0 {
+	if current.NumKeys == 0 {
 		return nil, nil, ErrKeyNotFound
 	}
-	return current.keys[0], current.values[0], nil
+	return current.Keys[0], current.Values[0], nil
 }
 
 // insertNonFull inserts into a non-full Node with COW.
 // It performs COW on nodes before modifying them.
-func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error) {
-	if n.isLeaf {
+func (bt *BTree) insertNonFull(tx *Tx, n *internal.Node, key, value []byte) (*internal.Node, error) {
+	if n.IsLeaf {
 		// COW before modifying leaf
 		node, err := tx.ensureWritable(n)
 		if err != nil {
@@ -283,42 +284,42 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 
 		// Binary search for position
 		pos := 0
-		for pos < int(node.numKeys) && bytes.Compare(key, node.keys[pos]) > 0 {
+		for pos < int(node.NumKeys) && bytes.Compare(key, node.Keys[pos]) > 0 {
 			pos++
 		}
 
 		// Check for update
-		if pos < int(node.numKeys) && bytes.Equal(key, node.keys[pos]) {
+		if pos < int(node.NumKeys) && bytes.Equal(key, node.Keys[pos]) {
 			// Save old value for rollback
-			oldValue := make([]byte, len(node.values[pos]))
-			copy(oldValue, node.values[pos])
+			oldValue := make([]byte, len(node.Values[pos]))
+			copy(oldValue, node.Values[pos])
 
-			node.values[pos] = value
-			node.dirty = true
+			node.Values[pos] = value
+			node.Dirty = true
 
-			// Try to serialize after update
-			_, err = node.serialize(tx.txnID)
+			// Try to Serialize after update
+			_, err = node.Serialize(tx.txnID)
 			if err != nil {
 				// Rollback: restore old value
-				node.values[pos] = oldValue
+				node.Values[pos] = oldValue
 				return nil, err
 			}
 			return node, nil
 		}
 
 		// Insert new key-value
-		node.keys = append(node.keys[:pos], append([][]byte{key}, node.keys[pos:]...)...)
-		node.values = append(node.values[:pos], append([][]byte{value}, node.values[pos:]...)...)
-		node.numKeys++
-		node.dirty = true
+		node.Keys = append(node.Keys[:pos], append([][]byte{key}, node.Keys[pos:]...)...)
+		node.Values = append(node.Values[:pos], append([][]byte{value}, node.Values[pos:]...)...)
+		node.NumKeys++
+		node.Dirty = true
 
-		// Try to serialize after insertion
-		_, err = node.serialize(tx.txnID)
+		// Try to Serialize after insertion
+		_, err = node.Serialize(tx.txnID)
 		if err != nil {
 			// Rollback: remove the inserted key/value
-			node.keys = append(node.keys[:pos], node.keys[pos+1:]...)
-			node.values = append(node.values[:pos], node.values[pos+1:]...)
-			node.numKeys--
+			node.Keys = append(node.Keys[:pos], node.Keys[pos+1:]...)
+			node.Values = append(node.Values[:pos], node.Values[pos+1:]...)
+			node.NumKeys--
 			return nil, err
 		}
 
@@ -328,23 +329,23 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 	// Branch n - recursive COW
 	// B+ tree: branch nodes are routing only, never update here
 	// Always descend to leaf even if key matches a branch key
-	i := int(n.numKeys) - 1
+	i := int(n.NumKeys) - 1
 
 	// Find child to insert into
-	for i >= 0 && bytes.Compare(key, n.keys[i]) < 0 {
+	for i >= 0 && bytes.Compare(key, n.Keys[i]) < 0 {
 		i--
 	}
 
 	i++
 
 	// Load child
-	child, err := bt.loadNode(tx, n.children[i])
+	child, err := bt.loadNode(tx, n.Children[i])
 	if err != nil {
 		return nil, err
 	}
 
 	// Handle full child with COW-aware split
-	if child.isFull() {
+	if child.IsFull() {
 		// Split child using COW
 		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, child)
 		if err != nil {
@@ -358,38 +359,38 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 		}
 
 		// Save old state for rollback
-		oldKeys := n.keys
-		oldValues := n.values
-		oldChildren := n.children
-		oldNumKeys := n.numKeys
+		oldKeys := n.Keys
+		oldValues := n.Values
+		oldChildren := n.Children
+		oldNumKeys := n.NumKeys
 
 		// Insert middle key into parent
-		n.keys = insertAt(n.keys, i, midKey)
-		// Branch nodes don't have values, skip value insertion
-		if n.isLeaf {
-			n.values = insertAt(n.values, i, midVal)
+		n.Keys = insertAt(n.Keys, i, midKey)
+		// Branch nodes don't have Values, skip value insertion
+		if n.IsLeaf {
+			n.Values = insertAt(n.Values, i, midVal)
 		}
 
-		// Build new children array atomically to avoid slice sharing issues
-		newChildren := make([]internal.PageID, len(n.children)+1)
-		copy(newChildren[:i], n.children[:i])     // Before split point
-		newChildren[i] = leftChild.pageID         // Left child
-		newChildren[i+1] = rightChild.pageID      // Right child
-		copy(newChildren[i+2:], n.children[i+1:]) // After split point
+		// Build new Children array atomically to avoid slice sharing issues
+		newChildren := make([]internal.PageID, len(n.Children)+1)
+		copy(newChildren[:i], n.Children[:i])     // Before split point
+		newChildren[i] = leftChild.PageID         // Left child
+		newChildren[i+1] = rightChild.PageID      // Right child
+		copy(newChildren[i+2:], n.Children[i+1:]) // After split point
 
-		n.children = newChildren
+		n.Children = newChildren
 
-		n.numKeys++
-		n.dirty = true
+		n.NumKeys++
+		n.Dirty = true
 
-		// serialize parent after modification
-		_, err = n.serialize(tx.txnID)
+		// Serialize parent after modification
+		_, err = n.Serialize(tx.txnID)
 		if err != nil {
 			// Rollback: restore old state
-			n.keys = oldKeys
-			n.values = oldValues
-			n.children = oldChildren
-			n.numKeys = oldNumKeys
+			n.Keys = oldKeys
+			n.Values = oldValues
+			n.Children = oldChildren
+			n.NumKeys = oldNumKeys
 			return nil, err
 		}
 
@@ -404,11 +405,11 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 	}
 
 	// Store original child PageID to detect COW
-	oldChildID := child.pageID
+	oldChildID := child.PageID
 
 	// Recursive insert (may COW child)
 	newChild, err := bt.insertNonFull(tx, child, key, value)
-	if err == ErrPageOverflow {
+	if errors.Is(err, ErrPageOverflow) {
 		// Child couldn't fit the key/value - split it and retry
 		leftChild, rightChild, midKey, midVal, err := bt.splitChild(tx, child)
 		if err != nil {
@@ -422,42 +423,42 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 		}
 
 		// Save old state for rollback
-		oldKeys := n.keys
-		oldValues := n.values
-		oldChildren := n.children
-		oldNumKeys := n.numKeys
+		oldKeys := n.Keys
+		oldValues := n.Values
+		oldChildren := n.Children
+		oldNumKeys := n.NumKeys
 
 		// Insert middle key into parent
-		n.keys = insertAt(n.keys, i, midKey)
-		// Branch nodes don't have values, skip value insertion
-		if n.isLeaf {
-			n.values = insertAt(n.values, i, midVal)
+		n.Keys = insertAt(n.Keys, i, midKey)
+		// Branch nodes don't have Values, skip value insertion
+		if n.IsLeaf {
+			n.Values = insertAt(n.Values, i, midVal)
 		}
 
-		// Build new children array
-		newChildren := make([]internal.PageID, len(n.children)+1)
-		copy(newChildren[:i], n.children[:i])
-		newChildren[i] = leftChild.pageID
-		newChildren[i+1] = rightChild.pageID
-		copy(newChildren[i+2:], n.children[i+1:])
+		// Build new Children array
+		newChildren := make([]internal.PageID, len(n.Children)+1)
+		copy(newChildren[:i], n.Children[:i])
+		newChildren[i] = leftChild.PageID
+		newChildren[i+1] = rightChild.PageID
+		copy(newChildren[i+2:], n.Children[i+1:])
 
-		n.children = newChildren
-		n.numKeys++
-		n.dirty = true
+		n.Children = newChildren
+		n.NumKeys++
+		n.Dirty = true
 
-		// serialize parent after modification
-		_, err = n.serialize(tx.txnID)
+		// Serialize parent after modification
+		_, err = n.Serialize(tx.txnID)
 		if err != nil {
 			// Rollback: restore old state
-			n.keys = oldKeys
-			n.values = oldValues
-			n.children = oldChildren
-			n.numKeys = oldNumKeys
+			n.Keys = oldKeys
+			n.Values = oldValues
+			n.Children = oldChildren
+			n.NumKeys = oldNumKeys
 			return nil, err
 		}
 
 		// Retry insert into correct child
-		var insertedChild *Node
+		var insertedChild *internal.Node
 		if bytes.Compare(key, midKey) >= 0 {
 			i++
 			insertedChild, err = bt.insertNonFull(tx, rightChild, key, value)
@@ -469,9 +470,9 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 		}
 
 		// Update parent pointer to the child we inserted into
-		n.children[i] = insertedChild.pageID
-		n.dirty = true
-		_, err = n.serialize(tx.txnID)
+		n.Children[i] = insertedChild.PageID
+		n.Dirty = true
+		_, err = n.Serialize(tx.txnID)
 		if err != nil {
 			return nil, err
 		}
@@ -482,17 +483,17 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 	}
 
 	// If child was COWed, update parent pointer
-	if newChild.pageID != oldChildID {
+	if newChild.PageID != oldChildID {
 		// COW parent to update child pointer
 		n, err = tx.ensureWritable(n)
 		if err != nil {
 			return nil, err
 		}
 
-		n.children[i] = newChild.pageID
-		n.dirty = true
-		// serialize after updating child pointer
-		_, err = n.serialize(tx.txnID)
+		n.Children[i] = newChild.PageID
+		n.Dirty = true
+		// Serialize after updating child pointer
+		_, err = n.Serialize(tx.txnID)
 		if err != nil {
 			return nil, err
 		}
@@ -503,7 +504,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 
 // deleteFromLeaf is the transaction-aware version of deleteFromLeaf.
 // It performs COW on the leaf before deleting.
-func (bt *BTree) deleteFromLeaf(tx *Tx, node *Node, idx int) (*Node, error) {
+func (bt *BTree) deleteFromLeaf(tx *Tx, node *internal.Node, idx int) (*internal.Node, error) {
 	// COW before modifying leaf
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -511,17 +512,17 @@ func (bt *BTree) deleteFromLeaf(tx *Tx, node *Node, idx int) (*Node, error) {
 	}
 
 	// Simply remove the key and value
-	node.keys = removeAt(node.keys, idx)
-	node.values = removeAt(node.values, idx)
-	node.numKeys--
-	node.dirty = true
+	node.Keys = removeAt(node.Keys, idx)
+	node.Values = removeAt(node.Values, idx)
+	node.NumKeys--
+	node.Dirty = true
 
 	return node, nil
 }
 
 // mergeNodes merges two nodes with COW semantics.
 // Transaction-aware merge operation.
-func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKeyIdx int) (*Node, *Node, error) {
+func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *internal.Node, parentKeyIdx int) (*internal.Node, *internal.Node, error) {
 	// COW left Node (will receive merged content)
 	leftNode, err := tx.ensureWritable(leftNode)
 	if err != nil {
@@ -535,51 +536,51 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *Node, parentKey
 	}
 
 	// B+ tree: Only pull down separator for branch nodes, not leaves
-	if !leftNode.isLeaf {
+	if !leftNode.IsLeaf {
 		// Branch merge: pull down separator from parent
-		leftNode.keys = append(leftNode.keys, parent.keys[parentKeyIdx])
-		// Branch nodes don't have values (parent.values is nil for branch)
+		leftNode.Keys = append(leftNode.Keys, parent.Keys[parentKeyIdx])
+		// Branch nodes don't have Values (parent.Values is nil for branch)
 	}
 	// For leaf merge: separator is routing only, don't pull it down
 
-	// Add all keys from right Node to left Node
-	leftNode.keys = append(leftNode.keys, rightNode.keys...)
+	// Add all Keys from right Node to left Node
+	leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
 
-	// Add values for leaf nodes only
-	if leftNode.isLeaf {
-		leftNode.values = append(leftNode.values, rightNode.values...)
+	// Add Values for leaf nodes only
+	if leftNode.IsLeaf {
+		leftNode.Values = append(leftNode.Values, rightNode.Values...)
 	}
 
-	// Copy children pointers for branch nodes
-	if !leftNode.isLeaf {
-		leftNode.children = append(leftNode.children, rightNode.children...)
+	// Copy Children pointers for branch nodes
+	if !leftNode.IsLeaf {
+		leftNode.Children = append(leftNode.Children, rightNode.Children...)
 	}
 
 	// Update left Node's key count
-	leftNode.numKeys = uint16(len(leftNode.keys))
-	leftNode.dirty = true
+	leftNode.NumKeys = uint16(len(leftNode.Keys))
+	leftNode.Dirty = true
 
 	// Remove the separator key from parent
-	parent.keys = removeAt(parent.keys, parentKeyIdx)
-	// Remove value for leaf parents only (parent is branch, values is nil)
-	if parent.isLeaf {
-		parent.values = removeAt(parent.values, parentKeyIdx)
+	parent.Keys = removeAt(parent.Keys, parentKeyIdx)
+	// Remove value for leaf parents only (parent is branch, Values is nil)
+	if parent.IsLeaf {
+		parent.Values = removeAt(parent.Values, parentKeyIdx)
 	}
-	parent.children = removeChildAt(parent.children, parentKeyIdx+1)
-	parent.numKeys--
-	parent.dirty = true
+	parent.Children = removeChildAt(parent.Children, parentKeyIdx+1)
+	parent.NumKeys--
+	parent.Dirty = true
 
 	// Update parent's child pointer to merged Node
-	parent.children[parentKeyIdx] = leftNode.pageID
+	parent.Children[parentKeyIdx] = leftNode.PageID
 
 	// Track right Node as freed (it's been merged into left)
-	tx.addFreed(rightNode.pageID)
+	tx.addFreed(rightNode.PageID)
 
 	return leftNode, parent, nil
 }
 
 // borrowFromLeft borrows a key from left sibling through parent (COW).
-func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentKeyIdx int) (*Node, *Node, *Node, error) {
+func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *internal.Node, parentKeyIdx int) (*internal.Node, *internal.Node, *internal.Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -596,57 +597,57 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		return nil, nil, nil, err
 	}
 
-	if node.isLeaf {
+	if node.IsLeaf {
 		// B+ tree leaf borrow: move actual data from sibling, update parent separator
 		// Move the last key/value from left sibling to beginning of Node
-		node.keys = append([][]byte{leftSibling.keys[leftSibling.numKeys-1]}, node.keys...)
-		node.values = append([][]byte{leftSibling.values[leftSibling.numKeys-1]}, node.values...)
+		node.Keys = append([][]byte{leftSibling.Keys[leftSibling.NumKeys-1]}, node.Keys...)
+		node.Values = append([][]byte{leftSibling.Values[leftSibling.NumKeys-1]}, node.Values...)
 
 		// Remove from left sibling
-		leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
-		leftSibling.values = leftSibling.values[:leftSibling.numKeys-1]
-		leftSibling.numKeys--
+		leftSibling.Keys = leftSibling.Keys[:leftSibling.NumKeys-1]
+		leftSibling.Values = leftSibling.Values[:leftSibling.NumKeys-1]
+		leftSibling.NumKeys--
 
 		// Update parent separator to be the first key of right Node
-		parent.keys[parentKeyIdx] = node.keys[0]
+		parent.Keys[parentKeyIdx] = node.Keys[0]
 
-		node.numKeys++
+		node.NumKeys++
 	} else {
 		// Branch borrow: traditional B-tree style (pull down separator, push up replacement)
 		// Move a key from parent to Node (at beginning)
-		node.keys = append([][]byte{parent.keys[parentKeyIdx]}, node.keys...)
-		// Branch nodes don't have values
+		node.Keys = append([][]byte{parent.Keys[parentKeyIdx]}, node.Keys...)
+		// Branch nodes don't have Values
 
 		// Move the last key from left sibling to parent
-		parent.keys[parentKeyIdx] = leftSibling.keys[leftSibling.numKeys-1]
-		// Branch nodes don't have values
+		parent.Keys[parentKeyIdx] = leftSibling.Keys[leftSibling.NumKeys-1]
+		// Branch nodes don't have Values
 
 		// Move the last child pointer too
-		node.children = append([]internal.PageID{leftSibling.children[len(leftSibling.children)-1]}, node.children...)
-		leftSibling.children = leftSibling.children[:len(leftSibling.children)-1]
+		node.Children = append([]internal.PageID{leftSibling.Children[len(leftSibling.Children)-1]}, node.Children...)
+		leftSibling.Children = leftSibling.Children[:len(leftSibling.Children)-1]
 
 		// Remove the last key from left sibling
-		leftSibling.keys = leftSibling.keys[:leftSibling.numKeys-1]
-		// Branch nodes don't have values
-		leftSibling.numKeys--
+		leftSibling.Keys = leftSibling.Keys[:leftSibling.NumKeys-1]
+		// Branch nodes don't have Values
+		leftSibling.NumKeys--
 
-		node.numKeys++
+		node.NumKeys++
 	}
 
-	// Mark all as dirty
-	node.dirty = true
-	leftSibling.dirty = true
-	parent.dirty = true
+	// Mark all as Dirty
+	node.Dirty = true
+	leftSibling.Dirty = true
+	parent.Dirty = true
 
-	// Update parent's children pointers to COWed nodes
-	parent.children[parentKeyIdx] = leftSibling.pageID
-	parent.children[parentKeyIdx+1] = node.pageID
+	// Update parent's Children pointers to COWed nodes
+	parent.Children[parentKeyIdx] = leftSibling.PageID
+	parent.Children[parentKeyIdx+1] = node.PageID
 
 	return node, leftSibling, parent, nil
 }
 
 // borrowFromRight borrows a key from right sibling through parent (COW).
-func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, parentKeyIdx int) (*Node, *Node, *Node, error) {
+func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *internal.Node, parentKeyIdx int) (*internal.Node, *internal.Node, *internal.Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -663,65 +664,65 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *Node, paren
 		return nil, nil, nil, err
 	}
 
-	if node.isLeaf {
+	if node.IsLeaf {
 		// B+ tree leaf borrow: move actual data from sibling, update parent separator
 		// Move the first key/value from right sibling to end of Node
-		node.keys = append(node.keys, rightSibling.keys[0])
-		node.values = append(node.values, rightSibling.values[0])
+		node.Keys = append(node.Keys, rightSibling.Keys[0])
+		node.Values = append(node.Values, rightSibling.Values[0])
 
 		// Remove from right sibling
-		rightSibling.keys = rightSibling.keys[1:]
-		rightSibling.values = rightSibling.values[1:]
-		rightSibling.numKeys--
+		rightSibling.Keys = rightSibling.Keys[1:]
+		rightSibling.Values = rightSibling.Values[1:]
+		rightSibling.NumKeys--
 
 		// Update parent separator to be the first key of right sibling
-		parent.keys[parentKeyIdx] = rightSibling.keys[0]
+		parent.Keys[parentKeyIdx] = rightSibling.Keys[0]
 
-		node.numKeys++
+		node.NumKeys++
 	} else {
 		// Branch borrow: traditional B-tree style (pull down separator, push up replacement)
 		// Move a key from parent to Node (at end)
-		node.keys = append(node.keys, parent.keys[parentKeyIdx])
-		// Branch nodes don't have values
+		node.Keys = append(node.Keys, parent.Keys[parentKeyIdx])
+		// Branch nodes don't have Values
 
 		// Move the first key from right sibling to parent
-		parent.keys[parentKeyIdx] = rightSibling.keys[0]
-		// Branch nodes don't have values
+		parent.Keys[parentKeyIdx] = rightSibling.Keys[0]
+		// Branch nodes don't have Values
 
 		// Move the first child pointer too
-		node.children = append(node.children, rightSibling.children[0])
-		rightSibling.children = rightSibling.children[1:]
+		node.Children = append(node.Children, rightSibling.Children[0])
+		rightSibling.Children = rightSibling.Children[1:]
 
 		// Remove the first key from right sibling
-		rightSibling.keys = rightSibling.keys[1:]
-		// Branch nodes don't have values
-		rightSibling.numKeys--
+		rightSibling.Keys = rightSibling.Keys[1:]
+		// Branch nodes don't have Values
+		rightSibling.NumKeys--
 
-		node.numKeys++
+		node.NumKeys++
 	}
 
-	// Mark all as dirty
-	node.dirty = true
-	rightSibling.dirty = true
-	parent.dirty = true
+	// Mark all as Dirty
+	node.Dirty = true
+	rightSibling.Dirty = true
+	parent.Dirty = true
 
-	// Update parent's children pointers to COWed nodes
-	parent.children[parentKeyIdx] = node.pageID
-	parent.children[parentKeyIdx+1] = rightSibling.pageID
+	// Update parent's Children pointers to COWed nodes
+	parent.Children[parentKeyIdx] = node.PageID
+	parent.Children[parentKeyIdx+1] = rightSibling.PageID
 
 	return node, rightSibling, parent, nil
 }
 
 // fixUnderflow fixes underflow in child at childIdx with COW semantics.
-func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (*Node, *Node, error) {
+func (bt *BTree) fixUnderflow(tx *Tx, parent *internal.Node, childIdx int, child *internal.Node) (*internal.Node, *internal.Node, error) {
 	// Try to borrow from left sibling
 	if childIdx > 0 {
-		leftSibling, err := bt.loadNode(tx, parent.children[childIdx-1])
+		leftSibling, err := bt.loadNode(tx, parent.Children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if leftSibling.numKeys > MinKeysPerNode {
+		if leftSibling.NumKeys > internal.MinKeysPerNode {
 			child, leftSibling, parent, err = bt.borrowFromLeft(tx, child, leftSibling, parent, childIdx-1)
 			if err != nil {
 				return nil, nil, err
@@ -731,13 +732,13 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 	}
 
 	// Try to borrow from right sibling
-	if childIdx < len(parent.children)-1 {
-		rightSibling, err := bt.loadNode(tx, parent.children[childIdx+1])
+	if childIdx < len(parent.Children)-1 {
+		rightSibling, err := bt.loadNode(tx, parent.Children[childIdx+1])
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if rightSibling.numKeys > MinKeysPerNode {
+		if rightSibling.NumKeys > internal.MinKeysPerNode {
 			child, rightSibling, parent, err = bt.borrowFromRight(tx, child, rightSibling, parent, childIdx)
 			if err != nil {
 				return nil, nil, err
@@ -749,7 +750,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 	// Merge with a sibling
 	if childIdx > 0 {
 		// Merge with left sibling
-		leftSibling, err := bt.loadNode(tx, parent.children[childIdx-1])
+		leftSibling, err := bt.loadNode(tx, parent.Children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -761,7 +762,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 	}
 
 	// Merge with right sibling
-	rightSibling, err := bt.loadNode(tx, parent.children[childIdx+1])
+	rightSibling, err := bt.loadNode(tx, parent.Children[childIdx+1])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -773,14 +774,14 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *Node, childIdx int, child *Node) (
 }
 
 // deleteFromNonLeaf deletes a key from a non-leaf Node with COW semantics.
-func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*Node, error) {
+func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *internal.Node, key []byte, idx int) (*internal.Node, error) {
 	// Try to replace with predecessor from left subtree
-	leftChild, err := bt.loadNode(tx, node.children[idx])
+	leftChild, err := bt.loadNode(tx, node.Children[idx])
 	if err != nil {
 		return nil, err
 	}
 
-	if leftChild.numKeys > MinKeysPerNode {
+	if leftChild.NumKeys > internal.MinKeysPerNode {
 		// get predecessor
 		predKey, predVal, err := bt.findPredecessor(tx, leftChild)
 		if err != nil {
@@ -794,9 +795,9 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 		}
 
 		// Replace key with predecessor
-		node.keys[idx] = predKey
-		node.values[idx] = predVal
-		node.dirty = true
+		node.Keys[idx] = predKey
+		node.Values[idx] = predVal
+		node.Dirty = true
 
 		// Delete predecessor from left subtree
 		leftChild, err = bt.deleteFromNode(tx, leftChild, predKey)
@@ -805,18 +806,18 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 		}
 
 		// Update child pointer if child was COWed
-		node.children[idx] = leftChild.pageID
+		node.Children[idx] = leftChild.PageID
 
 		return node, nil
 	}
 
 	// Try to replace with successor from right subtree
-	rightChild, err := bt.loadNode(tx, node.children[idx+1])
+	rightChild, err := bt.loadNode(tx, node.Children[idx+1])
 	if err != nil {
 		return nil, err
 	}
 
-	if rightChild.numKeys > MinKeysPerNode {
+	if rightChild.NumKeys > internal.MinKeysPerNode {
 		// get successor
 		succKey, succVal, err := bt.findSuccessor(tx, rightChild)
 		if err != nil {
@@ -830,9 +831,9 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 		}
 
 		// Replace key with successor
-		node.keys[idx] = succKey
-		node.values[idx] = succVal
-		node.dirty = true
+		node.Keys[idx] = succKey
+		node.Values[idx] = succVal
+		node.Dirty = true
 
 		// Delete successor from right subtree
 		rightChild, err = bt.deleteFromNode(tx, rightChild, succKey)
@@ -841,12 +842,12 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 		}
 
 		// Update child pointer if child was COWed
-		node.children[idx+1] = rightChild.pageID
+		node.Children[idx+1] = rightChild.PageID
 
 		return node, nil
 	}
 
-	// Both children have minimum keys, merge them
+	// Both Children have minimum Keys, merge them
 	leftChild, parent, err := bt.mergeNodes(tx, leftChild, rightChild, node, idx)
 	if err != nil {
 		return nil, err
@@ -859,17 +860,17 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *Node, key []byte, idx int) (*No
 	}
 
 	// Update child pointer
-	parent.children[idx] = leftChild.pageID
+	parent.Children[idx] = leftChild.PageID
 
 	return parent, nil
 }
 
 // deleteFromNode recursively deletes a key from the subtree rooted at Node with COW.
-// B+ tree: only delete from leaves, branch keys are routing only
-func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
+// B+ tree: only delete from leaves, branch Keys are routing only
+func (bt *BTree) deleteFromNode(tx *Tx, node *internal.Node, key []byte) (*internal.Node, error) {
 	// B+ tree: if this is a leaf, active if key exists and delete
-	if node.isLeaf {
-		idx := node.findKey(key)
+	if node.IsLeaf {
+		idx := node.FindKey(key)
 		if idx >= 0 {
 			return bt.deleteFromLeaf(tx, node, idx)
 		}
@@ -879,19 +880,19 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 	// Branch Node: descend to child (never delete from branch)
 
 	// Find child where key might be
-	// B+ tree: separator keys are minimums of right children, so key >= separator goes right
+	// B+ tree: separator Keys are minimums of right Children, so key >= separator goes right
 	childIdx := 0
-	for childIdx < int(node.numKeys) && bytes.Compare(key, node.keys[childIdx]) >= 0 {
+	for childIdx < int(node.NumKeys) && bytes.Compare(key, node.Keys[childIdx]) >= 0 {
 		childIdx++
 	}
 
-	child, err := bt.loadNode(tx, node.children[childIdx])
+	child, err := bt.loadNode(tx, node.Children[childIdx])
 	if err != nil {
 		return nil, err
 	}
 
 	// Check if child will underflow
-	shouldCheckUnderflow := (child.numKeys == MinKeysPerNode)
+	shouldCheckUnderflow := (child.NumKeys == internal.MinKeysPerNode)
 
 	// Delete from child
 	child, err = bt.deleteFromNode(tx, child, key)
@@ -906,15 +907,15 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 	}
 
 	// Update child pointer (child may have been COWed)
-	node.children[childIdx] = child.pageID
+	node.Children[childIdx] = child.PageID
 
 	// Handle underflow if necessary
-	if shouldCheckUnderflow && child.isUnderflow() && node != tx.root {
+	if shouldCheckUnderflow && child.IsUnderflow() && node != tx.root {
 		_, node, err = bt.fixUnderflow(tx, node, childIdx, child)
 		if err != nil {
 			return nil, err
 		}
-		// Note: fixUnderflow already updates parent's children pointers
+		// Note: fixUnderflow already updates parent's Children pointers
 	}
 
 	return node, nil
@@ -922,7 +923,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *Node, key []byte) (*Node, error) {
 
 // splitChild performs COW on the child being split and allocates the new sibling.
 // Returns the COWed child and new sibling, along with the middle key/value.
-func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, error) {
+func (bt *BTree) splitChild(tx *Tx, child *internal.Node) (*internal.Node, *internal.Node, []byte, []byte, error) {
 	// COW the child being split
 	child, err := tx.ensureWritable(child)
 	if err != nil {
@@ -935,104 +936,104 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 		return nil, nil, nil, nil, err
 	}
 
-	mid := MaxKeysPerNode / 2
+	mid := internal.MaxKeysPerNode / 2
 
-	// For size-based splits with few keys, ensure mid doesn't exceed key count
-	// This handles large key/value overflow cases where numKeys < MaxKeysPerNode
-	if mid >= len(child.keys)-1 {
-		mid = len(child.keys)/2 - 1
+	// For size-based splits with few Keys, ensure mid doesn't exceed key count
+	// This handles large key/value overflow cases where NumKeys < MaxKeysPerNode
+	if mid >= len(child.Keys)-1 {
+		mid = len(child.Keys)/2 - 1
 		if mid < 0 {
 			mid = 0
 		}
 	}
 
 	// B+ tree semantics:
-	// - Leaf nodes: separator is first key of right child (child.keys[mid+1])
-	// - Branch nodes: separator is middle key (child.keys[mid])
+	// - Leaf nodes: separator is first key of right child (child.Keys[mid+1])
+	// - Branch nodes: separator is middle key (child.Keys[mid])
 	var middleKey []byte
 	var leftKeyCount, rightKeyCount int
-	if child.isLeaf {
+	if child.IsLeaf {
 		// Leaf split: left keeps [0:mid+1], right gets [mid+1:]
 		// Separator is the first key of the right child (minimum of right subtree)
-		middleKey = make([]byte, len(child.keys[mid+1]))
-		copy(middleKey, child.keys[mid+1])
+		middleKey = make([]byte, len(child.Keys[mid+1]))
+		copy(middleKey, child.Keys[mid+1])
 		leftKeyCount = mid + 1
-		rightKeyCount = len(child.keys) - mid - 1
+		rightKeyCount = len(child.Keys) - mid - 1
 	} else {
 		// Branch split: left keeps [0:mid], right gets [mid+1:]
-		// Middle key goes to parent (removed from children)
-		middleKey = make([]byte, len(child.keys[mid]))
-		copy(middleKey, child.keys[mid])
+		// Middle key goes to parent (removed from Children)
+		middleKey = make([]byte, len(child.Keys[mid]))
+		copy(middleKey, child.Keys[mid])
 		leftKeyCount = mid
-		rightKeyCount = len(child.keys) - mid - 1
+		rightKeyCount = len(child.Keys) - mid - 1
 	}
 
-	newNode := &Node{
-		pageID:   newNodeID,
-		dirty:    true,
-		isLeaf:   child.isLeaf,
-		numKeys:  uint16(rightKeyCount),
-		keys:     make([][]byte, 0),
-		values:   make([][]byte, 0),
-		children: make([]internal.PageID, 0),
+	newNode := &internal.Node{
+		PageID:   newNodeID,
+		Dirty:    true,
+		IsLeaf:   child.IsLeaf,
+		NumKeys:  uint16(rightKeyCount),
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: make([]internal.PageID, 0),
 	}
 
-	// Copy right half of keys to new Node
+	// Copy right half of Keys to new Node
 	// Deep copy to avoid sharing underlying arrays
-	for i := mid + 1; i < len(child.keys); i++ {
-		keyCopy := make([]byte, len(child.keys[i]))
-		copy(keyCopy, child.keys[i])
-		newNode.keys = append(newNode.keys, keyCopy)
+	for i := mid + 1; i < len(child.Keys); i++ {
+		keyCopy := make([]byte, len(child.Keys[i]))
+		copy(keyCopy, child.Keys[i])
+		newNode.Keys = append(newNode.Keys, keyCopy)
 	}
 
-	// Copy values for leaf nodes only
-	if child.isLeaf {
-		for i := mid + 1; i < len(child.values); i++ {
-			valCopy := make([]byte, len(child.values[i]))
-			copy(valCopy, child.values[i])
-			newNode.values = append(newNode.values, valCopy)
+	// Copy Values for leaf nodes only
+	if child.IsLeaf {
+		for i := mid + 1; i < len(child.Values); i++ {
+			valCopy := make([]byte, len(child.Values[i]))
+			copy(valCopy, child.Values[i])
+			newNode.Values = append(newNode.Values, valCopy)
 		}
 	}
 
-	// Copy children for branch nodes only
-	if !child.isLeaf {
-		for i := mid + 1; i < len(child.children); i++ {
-			newNode.children = append(newNode.children, child.children[i])
+	// Copy Children for branch nodes only
+	if !child.IsLeaf {
+		for i := mid + 1; i < len(child.Children); i++ {
+			newNode.Children = append(newNode.Children, child.Children[i])
 		}
 	}
 
-	// Keep left portion in child - keys
+	// Keep left portion in child - Keys
 	leftKeys := make([][]byte, leftKeyCount)
-	copy(leftKeys, child.keys[:leftKeyCount])
-	child.keys = leftKeys
+	copy(leftKeys, child.Keys[:leftKeyCount])
+	child.Keys = leftKeys
 
-	// Keep left portion in child - values (leaf only)
-	if child.isLeaf {
+	// Keep left portion in child - Values (leaf only)
+	if child.IsLeaf {
 		leftValues := make([][]byte, leftKeyCount)
-		copy(leftValues, child.values[:leftKeyCount])
-		child.values = leftValues
+		copy(leftValues, child.Values[:leftKeyCount])
+		child.Values = leftValues
 	} else {
-		child.values = nil // Branch nodes don't have values
+		child.Values = nil // Branch nodes don't have Values
 	}
 
-	child.numKeys = uint16(leftKeyCount)
-	child.dirty = true
+	child.NumKeys = uint16(leftKeyCount)
+	child.Dirty = true
 
-	// Keep left portion in child - children (branch only)
-	if !child.isLeaf {
+	// Keep left portion in child - Children (branch only)
+	if !child.IsLeaf {
 		leftChildren := make([]internal.PageID, mid+1)
-		copy(leftChildren, child.children[:mid+1])
-		child.children = leftChildren
+		copy(leftChildren, child.Children[:mid+1])
+		child.Children = leftChildren
 	}
 
-	// No longer need to serialize here - nodes serialize when written to disk
-	// The dirty flag tracks which nodes need to be written
+	// No longer need to Serialize here - nodes Serialize when written to disk
+	// The Dirty flag tracks which nodes need to be written
 
 	// Cache newNode in TX-local cache (write transaction)
 	// Newly split Node goes into tx.pages, not global cache yet
 	tx.pages[newNodeID] = newNode
 
-	// B+ tree: Return empty value for parent (branch nodes don't store values)
+	// B+ tree: Return empty value for parent (branch nodes don't store Values)
 	// The middle key is only for routing purposes
 	return child, newNode, middleKey, []byte{}, nil
 }

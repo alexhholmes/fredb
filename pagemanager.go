@@ -137,7 +137,7 @@ func (dm *PageManager) Close() error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
-	// serialize freelist to disk
+	// Serialize freelist to disk
 	pagesNeeded := dm.freelist.PagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data

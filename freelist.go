@@ -8,10 +8,6 @@ import (
 )
 
 const (
-	// FreeListPageCapacity is max number of PageIDs per freelist Page
-	// (PageSize - 8 bytes for count) / 8 bytes per PageID
-	FreeListPageCapacity = (internal.PageSize - 8) / 8
-
 	// PendingMarker indicates transition from free IDs to pending entries
 	PendingMarker = internal.PageID(0xFFFFFFFFFFFFFFFF)
 )
@@ -151,7 +147,7 @@ func (f *FreeList) PendingSize() int {
 	return total
 }
 
-// PagesNeeded returns number of pages needed to serialize this freelist
+// PagesNeeded returns number of pages needed to Serialize this freelist
 func (f *FreeList) PagesNeeded() int {
 	// Calculate bytes for free IDs
 	freeBytes := 8 + len(f.ids)*8 // count + IDs

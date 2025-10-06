@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+
+	"fredb/internal"
 )
 
 // Basic Operations Tests
@@ -53,7 +55,7 @@ func TestBTreeBasicOps(t *testing.T) {
 func TestBTreeUpdate(t *testing.T) {
 	t.Parallel()
 
-	// Test that Set updates existing keys rather than duplicating
+	// Test that Set updates existing Keys rather than duplicating
 	db := setupTestDB(t)
 
 	// Insert key with value1
@@ -77,7 +79,7 @@ func TestBTreeUpdate(t *testing.T) {
 		t.Errorf("Expected value2, got %s", string(val))
 	}
 
-	// Insert more keys to ensure no duplication
+	// Insert more Keys to ensure no duplication
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%d", i))
 		val := []byte(fmt.Sprintf("value%d", i))
@@ -107,9 +109,9 @@ func TestBTreeSplitting(t *testing.T) {
 	// Test Node splitting when exceeding MaxKeysPerNode
 	db := setupTestDB(t)
 
-	// Insert MaxKeysPerNode + 1 keys to force a split
+	// Insert MaxKeysPerNode + 1 Keys to force a split
 	keys := make(map[string]string)
-	for i := 0; i <= MaxKeysPerNode; i++ {
+	for i := 0; i <= internal.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		keys[key] = value
@@ -121,16 +123,16 @@ func TestBTreeSplitting(t *testing.T) {
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	if db.store.root.isLeaf {
+	if db.store.root.IsLeaf {
 		t.Errorf("Root should not be a leaf after splitting")
 	}
 
-	// Check tree height increases (root should have children)
-	if len(db.store.root.children) == 0 {
-		t.Errorf("Root should have children after splitting")
+	// Check tree height increases (root should have Children)
+	if len(db.store.root.Children) == 0 {
+		t.Errorf("Root should have Children after splitting")
 	}
 
-	// Verify all keys still retrievable
+	// Verify all Keys still retrievable
 	for key, expectedValue := range keys {
 		val, err := db.Get([]byte(key))
 		if err != nil {
@@ -149,8 +151,8 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	// Test multiple levels of splitting
 	db := setupTestDB(t)
 
-	// Insert enough keys to cause multiple splits (3x MaxKeysPerNode should cause multiple levels)
-	numKeys := MaxKeysPerNode * 3
+	// Insert enough Keys to cause multiple splits (3x MaxKeysPerNode should cause multiple levels)
+	numKeys := internal.MaxKeysPerNode * 3
 	keys := make(map[string]string)
 
 	for i := 0; i < numKeys; i++ {
@@ -165,16 +167,16 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	}
 
 	// Verify tree structure remains valid (root is not a leaf for large tree)
-	if db.store.root.isLeaf {
+	if db.store.root.IsLeaf {
 		t.Errorf("Root should not be a leaf after multiple splits")
 	}
 
-	// Verify root has multiple children
-	if len(db.store.root.children) < 2 {
-		t.Errorf("Root should have multiple children after multiple splits, got %d", len(db.store.root.children))
+	// Verify root has multiple Children
+	if len(db.store.root.Children) < 2 {
+		t.Errorf("Root should have multiple Children after multiple splits, got %d", len(db.store.root.Children))
 	}
 
-	// All keys retrievable
+	// All Keys retrievable
 	for key, expectedValue := range keys {
 		val, err := db.Get([]byte(key))
 		if err != nil {
@@ -208,10 +210,10 @@ func TestBTreeMultipleSplits(t *testing.T) {
 func TestSequentialInsert(t *testing.T) {
 	t.Parallel()
 
-	// Test inserting keys in sequential order
+	// Test inserting Keys in sequential order
 	db := setupTestDB(t)
 
-	// Insert 1000 sequential keys
+	// Insert 1000 sequential Keys
 	numKeys := 1000
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%08d", i)
@@ -239,25 +241,25 @@ func TestSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely right-heavy due to sequential insert)
-	if db.store.root.isLeaf {
+	if db.store.root.IsLeaf {
 		t.Logf("Tree has single leaf root after %d sequential inserts", numKeys)
 	} else {
-		t.Logf("Tree has internal root with %d keys and %d children after %d sequential inserts",
-			db.store.root.numKeys, len(db.store.root.children), numKeys)
+		t.Logf("Tree has internal root with %d Keys and %d Children after %d sequential inserts",
+			db.store.root.NumKeys, len(db.store.root.Children), numKeys)
 	}
 }
 
 func TestRandomInsert(t *testing.T) {
 	t.Parallel()
 
-	// Test inserting keys in random order
+	// Test inserting Keys in random order
 	db := setupTestDB(t)
 
-	// Generate random keys (using deterministic seed for reproducibility)
+	// Generate random Keys (using deterministic seed for reproducibility)
 	numKeys := 1000
 	keys := make(map[string]string)
 
-	// Create keys in random order using a simple shuffle
+	// Create Keys in random order using a simple shuffle
 	indices := make([]int, numKeys)
 	for i := 0; i < numKeys; i++ {
 		indices[i] = i
@@ -269,7 +271,7 @@ func TestRandomInsert(t *testing.T) {
 		indices[i], indices[j] = indices[j], indices[i]
 	}
 
-	// Insert keys in shuffled order
+	// Insert Keys in shuffled order
 	for _, idx := range indices {
 		key := fmt.Sprintf("key%08d", idx)
 		value := fmt.Sprintf("value%08d", idx)
@@ -294,13 +296,13 @@ func TestRandomInsert(t *testing.T) {
 	}
 
 	// Check tree balance (random insertion typically produces more balanced trees)
-	if !db.store.root.isLeaf {
-		t.Logf("Tree has internal root with %d keys and %d children after %d random inserts",
-			db.store.root.numKeys, len(db.store.root.children), numKeys)
+	if !db.store.root.IsLeaf {
+		t.Logf("Tree has internal root with %d Keys and %d Children after %d random inserts",
+			db.store.root.NumKeys, len(db.store.root.Children), numKeys)
 
-		// Check if root has reasonable number of children (indicating some balance)
-		if len(db.store.root.children) > 1 && len(db.store.root.children) < 10 {
-			t.Logf("Tree appears relatively balanced with %d root children", len(db.store.root.children))
+		// Check if root has reasonable number of Children (indicating some balance)
+		if len(db.store.root.Children) > 1 && len(db.store.root.Children) < 10 {
+			t.Logf("Tree appears relatively balanced with %d root Children", len(db.store.root.Children))
 		}
 	}
 }
@@ -308,10 +310,10 @@ func TestRandomInsert(t *testing.T) {
 func TestReverseSequentialInsert(t *testing.T) {
 	t.Parallel()
 
-	// Test inserting keys in reverse order
+	// Test inserting Keys in reverse order
 	db := setupTestDB(t)
 
-	// Insert 1000 keys in descending order
+	// Insert 1000 Keys in descending order
 	numKeys := 1000
 	for i := numKeys - 1; i >= 0; i-- {
 		key := fmt.Sprintf("key%08d", i)
@@ -339,15 +341,15 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely left-heavy due to reverse sequential insert)
-	if db.store.root.isLeaf {
+	if db.store.root.IsLeaf {
 		t.Logf("Tree has single leaf root after %d reverse sequential inserts", numKeys)
 	} else {
-		t.Logf("Tree has internal root with %d keys and %d children after %d reverse sequential inserts",
-			db.store.root.numKeys, len(db.store.root.children), numKeys)
+		t.Logf("Tree has internal root with %d Keys and %d Children after %d reverse sequential inserts",
+			db.store.root.NumKeys, len(db.store.root.Children), numKeys)
 
 		// With reverse insertion, we expect most activity on the left side of the tree
-		if len(db.store.root.children) > 0 {
-			t.Logf("First child likely contains lower keys due to reverse insertion pattern")
+		if len(db.store.root.Children) > 0 {
+			t.Logf("First child likely contains lower Keys due to reverse insertion pattern")
 		}
 	}
 }
@@ -360,7 +362,7 @@ func TestBTreeDelete(t *testing.T) {
 	// Test basic delete operations
 	db := setupTestDB(t)
 
-	// Insert some keys
+	// Insert some Keys
 	keys := []string{"key1", "key2", "key3", "key4", "key5"}
 	for _, k := range keys {
 		err := db.Set([]byte(k), []byte("value-"+k))
@@ -381,7 +383,7 @@ func TestBTreeDelete(t *testing.T) {
 		t.Errorf("Expected ErrKeyNotFound for deleted key3, got %v", err)
 	}
 
-	// Verify other keys still exist
+	// Verify other Keys still exist
 	for _, k := range []string{"key1", "key2", "key4", "key5"} {
 		val, err := db.Get([]byte(k))
 		if err != nil {
@@ -410,7 +412,7 @@ func TestBTreeDelete(t *testing.T) {
 		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
 	}
 
-	// Verify remaining keys
+	// Verify remaining Keys
 	for _, k := range []string{"key2", "key4"} {
 		val, err := db.Get([]byte(k))
 		if err != nil {
@@ -425,10 +427,10 @@ func TestBTreeDelete(t *testing.T) {
 func TestBTreeDeleteAll(t *testing.T) {
 	t.Parallel()
 
-	// Test deleting all keys from tree
+	// Test deleting all Keys from tree
 	db := setupTestDB(t)
 
-	// Insert and then delete keys one by one
+	// Insert and then delete Keys one by one
 	numKeys := 100
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
@@ -439,7 +441,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 		}
 	}
 
-	// Delete all keys in order
+	// Delete all Keys in order
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
 		err := db.Delete([]byte(key))
@@ -453,7 +455,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 			t.Errorf("Key %s should be deleted, got %v", key, err)
 		}
 
-		// Verify remaining keys still exist
+		// Verify remaining Keys still exist
 		for j := i + 1; j < numKeys && j < i+5; j++ {
 			checkKey := fmt.Sprintf("key%04d", j)
 			val, err := db.Get([]byte(checkKey))
@@ -483,8 +485,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	// Test sequential deletion pattern with tree structure checks
 	db := setupTestDB(t)
 
-	// Insert enough keys to create a multi-level tree
-	numKeys := MaxKeysPerNode * 2 // Enough to cause splits
+	// Insert enough Keys to create a multi-level tree
+	numKeys := internal.MaxKeysPerNode * 2 // Enough to cause splits
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -495,11 +497,11 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := db.store.root.isLeaf
-	initialRootKeys := int(db.store.root.numKeys)
-	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
+	initialIsLeaf := db.store.root.IsLeaf
+	initialRootKeys := int(db.store.root.NumKeys)
+	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
-	// Delete keys sequentially and monitor tree structure
+	// Delete Keys sequentially and monitor tree structure
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
@@ -509,8 +511,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
-			t.Logf("After %d deletions: root isLeaf=%v, numKeys=%d",
-				i+1, db.store.root.isLeaf, db.store.root.numKeys)
+			t.Logf("After %d deletions: root IsLeaf=%v, NumKeys=%d",
+				i+1, db.store.root.IsLeaf, db.store.root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -521,10 +523,10 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	if db.store.root.numKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
+	if db.store.root.NumKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
 	}
-	if !db.store.root.isLeaf {
+	if !db.store.root.IsLeaf {
 		t.Errorf("Empty tree root should be leaf")
 	}
 }
@@ -540,8 +542,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 		// Test random deletion pattern with tree structure checks
 		db := setupTestDB(t)
 
-		// Insert keys
-		numKeys := MaxKeysPerNode * 2
+		// Insert Keys
+		numKeys := internal.MaxKeysPerNode * 2
 		keys := make([]string, numKeys)
 		for i := 0; i < numKeys; i++ {
 			key := fmt.Sprintf("key%06d", i)
@@ -554,9 +556,9 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Check initial tree structure
-		initialIsLeaf := db.store.root.isLeaf
-		initialRootKeys := int(db.store.root.numKeys)
-		t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", initialIsLeaf, initialRootKeys)
+		initialIsLeaf := db.store.root.IsLeaf
+		initialRootKeys := int(db.store.root.NumKeys)
+		t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 		// Create random deletion order
 		deleteOrder := make([]int, numKeys)
@@ -569,10 +571,10 @@ func TestBTreeRandomDelete(t *testing.T) {
 			deleteOrder[i], deleteOrder[j] = deleteOrder[j], deleteOrder[i]
 		}
 
-		// Track which keys are deleted
+		// Track which Keys are deleted
 		deleted := make(map[string]bool)
 
-		// Delete keys randomly and monitor tree structure
+		// Delete Keys randomly and monitor tree structure
 		for i, idx := range deleteOrder {
 			key := keys[idx]
 			err := db.Delete([]byte(key))
@@ -583,8 +585,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 			// Log tree structure changes at key points
 			if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
-				t.Logf("After %d random deletions: root isLeaf=%v, numKeys=%d",
-					i+1, db.store.root.isLeaf, db.store.root.numKeys)
+				t.Logf("After %d random deletions: root IsLeaf=%v, NumKeys=%d",
+					i+1, db.store.root.IsLeaf, db.store.root.NumKeys)
 			}
 
 			// Verify deleted key is gone
@@ -593,7 +595,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 				t.Errorf("Key %s should be deleted", key)
 			}
 
-			// Verify some non-deleted keys still exist (spot active)
+			// Verify some non-deleted Keys still exist (spot active)
 			checked := 0
 			for _, k := range keys {
 				if !deleted[k] && checked < 5 {
@@ -611,10 +613,10 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Final tree should be empty
-		if db.store.root.numKeys != 0 {
-			t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
+		if db.store.root.NumKeys != 0 {
+			t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
 		}
-		if !db.store.root.isLeaf {
+		if !db.store.root.IsLeaf {
 			t.Errorf("Empty tree root should be leaf")
 		}
 
@@ -629,8 +631,8 @@ func TestBTreeReverseDelete(t *testing.T) {
 	// Test reverse sequential deletion pattern
 	db := setupTestDB(t)
 
-	// Insert keys
-	numKeys := MaxKeysPerNode * 2
+	// Insert Keys
+	numKeys := internal.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -641,9 +643,9 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	t.Logf("Initial tree: root isLeaf=%v, numKeys=%d", db.store.root.isLeaf, db.store.root.numKeys)
+	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.store.root.IsLeaf, db.store.root.NumKeys)
 
-	// Delete keys in reverse order
+	// Delete Keys in reverse order
 	for i := numKeys - 1; i >= 0; i-- {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
@@ -654,8 +656,8 @@ func TestBTreeReverseDelete(t *testing.T) {
 		// Log tree structure at key points
 		deletedCount := numKeys - i
 		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
-			t.Logf("After %d reverse deletions: root isLeaf=%v, numKeys=%d",
-				deletedCount, db.store.root.isLeaf, db.store.root.numKeys)
+			t.Logf("After %d reverse deletions: root IsLeaf=%v, NumKeys=%d",
+				deletedCount, db.store.root.IsLeaf, db.store.root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -666,8 +668,8 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	if db.store.root.numKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d keys", db.store.root.numKeys)
+	if db.store.root.NumKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
 	}
 }
 
@@ -677,14 +679,14 @@ func TestBTreeStress(t *testing.T) {
 	// Stress test with large number of operations
 	// - Insert 10000 random key-value pairs
 	// - Perform random get operations
-	// - Update random existing keys
+	// - Update random existing Keys
 	// - Verify data integrity throughout
 	t.Skip("Not implemented")
 }
 
 func TestBTreeLargeValues(t *testing.T) {
 	// Test with large value sizes
-	// - Insert keys with 1KB, 10KB values
+	// - Insert Keys with 1KB, 10KB Values
 	// - Verify retrieval
 	// - Check memory usage patterns
 	t.Skip("Not implemented")
@@ -696,16 +698,16 @@ func TestPageCaching(t *testing.T) {
 	// Test Page cache behavior
 	// - Verify cache hit/miss behavior
 	// - Test cache population on reads
-	// - Verify dirty Page tracking
+	// - Verify Dirty Page tracking
 	t.Skip("Not implemented")
 }
 
 func TestCloseFlush(t *testing.T) {
-	// Test close() flushes dirty pages
+	// Test close() flushes Dirty pages
 	// - Insert data
-	// - Mark nodes dirty
+	// - Mark nodes Dirty
 	// - close BTree
-	// - Verify WritePage called for all dirty nodes
+	// - Verify WritePage called for all Dirty nodes
 	t.Skip("Not implemented")
 }
 
@@ -731,7 +733,7 @@ func TestEmptyTree(t *testing.T) {
 		t.Errorf("Expected ErrKeyNotFound from empty tree, got %v", err)
 	}
 
-	// Try multiple different keys on empty tree
+	// Try multiple different Keys on empty tree
 	testKeys := [][]byte{
 		[]byte("key1"),
 		[]byte(""),
@@ -793,11 +795,11 @@ func TestSingleKey(t *testing.T) {
 	}
 
 	// Verify tree is still a leaf (single key shouldn't cause split)
-	if !db.store.root.isLeaf {
+	if !db.store.root.IsLeaf {
 		t.Errorf("Root should be a leaf with single key")
 	}
-	if db.store.root.numKeys != 1 {
-		t.Errorf("Root should have exactly 1 key, got %d", db.store.root.numKeys)
+	if db.store.root.NumKeys != 1 {
+		t.Errorf("Root should have exactly 1 key, got %d", db.store.root.NumKeys)
 	}
 }
 
@@ -842,7 +844,7 @@ func TestDuplicateKeys(t *testing.T) {
 		t.Errorf("Expected %s after update, got %s", string(value2), string(val))
 	}
 
-	// Add more keys to ensure tree structure
+	// Add more Keys to ensure tree structure
 	for i := 0; i < 10; i++ {
 		k := []byte(fmt.Sprintf("key%d", i))
 		v := []byte(fmt.Sprintf("value%d", i))
@@ -867,7 +869,7 @@ func TestDuplicateKeys(t *testing.T) {
 func TestBinaryKeys(t *testing.T) {
 	t.Parallel()
 
-	// Test with non-string binary keys
+	// Test with non-string binary Keys
 	db := setupTestDB(t)
 
 	// Test data with various binary patterns
@@ -885,7 +887,7 @@ func TestBinaryKeys(t *testing.T) {
 		{[]byte{0, 1, 255, 254, 127, 128}, []byte("mixed"), "mixed binary"},
 	}
 
-	// Insert all binary keys
+	// Insert all binary Keys
 	for _, td := range testData {
 		err := db.Set(td.key, td.value)
 		if err != nil {
@@ -905,7 +907,7 @@ func TestBinaryKeys(t *testing.T) {
 		}
 	}
 
-	// Test ordering with binary keys
+	// Test ordering with binary Keys
 	key1 := []byte{0x00, 0x01}
 	key2 := []byte{0x00, 0x02}
 	val1 := []byte("first")
@@ -929,7 +931,7 @@ func TestBinaryKeys(t *testing.T) {
 func TestZeroLengthKeys(t *testing.T) {
 	t.Parallel()
 
-	// Test with zero-length keys
+	// Test with zero-length Keys
 	db := setupTestDB(t)
 
 	// Insert empty key
@@ -950,7 +952,7 @@ func TestZeroLengthKeys(t *testing.T) {
 		t.Errorf("Expected %s for empty key, got %s", string(emptyValue), string(val))
 	}
 
-	// Mix with non-empty keys
+	// Mix with non-empty Keys
 	normalKeys := []struct {
 		key   []byte
 		value []byte
@@ -977,7 +979,7 @@ func TestZeroLengthKeys(t *testing.T) {
 		t.Errorf("Expected 'another_empty' for empty key, got %s", string(val))
 	}
 
-	// Verify all keys are retrievable
+	// Verify all Keys are retrievable
 	for _, kv := range normalKeys {
 		val, err := db.Get(kv.key)
 		if err != nil {
@@ -993,7 +995,7 @@ func TestZeroLengthKeys(t *testing.T) {
 func TestZeroLengthValues(t *testing.T) {
 	t.Parallel()
 
-	// Test with zero-length values
+	// Test with zero-length Values
 	db := setupTestDB(t)
 
 	// Insert key with empty value
@@ -1014,7 +1016,7 @@ func TestZeroLengthValues(t *testing.T) {
 		t.Errorf("Expected empty value, got %v with length %d", val, len(val))
 	}
 
-	// Mix empty and non-empty values
+	// Mix empty and non-empty Values
 	testData := []struct {
 		key   []byte
 		value []byte
@@ -1033,7 +1035,7 @@ func TestZeroLengthValues(t *testing.T) {
 		}
 	}
 
-	// Verify all values are correctly stored
+	// Verify all Values are correctly stored
 	for _, td := range testData {
 		val, err := db.Get(td.key)
 		if err != nil {
@@ -1201,8 +1203,8 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert enough keys to create multi-level tree
-	numKeys := MaxKeysPerNode * 2
+	// Insert enough Keys to create multi-level tree
+	numKeys := internal.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1212,9 +1214,9 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	// Delete until we have a Node with exactly MinKeysPerNode=64 keys
+	// Delete until we have a Node with exactly MinKeysPerNode=64 Keys
 	// This should NOT trigger underflow
-	deleteCount := numKeys - MinKeysPerNode
+	deleteCount := numKeys - internal.MinKeysPerNode
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
@@ -1223,7 +1225,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	// Verify remaining keys exist
+	// Verify remaining Keys exist
 	for i := deleteCount; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		val, err := db.Get([]byte(key))
@@ -1236,7 +1238,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	t.Logf("Tree root: isLeaf=%v, numKeys=%d", db.store.root.isLeaf, db.store.root.numKeys)
+	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.store.root.IsLeaf, db.store.root.NumKeys)
 }
 
 func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
@@ -1244,7 +1246,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	numKeys := MaxKeysPerNode * 2
+	numKeys := internal.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1254,7 +1256,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 		}
 	}
 
-	deleteCount := numKeys - MinKeysPerNode - 1
+	deleteCount := numKeys - internal.MinKeysPerNode - 1
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
@@ -1270,7 +1272,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 	}
 
 	remainingKeys := numKeys - deleteCount - 1
-	t.Logf("Remaining keys after underflow: %d", remainingKeys)
+	t.Logf("Remaining Keys after underflow: %d", remainingKeys)
 
 	for i := deleteCount + 1; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
@@ -1286,8 +1288,8 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert MaxKeysPerNode keys (0 to 63 = 64 keys)
-	for i := 0; i < MaxKeysPerNode; i++ {
+	// Insert MaxKeysPerNode Keys (0 to 63 = 64 Keys)
+	for i := 0; i < internal.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
@@ -1296,32 +1298,32 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 		}
 	}
 
-	// After MaxKeysPerNode keys, root should be full but still a leaf
-	if !db.store.root.isLeaf {
-		t.Error("Root should still be leaf with MaxKeysPerNode keys")
+	// After MaxKeysPerNode Keys, root should be full but still a leaf
+	if !db.store.root.IsLeaf {
+		t.Error("Root should still be leaf with MaxKeysPerNode Keys")
 	}
-	if db.store.root.numKeys != MaxKeysPerNode {
-		t.Errorf("Expected %d keys, got %d", MaxKeysPerNode, db.store.root.numKeys)
+	if db.store.root.NumKeys != internal.MaxKeysPerNode {
+		t.Errorf("Expected %d Keys, got %d", internal.MaxKeysPerNode, db.store.root.NumKeys)
 	}
 
 	// Insert one more key (65th key) to trigger split
-	splitKey := fmt.Sprintf("key%06d", MaxKeysPerNode)
-	splitValue := fmt.Sprintf("value%06d", MaxKeysPerNode)
+	splitKey := fmt.Sprintf("key%06d", internal.MaxKeysPerNode)
+	splitValue := fmt.Sprintf("value%06d", internal.MaxKeysPerNode)
 	err := db.Set([]byte(splitKey), []byte(splitValue))
 	if err != nil {
 		t.Fatalf("Failed to trigger split: %v", err)
 	}
 
-	// After inserting MaxKeysPerNode+1 keys, root should be branch
-	if db.store.root.isLeaf {
+	// After inserting MaxKeysPerNode+1 Keys, root should be branch
+	if db.store.root.IsLeaf {
 		t.Error("Root should be branch after split")
 	}
-	if len(db.store.root.children) < 2 {
-		t.Errorf("Root should have at least 2 children after split, got %d", len(db.store.root.children))
+	if len(db.store.root.Children) < 2 {
+		t.Errorf("Root should have at least 2 Children after split, got %d", len(db.store.root.Children))
 	}
 
-	// Verify all keys retrievable
-	for i := 0; i <= MaxKeysPerNode; i++ {
+	// Verify all Keys retrievable
+	for i := 0; i <= internal.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
 		if err != nil {
@@ -1335,7 +1337,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	numKeys := MaxKeysPerNode * 2
+	numKeys := internal.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1345,12 +1347,12 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		}
 	}
 
-	if db.store.root.isLeaf {
+	if db.store.root.IsLeaf {
 		t.Fatal("Root should be branch Node")
 	}
 
-	initialRootKeys := db.store.root.numKeys
-	t.Logf("Initial root keys: %d", initialRootKeys)
+	initialRootKeys := db.store.root.NumKeys
+	t.Logf("Initial root Keys: %d", initialRootKeys)
 
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
@@ -1360,16 +1362,16 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		}
 
 		if i%(numKeys/4) == 0 {
-			t.Logf("After %d deletions: root.isLeaf=%v, root.numKeys=%d",
-				i+1, db.store.root.isLeaf, db.store.root.numKeys)
+			t.Logf("After %d deletions: root.IsLeaf=%v, root.NumKeys=%d",
+				i+1, db.store.root.IsLeaf, db.store.root.NumKeys)
 		}
 	}
 
-	if !db.store.root.isLeaf {
+	if !db.store.root.IsLeaf {
 		t.Error("Final root should be leaf")
 	}
-	if db.store.root.numKeys != 0 {
-		t.Errorf("Final root should have 0 keys, got %d", db.store.root.numKeys)
+	if db.store.root.NumKeys != 0 {
+		t.Errorf("Final root should have 0 Keys, got %d", db.store.root.NumKeys)
 	}
 }
 
@@ -1378,7 +1380,7 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	numKeys := MaxKeysPerNode * 3
+	numKeys := internal.MaxKeysPerNode * 3
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1388,12 +1390,12 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		}
 	}
 
-	if db.store.root.isLeaf {
+	if db.store.root.IsLeaf {
 		t.Fatal("Root should not be leaf for this test")
 	}
 
-	t.Logf("Tree structure: root.numKeys=%d, root.children=%d",
-		db.store.root.numKeys, len(db.store.root.children))
+	t.Logf("Tree structure: root.NumKeys=%d, root.Children=%d",
+		db.store.root.NumKeys, len(db.store.root.Children))
 
 	deleteCount := numKeys / 2
 	for i := 0; i < deleteCount; i++ {
@@ -1412,6 +1414,6 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		}
 	}
 
-	t.Logf("After deletions: root.isLeaf=%v, root.numKeys=%d",
-		db.store.root.isLeaf, db.store.root.numKeys)
+	t.Logf("After deletions: root.IsLeaf=%v, root.NumKeys=%d",
+		db.store.root.IsLeaf, db.store.root.NumKeys)
 }

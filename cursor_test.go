@@ -11,7 +11,7 @@ func TestCursorSequentialScan(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys 1-100
+	// Insert Keys 1-100
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -51,7 +51,7 @@ func TestCursorSequentialScan(t *testing.T) {
 	}
 
 	if count != 100 {
-		t.Errorf("Expected 100 keys, got %d", count)
+		t.Errorf("Expected 100 Keys, got %d", count)
 	}
 }
 
@@ -60,7 +60,7 @@ func TestCursorReverseScan(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys 1-50
+	// Insert Keys 1-50
 	for i := 1; i <= 50; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -127,7 +127,7 @@ func TestCursorRangeScan(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys 10, 20, 30, ..., 100
+	// Insert Keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
@@ -160,7 +160,7 @@ func TestCursorRangeScan(t *testing.T) {
 
 	expectedKeys := []string{"key030", "key040", "key050", "key060"}
 	if len(keys) != len(expectedKeys) {
-		t.Errorf("Expected %d keys, got %d", len(expectedKeys), len(keys))
+		t.Errorf("Expected %d Keys, got %d", len(expectedKeys), len(keys))
 	}
 
 	for i, key := range keys {
@@ -206,7 +206,7 @@ func TestCursorSeekNotFound(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys: key001, key003, key005, key007, key009
+	// Insert Keys: key001, key003, key005, key007, key009
 	for i := 1; i <= 9; i += 2 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -235,7 +235,7 @@ func TestCursorSeekNotFound(t *testing.T) {
 		t.Errorf("Expected key003, got %s", cursor.Key())
 	}
 
-	// Seek to key000 (before all keys) - should land on key001
+	// Seek to key000 (before all Keys) - should land on key001
 	if err := cursor.Seek([]byte("key000")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestCursorSeekNotFound(t *testing.T) {
 		t.Errorf("Expected key001, got %s", cursor.Key())
 	}
 
-	// Seek to key999 (after all keys) - should be invalid
+	// Seek to key999 (after all Keys) - should be invalid
 	if err := cursor.Seek([]byte("key999")); err != nil {
 		t.Fatalf("Seek failed: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert enough keys to trigger splits (200 keys)
+	// Insert enough Keys to trigger splits (200 Keys)
 	// This should create multiple leaf nodes
 	for i := 1; i <= 200; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
@@ -290,7 +290,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 	for cursor.Valid() {
 		count++
 
-		// Verify keys are in order
+		// Verify Keys are in order
 		if len(prevKey) > 0 && bytes.Compare(cursor.Key(), prevKey) <= 0 {
 			t.Errorf("Keys out of order: %s should be > %s", cursor.Key(), prevKey)
 		}
@@ -302,7 +302,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 	}
 
 	if count != 200 {
-		t.Errorf("Expected 200 keys after splits, got %d", count)
+		t.Errorf("Expected 200 Keys after splits, got %d", count)
 	}
 }
 
@@ -311,7 +311,7 @@ func TestCursorAfterMerges(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert 100 keys to create multiple nodes
+	// Insert 100 Keys to create multiple nodes
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -328,7 +328,7 @@ func TestCursorAfterMerges(t *testing.T) {
 		}
 	}
 
-	// Scan remaining keys (odd numbers only)
+	// Scan remaining Keys (odd numbers only)
 	tx, err := db.Begin(false)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
@@ -357,7 +357,7 @@ func TestCursorAfterMerges(t *testing.T) {
 	}
 
 	if count != 50 {
-		t.Errorf("Expected 50 keys after deletions, got %d", count)
+		t.Errorf("Expected 50 Keys after deletions, got %d", count)
 	}
 }
 
@@ -366,7 +366,7 @@ func TestCursorSeekSTART(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys 10, 20, 30, ..., 100
+	// Insert Keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
@@ -396,14 +396,14 @@ func TestCursorSeekSTART(t *testing.T) {
 		t.Errorf("Expected first key 'key010', got %s", cursor.Key())
 	}
 
-	// Scan all keys from START
+	// Scan all Keys from START
 	count := 1
 	for cursor.Next() {
 		count++
 	}
 
 	if count != 10 {
-		t.Errorf("Expected 10 keys from START, got %d", count)
+		t.Errorf("Expected 10 Keys from START, got %d", count)
 	}
 }
 
@@ -412,7 +412,7 @@ func TestCursorSeekEND(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys 10, 20, 30, ..., 100
+	// Insert Keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
@@ -499,7 +499,7 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys 1-100
+	// Insert Keys 1-100
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -528,7 +528,7 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 	}
 
 	if count != 100 {
-		t.Errorf("Expected 100 keys in range [START, END), got %d", count)
+		t.Errorf("Expected 100 Keys in range [START, END), got %d", count)
 	}
 }
 
@@ -537,7 +537,7 @@ func TestCursorSeekFirstFunction(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys
+	// Insert Keys
 	for i := 10; i <= 50; i += 10 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -573,7 +573,7 @@ func TestCursorSeekLastFunction(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Insert keys
+	// Insert Keys
 	for i := 10; i <= 50; i += 10 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
@@ -650,7 +650,7 @@ func TestCursorSeekENDComparison(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	// Create keys near the maximum size (MaxKeySize = 1024)
+	// Create Keys near the maximum size (MaxKeySize = 1024)
 	// END is 1024 bytes of 0xFF, so any valid key should compare less than END
 
 	// Key 1: 1024 bytes of 0xFE (just below END)
@@ -666,7 +666,7 @@ func TestCursorSeekENDComparison(t *testing.T) {
 	}
 	nearMaxKey[MaxKeySize-1] = 0xFE
 
-	// Insert both keys
+	// Insert both Keys
 	if err := db.Set(maxKey, []byte("max_value")); err != nil {
 		t.Fatalf("Failed to insert maxKey: %v", err)
 	}
@@ -674,7 +674,7 @@ func TestCursorSeekENDComparison(t *testing.T) {
 		t.Fatalf("Failed to insert nearMaxKey: %v", err)
 	}
 
-	// Verify END compares greater than both keys
+	// Verify END compares greater than both Keys
 	if bytes.Compare(maxKey, END) >= 0 {
 		t.Errorf("Expected maxKey < END, but got maxKey >= END")
 	}

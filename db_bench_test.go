@@ -16,7 +16,7 @@ func BenchmarkDBGet(b *testing.B) {
 	}
 	defer db.Close()
 
-	// Pre-populate with 10k keys
+	// Pre-populate with 10k Keys
 	numKeys := 10000
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%08d", i)
@@ -72,7 +72,7 @@ func BenchmarkDBMixed(b *testing.B) {
 	}
 	defer db.Close()
 
-	// Pre-populate with 10k keys (reduced from 100k for faster benchmark)
+	// Pre-populate with 10k Keys (reduced from 100k for faster benchmark)
 	numKeys := 10000
 	batchSize := 100
 	for batch := 0; batch < numKeys/batchSize; batch++ {
@@ -141,7 +141,7 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 	}
 	defer db.Close()
 
-	// Pre-populate with 50k keys
+	// Pre-populate with 50k Keys
 	numKeys := 50000
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%08d", i)
@@ -170,15 +170,15 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 
 func BenchmarkBTreeGet(b *testing.B) {
 	// Benchmark get performance
-	// - Pre-populate tree with 10000 keys
+	// - Pre-populate tree with 10000 Keys
 	// - Measure random get operations
 	b.Skip("Not implemented")
 }
 
 func BenchmarkBTreeSet(b *testing.B) {
 	// Benchmark Set performance
-	// - Measure insertion of b.N keys
-	// - Include both new keys and updates
+	// - Measure insertion of b.N Keys
+	// - Include both new Keys and updates
 	b.Skip("Not implemented")
 }
 
@@ -198,7 +198,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 		_ = os.Remove(tmpfile)
 	}()
 
-	// Pre-populate with 10000 keys
+	// Pre-populate with 10000 Keys
 	numKeys := 10000
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%08d", i)
@@ -216,7 +216,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Use deterministic pattern based on iteration
 		if i%5 < 4 {
-			// 80% reads - read existing keys
+			// 80% reads - read existing Keys
 			keyNum := (i * 7) % numKeys // Deterministic key selection
 			key := fmt.Sprintf("key%08d", keyNum)
 
@@ -225,7 +225,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 				b.Errorf("Read failed for key %s: %v", key, err)
 			}
 		} else {
-			// 20% writes - mix of updates and new keys
+			// 20% writes - mix of updates and new Keys
 			if i%10 < 9 {
 				// Update existing key
 				keyNum := (i * 13) % numKeys
@@ -252,12 +252,12 @@ func BenchmarkBTreeMixed(b *testing.B) {
 
 func BenchmarkBTreeSequentialInsert(b *testing.B) {
 	// Benchmark sequential insertion pattern
-	// - Insert keys in ascending order
+	// - Insert Keys in ascending order
 	b.Skip("Not implemented")
 }
 
 func BenchmarkBTreeRandomInsert(b *testing.B) {
 	// Benchmark random insertion pattern
-	// - Insert keys in random order
+	// - Insert Keys in random order
 	b.Skip("Not implemented")
 }

@@ -7,13 +7,13 @@ import (
 )
 
 // Helper to create a test Node
-func makeTestNode(pageID internal.PageID) *Node {
-	return &Node{
-		pageID:   pageID,
-		isLeaf:   true,
-		keys:     make([][]byte, 0),
-		values:   make([][]byte, 0),
-		children: make([]internal.PageID, 0),
+func makeTestNode(pageID internal.PageID) *internal.Node {
+	return &internal.Node{
+		PageID:   pageID,
+		IsLeaf:   true,
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: make([]internal.PageID, 0),
 	}
 }
 
@@ -37,7 +37,7 @@ func TestPageCacheBasics(t *testing.T) {
 	if !hit {
 		t.Error("Expected cache hit for Page 1")
 	}
-	if retrieved.pageID != node1.pageID {
+	if retrieved.PageID != node1.PageID {
 		t.Error("Retrieved wrong Node")
 	}
 
@@ -67,7 +67,7 @@ func TestPageCacheMVCC(t *testing.T) {
 
 	// Add version 2 of Page 1
 	node2 := makeTestNode(internal.PageID(1))
-	node2.numKeys = 5 // Different data
+	node2.NumKeys = 5 // Different data
 	cache.Put(internal.PageID(1), 2, node2)
 
 	// Reader at txnID=1 should see version 1
@@ -75,8 +75,8 @@ func TestPageCacheMVCC(t *testing.T) {
 	if !hit {
 		t.Error("Expected cache hit for txnID=1")
 	}
-	if retrieved.numKeys != 0 {
-		t.Error("Expected version 1 (numKeys=0)")
+	if retrieved.NumKeys != 0 {
+		t.Error("Expected version 1 (NumKeys=0)")
 	}
 
 	// Reader at txnID=2 should see version 2
@@ -84,8 +84,8 @@ func TestPageCacheMVCC(t *testing.T) {
 	if !hit {
 		t.Error("Expected cache hit for txnID=2")
 	}
-	if retrieved.numKeys != 5 {
-		t.Error("Expected version 2 (numKeys=5)")
+	if retrieved.NumKeys != 5 {
+		t.Error("Expected version 2 (NumKeys=5)")
 	}
 
 	// Reader at txnID=3 should see version 2 (latest committed)
@@ -93,8 +93,8 @@ func TestPageCacheMVCC(t *testing.T) {
 	if !hit {
 		t.Error("Expected cache hit for txnID=3")
 	}
-	if retrieved.numKeys != 5 {
-		t.Error("Expected version 2 (numKeys=5)")
+	if retrieved.NumKeys != 5 {
+		t.Error("Expected version 2 (NumKeys=5)")
 	}
 
 	// size should be 2 (two versions)

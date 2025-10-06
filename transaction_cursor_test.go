@@ -257,7 +257,7 @@ func TestCursorConcurrentModifications(t *testing.T) {
 				return
 			}
 
-			// Scan through all keys
+			// Scan through all Keys
 			count := 0
 			for cursor.Valid() {
 				// Verify we always see consistent snapshot
@@ -278,9 +278,9 @@ func TestCursorConcurrentModifications(t *testing.T) {
 				}
 			}
 
-			// Should see exactly 100 keys
+			// Should see exactly 100 Keys
 			if count != 100 {
-				t.Errorf("Reader %d: expected 100 keys, got %d", readerID, count)
+				t.Errorf("Reader %d: expected 100 Keys, got %d", readerID, count)
 			}
 		}(r)
 	}
@@ -302,7 +302,7 @@ func TestCursorConcurrentModifications(t *testing.T) {
 				continue // Another writer active
 			}
 
-			// Modify some keys
+			// Modify some Keys
 			for j := i * 10; j < (i+1)*10 && j < 100; j++ {
 				key := []byte(fmt.Sprintf("key%04d", j))
 				value := []byte(fmt.Sprintf("modified%d", j))
@@ -320,7 +320,7 @@ func TestCursorConcurrentModifications(t *testing.T) {
 	wg.Wait()
 }
 
-// TestCursorWithDeletedKeys tests cursor behavior when keys are deleted
+// TestCursorWithDeletedKeys tests cursor behavior when Keys are deleted
 func TestCursorWithDeletedKeys(t *testing.T) {
 	db := setupTestDB(t)
 
@@ -366,13 +366,13 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 		t.Errorf("Expected key10, got %s", cursor.Key())
 	}
 
-	// Delete keys in another transaction
+	// Delete Keys in another transaction
 	writeTx, err := db.Begin(true)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Delete keys 05-14
+	// Delete Keys 05-14
 	for i := 5; i < 15; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		if err := writeTx.Delete(key); err != nil {
@@ -384,7 +384,7 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Original cursor should still see all keys (snapshot)
+	// Original cursor should still see all Keys (snapshot)
 	if err := cursor.Seek([]byte("key05")); err != nil {
 		t.Fatal(err)
 	}
@@ -398,14 +398,14 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 		t.Errorf("Expected key05 in snapshot, got %s", cursor.Key())
 	}
 
-	// Count remaining keys in snapshot
+	// Count remaining Keys in snapshot
 	count := 1 // Starting at key05
 	for cursor.Next() {
 		count++
 	}
 
-	// Should see all 15 remaining keys (05-19) in snapshot
+	// Should see all 15 remaining Keys (05-19) in snapshot
 	if count != 15 {
-		t.Errorf("Expected 15 keys from key05 to key19 in snapshot, got %d", count)
+		t.Errorf("Expected 15 Keys from key05 to key19 in snapshot, got %d", count)
 	}
 }

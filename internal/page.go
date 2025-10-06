@@ -69,10 +69,10 @@ type PageID uint64
 // │ BranchElement[N-1] (16 bytes)                                       │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ Data Area (variable, packed from end backward, reserve last 8):     │
-// │   ← key[0] | key[1] | ... | key[N-1]        children[0] (8 bytes)→  │
+// │   ← key[0] | key[1] | ... | key[N-1]        Children[0] (8 bytes)→  │
 // │   Elements grow forward →   Data grows backward ← (reserve end 8)   │
-// │   BranchElement[0..N-1].ChildID stores children[1..N]               │
-// │   children[0] is at FIXED location: last 8 bytes (PageSize-8)       │
+// │   BranchElement[0..N-1].ChildID stores Children[1..N]               │
+// │   Children[0] is at FIXED location: last 8 bytes (PageSize-8)       │
 // └─────────────────────────────────────────────────────────────────────┘
 type Page struct {
 	Data [PageSize]byte
@@ -101,7 +101,7 @@ type LeafElement struct {
 }
 
 // BranchElement represents metadata for a routing key and child pointer in a branch Page
-// B+ tree: branch nodes only store keys for routing, no values
+// B+ tree: branch nodes only store Keys for routing, no Values
 // Layout: [KeyOffset: 2][KeySize: 2][Reserved: 4][ChildID: 8]
 type BranchElement struct {
 	KeyOffset uint16 // 2 bytes: offset from data area start

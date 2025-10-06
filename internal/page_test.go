@@ -82,7 +82,7 @@ func TestPageHeaderByteLayout(t *testing.T) {
 
 	var page Page
 
-	// Write Header with known values
+	// Write Header with known Values
 	hdr := PageHeader{
 		PageID:    0x0123456789ABCDEF, // 8 bytes
 		Flags:     0x1234,             // 2 bytes
@@ -140,7 +140,7 @@ func TestLeafElementByteLayout(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write leaf element with known values
+	// Write leaf element with known Values
 	elem := LeafElement{
 		KeyOffset:   0x1234,     // 2 bytes
 		KeySize:     0x5678,     // 2 bytes
@@ -253,7 +253,7 @@ func TestBranchElementByteLayout(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write branch element with known values (B+ tree: no values in branches)
+	// Write branch element with known Values (B+ tree: no Values in branches)
 	elem := BranchElement{
 		KeyOffset: 0x1234,             // 2 bytes
 		KeySize:   0x5678,             // 2 bytes
@@ -295,7 +295,7 @@ func TestBranchElementRoundTrip(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write branch elements (B+ tree: no values in branches)
+	// Write branch elements (B+ tree: no Values in branches)
 	elem1 := BranchElement{
 		KeyOffset: 8,
 		KeySize:   5,
@@ -375,25 +375,25 @@ func TestDataAreaStart(t *testing.T) {
 		expected int
 	}{
 		{
-			name:     "leaf with 0 keys",
+			name:     "leaf with 0 Keys",
 			flags:    LeafPageFlag,
 			numKeys:  0,
 			expected: PageHeaderSize,
 		},
 		{
-			name:     "leaf with 10 keys",
+			name:     "leaf with 10 Keys",
 			flags:    LeafPageFlag,
 			numKeys:  10,
 			expected: PageHeaderSize + 10*LeafElementSize,
 		},
 		{
-			name:     "branch with 0 keys",
+			name:     "branch with 0 Keys",
 			flags:    BranchPageFlag,
 			numKeys:  0,
 			expected: PageHeaderSize,
 		},
 		{
-			name:     "branch with 5 keys",
+			name:     "branch with 5 Keys",
 			flags:    BranchPageFlag,
 			numKeys:  5,
 			expected: PageHeaderSize + 5*BranchElementSize,

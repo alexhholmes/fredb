@@ -46,7 +46,7 @@ func TestWALRecoveryBasic(t *testing.T) {
 	}
 	defer db2.Close()
 
-	// Verify both keys exist
+	// Verify both Keys exist
 	val1, err := db2.Get([]byte("key1"))
 	if err != nil {
 		t.Fatalf("Failed to get key1 after recovery: %v", err)
@@ -93,11 +93,11 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 	}
 
 	// Directly access WAL to write without commit marker
-	// Flush dirty pages to WAL without commit
+	// Flush Dirty pages to WAL without commit
 	for pageID, node := range tx.pages {
-		page, err := node.serialize(tx.txnID)
+		page, err := node.Serialize(tx.txnID)
 		if err != nil {
-			t.Fatalf("Failed to serialize: %v", err)
+			t.Fatalf("Failed to Serialize: %v", err)
 		}
 		if err := db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
 			t.Fatalf("Failed to append to WAL: %v", err)
@@ -151,7 +151,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
-	// Write multiple keys
+	// Write multiple Keys
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
@@ -213,7 +213,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	}
 	defer db2.Close()
 
-	// Verify all keys still have correct values (no corruption from double-apply)
+	// Verify all Keys still have correct Values (no corruption from double-apply)
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
 		expectedValue := []byte{byte(i + 100)}
@@ -263,14 +263,14 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	// Reopen and verify all keys
+	// Reopen and verify all Keys
 	db2, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
 	defer db2.Close()
 
-	// Verify all keys recovered
+	// Verify all Keys recovered
 	for i := 1; i <= 5; i++ {
 		var key, expectedValue []byte
 		if i == 1 {

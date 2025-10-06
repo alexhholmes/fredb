@@ -173,7 +173,7 @@ func TestDBConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	// Track all written values for verification
+	// Track all written Values for verification
 	expectedValues := make(map[string]string)
 	var mu sync.Mutex
 
@@ -233,7 +233,7 @@ func TestDBConcurrency(t *testing.T) {
 
 	wg.Wait()
 
-	// Verify final state - all written keys should be readable
+	// Verify final state - all written Keys should be readable
 	for key, expectedValue := range expectedValues {
 		val, err := db.Get([]byte(key))
 		if err != nil {
@@ -292,7 +292,7 @@ func TestDBConcurrentReads(t *testing.T) {
 			goStart := time.Now()
 
 			for j := 0; j < readsPerReader; j++ {
-				// Read random keys from test data
+				// Read random Keys from test data
 				key := fmt.Sprintf("key-%d", (id*readsPerReader+j)%1000)
 				expectedValue := fmt.Sprintf("value-%d", (id*readsPerReader+j)%1000)
 
@@ -334,8 +334,8 @@ func TestDBConcurrentWrites(t *testing.T) {
 
 	// Test concurrent writes are serialized correctly
 	// - Launch multiple writer goroutines
-	// - Each writes unique keys
-	// - Verify all keys present at end
+	// - Each writes unique Keys
+	// - Verify all Keys present at end
 	tmpfile := "/tmp/test_db_concurrent_writes.DB"
 	defer os.Remove(tmpfile)
 
@@ -359,7 +359,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < writesPerWriter; j++ {
-				// Each writer writes unique keys
+				// Each writer writes unique Keys
 				key := fmt.Sprintf("writer-%d-key-%d", id, j)
 				value := fmt.Sprintf("writer-%d-value-%d", id, j)
 
@@ -387,9 +387,9 @@ func TestDBConcurrentWrites(t *testing.T) {
 
 	wg.Wait()
 
-	// Verify all keys are present and have correct values
+	// Verify all Keys are present and have correct Values
 	if len(writtenKeys) != numWriters*writesPerWriter {
-		t.Errorf("Expected %d keys, got %d", numWriters*writesPerWriter, len(writtenKeys))
+		t.Errorf("Expected %d Keys, got %d", numWriters*writesPerWriter, len(writtenKeys))
 	}
 
 	for key, expectedValue := range writtenKeys {
@@ -403,7 +403,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 		}
 	}
 
-	// Test concurrent updates to same keys
+	// Test concurrent updates to same Keys
 	updateKey := []byte("concurrent-update-key")
 	numUpdaters := 100
 	wg.Add(numUpdaters)
@@ -452,7 +452,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Insert initial values
+	// Insert initial Values
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d-v1", i))
@@ -557,7 +557,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 		}(i)
 	}
 
-	// Writer modifies all values
+	// Writer modifies all Values
 	go func() {
 		defer wg.Done()
 
@@ -584,7 +584,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 		t.Error(err)
 	}
 
-	// Verify final state has v3 values
+	// Verify final state has v3 Values
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value, err := db.Get(key)
@@ -617,7 +617,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Insert 100 initial keys
+	// Insert 100 initial Keys
 	for i := 0; i < 100; i++ {
 		key := []byte(fmt.Sprintf("initial-key-%d", i))
 		value := []byte(fmt.Sprintf("initial-value-%d", i))
@@ -664,7 +664,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 
 					// Use Update to commit
 					err := db.Update(func(tx *Tx) error {
-						// Write 5 new keys
+						// Write 5 new Keys
 						for k := 0; k < 5; k++ {
 							key := []byte(fmt.Sprintf("tx-%d-key-%d", opID, k))
 							value := []byte(fmt.Sprintf("tx-%d-value-%d", opID, k))
@@ -720,7 +720,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 							break
 						}
 
-						// Write some keys (will be rolled back)
+						// Write some Keys (will be rolled back)
 						for k := 0; k < 5; k++ {
 							key := []byte(fmt.Sprintf("rollback-tx-%d-key-%d", opID, k))
 							value := []byte(fmt.Sprintf("rollback-tx-%d-value-%d", opID, k))
@@ -742,7 +742,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 				} else {
 					// 25% error rollback (via Update returning error)
 					err := db.Update(func(tx *Tx) error {
-						// Write some keys
+						// Write some Keys
 						for k := 0; k < 5; k++ {
 							key := []byte(fmt.Sprintf("error-tx-%d-key-%d", opID, k))
 							value := []byte(fmt.Sprintf("error-tx-%d-value-%d", opID, k))
@@ -780,10 +780,10 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	t.Logf("stats: commits=%d, explicit_rollbacks=%d, error_rollbacks=%d, tx_in_progress_retries=%d",
 		commits, explicitRollbacks, errorRollbacks, txInProgress)
 
-	// Verify all committed keys exist with correct values
+	// Verify all committed Keys exist with correct Values
 	commitMu.Lock()
 	for txIdx, result := range committedTxs {
-		// Verify new keys
+		// Verify new Keys
 		for i := 0; i < 5; i++ {
 			val, err := db.Get([]byte(result.keys[i]))
 			if err != nil {
@@ -810,16 +810,16 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	}
 	commitMu.Unlock()
 
-	// Sample active: verify some rolled-back keys don't exist
+	// Sample active: verify some rolled-back Keys don't exist
 	for i := 0; i < 10; i++ {
-		// Check explicit rollback keys
+		// Check explicit rollback Keys
 		key := []byte(fmt.Sprintf("rollback-tx-%d-key-0", i*100))
 		_, err := db.Get(key)
 		if err != ErrKeyNotFound {
 			t.Errorf("Rolled-back key should not exist: %s, got error: %v", key, err)
 		}
 
-		// Check error rollback keys
+		// Check error rollback Keys
 		key = []byte(fmt.Sprintf("error-tx-%d-key-0", i*100))
 		_, err = db.Get(key)
 		if err != ErrKeyNotFound {
@@ -828,8 +828,8 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	}
 
 	// Heuristic active for Page leaks: file size should be reasonable
-	// With 100 initial keys + ~500-750 committed transactions × 5-6 keys each
-	// = ~100 + 3000-4500 = ~4000 keys total
+	// With 100 initial Keys + ~500-750 committed transactions × 5-6 Keys each
+	// = ~100 + 3000-4500 = ~4000 Keys total
 	// At ~4KB per Page with branching, expect < 10MB
 	info, err := os.Stat(tmpfile)
 	if err != nil {
@@ -863,7 +863,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 	// For 2 pairs: 2 * 16 = 32 bytes metadata
 	// Data space = 4056 - 32 = 4024 bytes
 	// Per pair = 2012 bytes total
-	// Limit keys to 500 bytes (within MaxKeySize = 1024)
+	// Limit Keys to 500 bytes (within MaxKeySize = 1024)
 	// Use 500+1500 = 2000 bytes per pair for ~2 pairs per Page
 	keySize := 500
 	valueSize := 1500
@@ -891,7 +891,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		return value
 	}
 
-	// Test 1: Insert 10 large keys (will cause multiple splits)
+	// Test 1: Insert 10 large Keys (will cause multiple splits)
 	t.Run("InsertLargeKeys", func(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := makeKey(i)
@@ -902,7 +902,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		}
 	})
 
-	// Test 2: Read back all keys
+	// Test 2: Read back all Keys
 	t.Run("ReadLargeKeys", func(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := makeKey(i)
@@ -924,7 +924,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		}
 	})
 
-	// Test 3: Update large keys
+	// Test 3: Update large Keys
 	t.Run("UpdateLargeKeys", func(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := makeKey(i)
@@ -953,7 +953,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		}
 	})
 
-	// Test 4: Delete large keys
+	// Test 4: Delete large Keys
 	t.Run("DeleteLargeKeys", func(t *testing.T) {
 		// Delete every other key
 		for i := 0; i < 10; i += 2 {
@@ -969,7 +969,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 			}
 		}
 
-		// Verify remaining keys still exist
+		// Verify remaining Keys still exist
 		for i := 1; i < 10; i += 2 {
 			key := makeKey(i)
 			_, err := db.Get(key)
@@ -979,7 +979,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		}
 	})
 
-	// Test 5: Concurrent operations with large keys
+	// Test 5: Concurrent operations with large Keys
 	if *slow {
 		t.Run("ConcurrentLargeKeys", func(t *testing.T) {
 			numGoroutines := 20
@@ -1037,7 +1037,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 
 	// Test 6: Fill a tree to force deep splits
 	t.Run("DeepTreeWithLargeKeys", func(t *testing.T) {
-		// Insert 100 more large keys to create a deeper tree
+		// Insert 100 more large Keys to create a deeper tree
 		for i := 100; i < 200; i++ {
 			key := makeKey(i)
 			value := makeValue(i)
@@ -1046,7 +1046,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 			}
 		}
 
-		// Spot active some keys
+		// Spot active some Keys
 		testKeys := []int{100, 125, 150, 175, 199}
 		for _, i := range testKeys {
 			key := makeKey(i)

@@ -135,7 +135,7 @@ func TestFreeListPendingSerialization(t *testing.T) {
 	fl.FreePending(101, []internal.PageID{2000, 2001})
 	fl.FreePending(105, []internal.PageID{3000})
 
-	// serialize
+	// Serialize
 	pagesNeeded := fl.PagesNeeded()
 	pages := make([]*internal.Page, pagesNeeded)
 	for i := 0; i < pagesNeeded; i++ {
@@ -143,7 +143,7 @@ func TestFreeListPendingSerialization(t *testing.T) {
 	}
 	fl.Serialize(pages)
 
-	// deserialize into new freelist
+	// Deserialize into new freelist
 	fl2 := NewFreeList()
 	fl2.Deserialize(pages)
 
@@ -206,7 +206,7 @@ func TestFreelistNoPageLeaks(t *testing.T) {
 	var wg sync.WaitGroup
 	stopReaders := make(chan struct{})
 
-	// Launch 3 concurrent readers that continuously read random keys
+	// Launch 3 concurrent readers that continuously read random Keys
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func(readerID int) {
@@ -222,10 +222,10 @@ func TestFreelistNoPageLeaks(t *testing.T) {
 						continue
 					}
 
-					// Read a few random keys
+					// Read a few random Keys
 					for j := 0; j < 10; j++ {
 						key := []byte(fmt.Sprintf("key%d", j))
-						tx.Get(key) // Ignore errors, some keys may not exist
+						tx.Get(key) // Ignore errors, some Keys may not exist
 					}
 
 					// Hold transaction briefly to simulate real reader

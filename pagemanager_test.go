@@ -81,7 +81,7 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
-	// Create database and insert 100 keys
+	// Create database and insert 100 Keys
 	db, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to create DB: %v", err)
@@ -99,7 +99,7 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 		t.Fatalf("Failed to close DB: %v", err)
 	}
 
-	// Reopen and verify all keys
+	// Reopen and verify all Keys
 	db2, err := Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to reopen DB: %v", err)
@@ -135,7 +135,7 @@ func TestDiskPageManagerDelete(t *testing.T) {
 		t.Fatalf("Failed to create DB: %v", err)
 	}
 
-	// Insert keys
+	// Insert Keys
 	db.Set([]byte("a"), []byte("1"))
 	db.Set([]byte("b"), []byte("2"))
 	db.Set([]byte("c"), []byte("3"))

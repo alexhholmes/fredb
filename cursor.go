@@ -2,9 +2,11 @@ package fredb
 
 import (
 	"bytes"
+
+	"fredb/internal"
 )
 
-// Special marker values for Seek operations
+// Special marker Values for Seek operations
 var (
 	// START is a special marker for seeking to the first key in the database
 	// Usage: cursor.Seek(pkg.START) or cursor.SeekFirst()
@@ -28,11 +30,11 @@ func init() {
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
 type pathElem struct {
-	node       *Node
+	node       *internal.Node
 	childIndex int
 }
 
-// Cursor provides ordered iteration over B-tree keys
+// Cursor provides ordered iteration over B-tree Keys
 type Cursor struct {
 	btree *BTree
 	tx    *Tx        // Transaction this cursor belongs to
@@ -40,14 +42,6 @@ type Cursor struct {
 	key   []byte     // Cached current key
 	value []byte     // Cached current value
 	valid bool       // Is cursor positioned on valid key?
-}
-
-// active validates that the cursor's transaction is still active
-func (it *Cursor) active() error {
-	if it.tx != nil {
-		return it.tx.check()
-	}
-	return nil
 }
 
 // SeekFirst positions cursor at the first key in the database
@@ -79,16 +73,16 @@ func (it *Cursor) Seek(key []byte) error {
 
 	// get root from transaction for snapshot isolation
 	// Use tx.root if set (modified in this tx), otherwise use btree.root
-	var node *Node
+	var node *internal.Node
 	if it.tx != nil && it.tx.root != nil {
 		node = it.tx.root
 	} else {
 		node = it.btree.root
 	}
-	for !node.isLeaf {
+	for !node.IsLeaf {
 		// Find which child to descend to
 		i := 0
-		for i < int(node.numKeys) && bytes.Compare(key, node.keys[i]) > 0 {
+		for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) > 0 {
 			i++
 		}
 
@@ -96,7 +90,7 @@ func (it *Cursor) Seek(key []byte) error {
 		it.stack = append(it.stack, pathElem{node: node, childIndex: i})
 
 		// Descend to child
-		child, err := it.btree.loadNode(it.tx, node.children[i])
+		child, err := it.btree.loadNode(it.tx, node.Children[i])
 		if err != nil {
 			return err
 		}
@@ -105,7 +99,7 @@ func (it *Cursor) Seek(key []byte) error {
 
 	// Find position within leaf
 	i := 0
-	for i < int(node.numKeys) && bytes.Compare(key, node.keys[i]) > 0 {
+	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) > 0 {
 		i++
 	}
 
@@ -113,9 +107,9 @@ func (it *Cursor) Seek(key []byte) error {
 	it.stack = append(it.stack, pathElem{node: node, childIndex: i})
 
 	// If positioned within Node, we're valid
-	if i < int(node.numKeys) {
-		it.key = node.keys[i]
-		it.value = node.values[i]
+	if i < int(node.NumKeys) {
+		it.key = node.Keys[i]
+		it.value = node.Values[i]
 		it.valid = true
 		return nil
 	}
@@ -126,8 +120,8 @@ func (it *Cursor) Seek(key []byte) error {
 		it.stack[len(it.stack)-1].childIndex--
 		if it.stack[len(it.stack)-1].childIndex >= 0 {
 			leaf := it.stack[len(it.stack)-1]
-			it.key = leaf.node.keys[leaf.childIndex]
-			it.value = leaf.node.values[leaf.childIndex]
+			it.key = leaf.node.Keys[leaf.childIndex]
+			it.value = leaf.node.Values[leaf.childIndex]
 			it.valid = true
 			return nil
 		}
@@ -157,9 +151,9 @@ func (it *Cursor) Next() bool {
 	leaf := &it.stack[len(it.stack)-1]
 	leaf.childIndex++
 
-	if leaf.childIndex < int(leaf.node.numKeys) {
-		it.key = leaf.node.keys[leaf.childIndex]
-		it.value = leaf.node.values[leaf.childIndex]
+	if leaf.childIndex < int(leaf.node.NumKeys) {
+		it.key = leaf.node.Keys[leaf.childIndex]
+		it.value = leaf.node.Values[leaf.childIndex]
 		return true
 	}
 
@@ -186,8 +180,8 @@ func (it *Cursor) Prev() bool {
 	leaf.childIndex--
 
 	if leaf.childIndex >= 0 {
-		it.key = leaf.node.keys[leaf.childIndex]
-		it.value = leaf.node.values[leaf.childIndex]
+		it.key = leaf.node.Keys[leaf.childIndex]
+		it.value = leaf.node.Values[leaf.childIndex]
 		return true
 	}
 
@@ -210,10 +204,18 @@ func (it *Cursor) Valid() bool {
 	return it.valid
 }
 
+// active validates that the cursor's transaction is still active
+func (it *Cursor) active() error {
+	if it.tx != nil {
+		return it.tx.check()
+	}
+	return nil
+}
+
 // nextLeaf advances to next leaf via tree navigation
 // B+ tree: skip branch nodes, only visit leaves
 func (it *Cursor) nextLeaf() error {
-	// Pop up the stack to find a parent with more children
+	// Pop up the stack to find a parent with more Children
 	for len(it.stack) > 1 {
 		// Pop current leaf
 		it.stack = it.stack[:len(it.stack)-1]
@@ -222,14 +224,14 @@ func (it *Cursor) nextLeaf() error {
 		parent := &it.stack[len(it.stack)-1]
 		parent.childIndex++
 
-		// Does parent have more children?
-		if parent.childIndex < len(parent.node.children) {
+		// Does parent have more Children?
+		if parent.childIndex < len(parent.node.Children) {
 			// Descend to leftmost leaf of next subtree
 			return it.descendToFirstLeaf()
 		}
 	}
 
-	// Reached root with no more children
+	// Reached root with no more Children
 	it.valid = false
 	return nil
 }
@@ -237,7 +239,7 @@ func (it *Cursor) nextLeaf() error {
 // prevLeaf moves to previous leaf via tree navigation
 // B+ tree: skip branch nodes, only visit leaves
 func (it *Cursor) prevLeaf() error {
-	// Pop up the stack to find a parent with more children to the left
+	// Pop up the stack to find a parent with more Children to the left
 	for len(it.stack) > 1 {
 		// Pop current leaf
 		it.stack = it.stack[:len(it.stack)-1]
@@ -246,14 +248,14 @@ func (it *Cursor) prevLeaf() error {
 		parent := &it.stack[len(it.stack)-1]
 		parent.childIndex--
 
-		// Does parent have more children to the left?
+		// Does parent have more Children to the left?
 		if parent.childIndex >= 0 {
 			// Descend to rightmost leaf of previous subtree
 			return it.descendToLastLeaf()
 		}
 	}
 
-	// Reached root with no more children to the left
+	// Reached root with no more Children to the left
 	it.valid = false
 	return nil
 }
@@ -261,16 +263,16 @@ func (it *Cursor) prevLeaf() error {
 // descendToFirstLeaf descends to the leftmost leaf from current stack top
 func (it *Cursor) descendToFirstLeaf() error {
 	parent := it.stack[len(it.stack)-1]
-	node, err := it.btree.loadNode(it.tx, parent.node.children[parent.childIndex])
+	node, err := it.btree.loadNode(it.tx, parent.node.Children[parent.childIndex])
 	if err != nil {
 		it.valid = false
 		return err
 	}
 
 	// Keep descending to leftmost child
-	for !node.isLeaf {
+	for !node.IsLeaf {
 		it.stack = append(it.stack, pathElem{node: node, childIndex: 0})
-		child, err := it.btree.loadNode(it.tx, node.children[0])
+		child, err := it.btree.loadNode(it.tx, node.Children[0])
 		if err != nil {
 			it.valid = false
 			return err
@@ -281,9 +283,9 @@ func (it *Cursor) descendToFirstLeaf() error {
 	// Reached leaf
 	it.stack = append(it.stack, pathElem{node: node, childIndex: 0})
 
-	if node.numKeys > 0 {
-		it.key = node.keys[0]
-		it.value = node.values[0]
+	if node.NumKeys > 0 {
+		it.key = node.Keys[0]
+		it.value = node.Values[0]
 		it.valid = true
 	} else {
 		it.valid = false
@@ -295,17 +297,17 @@ func (it *Cursor) descendToFirstLeaf() error {
 // descendToLastLeaf descends to the rightmost leaf from current stack top
 func (it *Cursor) descendToLastLeaf() error {
 	parent := it.stack[len(it.stack)-1]
-	node, err := it.btree.loadNode(it.tx, parent.node.children[parent.childIndex])
+	node, err := it.btree.loadNode(it.tx, parent.node.Children[parent.childIndex])
 	if err != nil {
 		it.valid = false
 		return err
 	}
 
 	// Keep descending to rightmost child
-	for !node.isLeaf {
-		lastChild := len(node.children) - 1
+	for !node.IsLeaf {
+		lastChild := len(node.Children) - 1
 		it.stack = append(it.stack, pathElem{node: node, childIndex: lastChild})
-		child, err := it.btree.loadNode(it.tx, node.children[lastChild])
+		child, err := it.btree.loadNode(it.tx, node.Children[lastChild])
 		if err != nil {
 			it.valid = false
 			return err
@@ -314,12 +316,12 @@ func (it *Cursor) descendToLastLeaf() error {
 	}
 
 	// Reached leaf
-	lastIndex := int(node.numKeys) - 1
+	lastIndex := int(node.NumKeys) - 1
 	it.stack = append(it.stack, pathElem{node: node, childIndex: lastIndex})
 
 	if lastIndex >= 0 {
-		it.key = node.keys[lastIndex]
-		it.value = node.values[lastIndex]
+		it.key = node.Keys[lastIndex]
+		it.value = node.Values[lastIndex]
 		it.valid = true
 	} else {
 		it.valid = false

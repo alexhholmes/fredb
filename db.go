@@ -11,22 +11,22 @@ import (
 
 var (
 	ErrKeyNotFound        = errors.New("key not found")
+	ErrDatabaseClosed     = errors.New("database is closed")
+	ErrCorruption         = errors.New("data corruption detected")
+	ErrKeyTooLarge        = errors.New("key too large")
+	ErrValueTooLarge      = errors.New("value too large")
 	ErrPageOverflow       = internal.ErrPageOverflow
 	ErrInvalidOffset      = internal.ErrInvalidOffset
 	ErrInvalidMagicNumber = internal.ErrInvalidMagicNumber
 	ErrInvalidVersion     = internal.ErrInvalidVersion
 	ErrInvalidPageSize    = internal.ErrInvalidPageSize
 	ErrInvalidChecksum    = internal.ErrInvalidChecksum
-	ErrDatabaseClosed     = errors.New("database is closed")
-	ErrCorruption         = errors.New("data corruption detected")
-	ErrKeyTooLarge        = errors.New("key too large")
-	ErrValueTooLarge      = errors.New("value too large")
 )
 
 const (
 	// MaxKeySize is the maximum length of a key, in bytes.
-	// Set conservatively to ensure branch nodes can hold multiple keys.
-	// With 4KB pages, limiting keys to 1KB allows ~3 keys per branch Node.
+	// Set conservatively to ensure branch nodes can hold multiple Keys.
+	// With 4KB pages, limiting Keys to 1KB allows ~3 Keys per branch Node.
 	MaxKeySize = 1024
 
 	// MaxValueSize is the maximum length of a value, in bytes.
@@ -113,9 +113,9 @@ func (d *DB) recoverFromWAL(cache *PageCache) error {
 	checkpointTxn := meta.CheckpointTxnID
 
 	return d.wal.Replay(checkpointTxn, func(pageID internal.PageID, page *internal.Page) error {
-		// Create empty node and deserialize page data into it
-		node := &Node{}
-		if err := node.deserialize(page); err != nil {
+		// Create empty node and Deserialize page data into it
+		node := &internal.Node{}
+		if err := node.Deserialize(page); err != nil {
 			return err
 		}
 
@@ -188,7 +188,7 @@ func (d *DB) Begin(writable bool) (*Tx, error) {
 
 	// Initialize TX-local cache for write transactions
 	if writable {
-		tx.pages = make(map[internal.PageID]*Node)
+		tx.pages = make(map[internal.PageID]*internal.Node)
 	}
 
 	// Track active transaction

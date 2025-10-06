@@ -22,14 +22,14 @@ var (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	txnID    uint64                    // Unique transaction ID
-	writable bool                      // Is this a read-write transaction?
-	db       *DB                       // Database this transaction belongs to (concrete type for internal access)
-	root     *Node                     // Root Node at transaction start
-	pages    map[internal.PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  []internal.PageID         // Pages allocated in this transaction (for COW)
-	freed    []internal.PageID         // Pages freed in this transaction (for freelist)
-	done     bool                      // Has Commit() or Rollback() been called?
+	txnID    uint64                             // Unique transaction ID
+	writable bool                               // Is this a read-write transaction?
+	db       *DB                                // Database this transaction belongs to (concrete type for internal access)
+	root     *internal.Node                     // Root Node at transaction start
+	pages    map[internal.PageID]*internal.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending  []internal.PageID                  // Pages allocated in this transaction (for COW)
+	freed    []internal.PageID                  // Pages freed in this transaction (for freelist)
+	done     bool                               // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key.
@@ -84,7 +84,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	}
 
 	// Handle root split with COW
-	if root.isFull() {
+	if root.IsFull() {
 		// Split root using COW
 		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, root)
 		if err != nil {
@@ -97,18 +97,18 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot := &Node{
-			pageID:   newRootID,
-			dirty:    true,
-			isLeaf:   false,
-			numKeys:  1,
-			keys:     [][]byte{midKey},
-			values:   [][]byte{midVal},
-			children: []internal.PageID{leftChild.pageID, rightChild.pageID},
+		newRoot := &internal.Node{
+			PageID:   newRootID,
+			Dirty:    true,
+			IsLeaf:   false,
+			NumKeys:  1,
+			Keys:     [][]byte{midKey},
+			Values:   [][]byte{midVal},
+			Children: []internal.PageID{leftChild.PageID, rightChild.PageID},
 		}
 
 		// Store the new root in TX-local cache
-		// The split children were already stored in splitChild()
+		// The split Children were already stored in splitChild()
 		tx.pages[newRootID] = newRoot
 
 		root = newRoot
@@ -117,7 +117,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Insert with recursive COW - retry until success or non-overflow error
 	// This handles cascading splits when parent nodes also overflow
 	maxRetries := 20 // Prevent infinite loops
-	var newRoot *Node
+	var newRoot *internal.Node
 	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -138,14 +138,14 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot = &Node{
-			pageID:   newRootID,
-			dirty:    true,
-			isLeaf:   false,
-			numKeys:  1,
-			keys:     [][]byte{midKey},
-			values:   [][]byte{midVal},
-			children: []internal.PageID{leftChild.pageID, rightChild.pageID},
+		newRoot = &internal.Node{
+			PageID:   newRootID,
+			Dirty:    true,
+			IsLeaf:   false,
+			NumKeys:  1,
+			Keys:     [][]byte{midKey},
+			Values:   [][]byte{midVal},
+			Children: []internal.PageID{leftChild.PageID, rightChild.PageID},
 		}
 
 		tx.pages[newRootID] = newRoot
@@ -182,7 +182,7 @@ func (tx *Tx) Delete(key []byte) error {
 		root = tx.db.store.root
 	}
 
-	if root == nil || root.numKeys == 0 {
+	if root == nil || root.NumKeys == 0 {
 		return ErrKeyNotFound
 	}
 
@@ -192,14 +192,14 @@ func (tx *Tx) Delete(key []byte) error {
 		return err
 	}
 
-	// Handle root collapse: if root is non-leaf and has no keys, promote its only child
-	if !newRoot.isLeaf && newRoot.numKeys == 0 {
-		if len(newRoot.children) > 0 {
+	// Handle root collapse: if root is non-leaf and has no Keys, promote its only child
+	if !newRoot.IsLeaf && newRoot.NumKeys == 0 {
+		if len(newRoot.Children) > 0 {
 			// Track old root as freed
-			tx.addFreed(newRoot.pageID)
+			tx.addFreed(newRoot.PageID)
 
 			// Load the only child as new root
-			newRoot, err = tx.db.store.loadNode(tx, newRoot.children[0])
+			newRoot, err = tx.db.store.loadNode(tx, newRoot.Children[0])
 			if err != nil {
 				return err
 			}
@@ -213,7 +213,7 @@ func (tx *Tx) Delete(key []byte) error {
 	return nil
 }
 
-// Cursor creates a new cursor for iterating over keys.
+// Cursor creates a new cursor for iterating over Keys.
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
 	// Pass transaction to cursor for snapshot isolation
@@ -246,8 +246,8 @@ func (tx *Tx) Commit() error {
 
 	// Write all TX-local pages to WAL (not disk!)
 	for pageID, node := range tx.pages {
-		// serialize Node to a Page with this transaction's ID
-		page, err := node.serialize(tx.txnID)
+		// Serialize Node to a Page with this transaction's ID
+		page, err := node.Serialize(tx.txnID)
 		if err != nil {
 			// Restore old root on failure
 			tx.db.store.root = oldRoot
@@ -261,8 +261,8 @@ func (tx *Tx) Commit() error {
 			return err
 		}
 
-		// Clear dirty flag after successful write
-		node.dirty = false
+		// Clear Dirty flag after successful write
+		node.Dirty = false
 
 		// Flush to global versioned cache with this transaction's ID
 		// This makes the new version visible to future transactions
@@ -297,7 +297,7 @@ func (tx *Tx) Commit() error {
 
 	// Build new meta Page with updated root and incremented TxnID
 	if tx.root != nil {
-		meta.RootPageID = tx.root.pageID
+		meta.RootPageID = tx.root.PageID
 	}
 	meta.TxnID = tx.txnID
 	meta.Checksum = meta.CalculateChecksum()
@@ -380,7 +380,7 @@ func (tx *Tx) check() error {
 }
 
 // Loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(id internal.PageID) (*Node, error) {
+func (tx *Tx) loadNode(id internal.PageID) (*internal.Node, error) {
 	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
 		if node, exists := tx.pages[id]; exists {
@@ -389,38 +389,38 @@ func (tx *Tx) loadNode(id internal.PageID) (*Node, error) {
 	}
 
 	// 2. getOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.store.cache.getOrLoad(id, tx.txnID, func() (*Node, uint64, error) {
+	node, found := tx.db.store.cache.getOrLoad(id, tx.txnID, func() (*internal.Node, uint64, error) {
 		// Load from disk (called by at most one thread per id)
 		page, err := tx.db.store.pager.ReadPage(id)
 		if err != nil {
 			return nil, 0, err
 		}
 
-		// Create Node and deserialize
-		node := &Node{
-			pageID: id,
-			dirty:  false,
+		// Create Node and Deserialize
+		node := &internal.Node{
+			PageID: id,
+			Dirty:  false,
 		}
 
-		// Try to deserialize - if Page is empty (new Page), header.NumKeys will be 0
+		// Try to Deserialize - if Page is empty (new Page), header.NumKeys will be 0
 		header := page.Header()
 		if header.NumKeys > 0 {
-			if err := node.deserialize(page); err != nil {
+			if err := node.Deserialize(page); err != nil {
 				return nil, 0, err
 			}
 		} else {
 			// New/empty Page - initialize as empty leaf
-			node.pageID = id
-			node.isLeaf = true
-			node.numKeys = 0
-			node.keys = make([][]byte, 0)
-			node.values = make([][]byte, 0)
-			node.children = make([]internal.PageID, 0)
+			node.PageID = id
+			node.IsLeaf = true
+			node.NumKeys = 0
+			node.Keys = make([][]byte, 0)
+			node.Values = make([][]byte, 0)
+			node.Children = make([]internal.PageID, 0)
 		}
 
 		// Cycle detection: check if deserialized Node references itself
-		if !node.isLeaf {
-			for _, childID := range node.children {
+		if !node.IsLeaf {
+			for _, childID := range node.Children {
 				if childID == id {
 					return nil, 0, ErrCorruption // Self-reference detected
 				}
@@ -437,8 +437,8 @@ func (tx *Tx) loadNode(id internal.PageID) (*Node, error) {
 	}
 
 	// Cycle detection on cached Node (fast path)
-	if !node.isLeaf {
-		for _, childID := range node.children {
+	if !node.IsLeaf {
+		for _, childID := range node.Children {
 			if childID == id {
 				return nil, ErrCorruption // Self-reference detected
 			}
@@ -450,24 +450,24 @@ func (tx *Tx) loadNode(id internal.PageID) (*Node, error) {
 
 // EnsureWritable ensures a Node is safe to modify in this transaction.
 // Performs COW only if the Node doesn't already belong to this transaction.
-// Returns a writable Node (either the original if already owned, or a clone).
-func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
+// Returns a writable Node (either the original if already owned, or a Clone).
+func (tx *Tx) ensureWritable(node *internal.Node) (*internal.Node, error) {
 	// 1. Check TX-local cache first - if already COW'd in this transaction
-	if cloned, exists := tx.pages[node.pageID]; exists {
+	if cloned, exists := tx.pages[node.PageID]; exists {
 		return cloned, nil
 	}
 
 	// 2. Check if this Node already belongs to this transaction (pending allocations)
 	// If its PageID is in tx.pending, it was allocated in this transaction
 	for _, pid := range tx.pending {
-		if pid == node.pageID {
+		if pid == node.PageID {
 			// Node already owned by this transaction, no COW needed
 			return node, nil
 		}
 	}
 
 	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
-	cloned := node.clone()
+	cloned := node.Clone()
 
 	// Allocate new Page for cloned Node
 	pageID, _, err := tx.allocatePage()
@@ -476,16 +476,16 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	}
 
 	// Set up cloned Node with new Page
-	cloned.pageID = pageID
-	cloned.dirty = true
+	cloned.PageID = pageID
+	cloned.Dirty = true
 
-	// Don't serialize here - let the caller modify the Node first
-	// The caller will serialize after modifications
+	// Don't Serialize here - let the caller modify the Node first
+	// The caller will Serialize after modifications
 
 	// Track old Page as freed
 	// These pages will be added to freelist's pending list on commit
 	// and reclaimed when all readers that might reference them have finished
-	tx.addFreed(node.pageID)
+	tx.addFreed(node.PageID)
 
 	// Store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
