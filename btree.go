@@ -18,18 +18,18 @@ type BTree struct {
 }
 
 // NewBTree creates a new BTree with the given PageManager
-func NewBTree(pagemanager *storage.PageManager) (*BTree, error) {
-	meta := pagemanager.GetMeta()
+func NewBTree(pager *storage.PageManager) (*BTree, error) {
+	meta := pager.GetMeta()
 
 	bt := &BTree{
-		Pager: pagemanager,
-		cache: cache.NewPageCache(cache.DefaultCacheSize, pagemanager),
+		Pager: pager,
+		cache: cache.NewPageCache(cache.DefaultCacheSize, pager),
 	}
 
 	// Check if existing root exists
 	if meta.RootPageID != 0 {
 		// Load existing root directly (no transaction during initialization)
-		rootPage, err := pagemanager.ReadPage(meta.RootPageID)
+		rootPage, err := pager.ReadPage(meta.RootPageID)
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +50,7 @@ func NewBTree(pagemanager *storage.PageManager) (*BTree, error) {
 	}
 
 	// No existing root - allocate new one
-	rootPageID, err := pagemanager.AllocatePage()
+	rootPageID, err := pager.AllocatePage()
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func NewBTree(pagemanager *storage.PageManager) (*BTree, error) {
 
 	// Update meta with root Page ID
 	meta.RootPageID = rootPageID
-	if err := pagemanager.PutMeta(meta); err != nil {
+	if err := pager.PutMeta(meta); err != nil {
 		return nil, err
 	}
 
