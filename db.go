@@ -9,7 +9,7 @@ import (
 
 var (
 	ErrKeyNotFound        = errors.New("key not found")
-	ErrPageOverflow       = errors.New("Page overflow: serialized data exceeds Page size")
+	ErrPageOverflow       = errors.New("page overflow: serialized data exceeds page size")
 	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
 	ErrInvalidMagicNumber = errors.New("invalid magic number")
 	ErrInvalidVersion     = errors.New("invalid format version")
@@ -90,6 +90,19 @@ func Open(path string, options ...DBOption) (*db, error) {
 	go d.backgroundCheckpointer()
 
 	return d, nil
+}
+
+func (d *db) Get(key []byte) ([]byte, error) {
+	var result []byte
+	err := d.View(func(tx *Tx) error {
+		val, err := tx.Get(key)
+		if err != nil {
+			return err
+		}
+		result = val
+		return nil
+	})
+	return result, err
 }
 
 func (d *db) Set(key, value []byte) error {
@@ -463,17 +476,4 @@ func (d *db) releasePages(minTxn uint64) {
 
 	// Cleanup relocated Page versions that are no longer needed
 	d.store.cache.cleanupRelocatedVersions(minTxn)
-}
-
-func (d *db) Get(key []byte) ([]byte, error) {
-	var result []byte
-	err := d.View(func(tx *Tx) error {
-		val, err := tx.Get(key)
-		if err != nil {
-			return err
-		}
-		result = val
-		return nil
-	})
-	return result, err
 }
