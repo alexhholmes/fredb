@@ -1,4 +1,4 @@
-package internal
+package storage
 
 import (
 	"errors"
@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	ErrPageOverflow       = errors.New("page overflow: serialized data exceeds page size")
+	ErrPageOverflow       = errors.New("pages overflow: serialized data exceeds pages size")
 	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
 	ErrInvalidMagicNumber = errors.New("invalid magic number")
 	ErrInvalidVersion     = errors.New("invalid format version")

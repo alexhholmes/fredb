@@ -1,19 +1,19 @@
-package fredb
+package cache
 
 import (
 	"testing"
 
-	"fredb/internal"
+	"fredb/internal/storage"
 )
 
 // Helper to create a test Node
-func makeTestNode(pageID internal.PageID) *internal.Node {
-	return &internal.Node{
+func makeTestNode(pageID storage.PageID) *storage.Node {
+	return &storage.Node{
 		PageID:   pageID,
 		IsLeaf:   true,
 		Keys:     make([][]byte, 0),
 		Values:   make([][]byte, 0),
-		Children: make([]internal.PageID, 0),
+		Children: make([]storage.PageID, 0),
 	}
 }
 
@@ -23,17 +23,17 @@ func TestPageCacheBasics(t *testing.T) {
 	cache := NewPageCache(10, nil)
 
 	// Test cache miss
-	_, hit := cache.get(internal.PageID(1), 0)
+	_, hit := cache.get(storage.PageID(1), 0)
 	if hit {
 		t.Error("Expected cache miss for Page 1")
 	}
 
 	// Add Node to cache with txnID=1
-	node1 := makeTestNode(internal.PageID(1))
-	cache.Put(internal.PageID(1), 1, node1)
+	node1 := makeTestNode(storage.PageID(1))
+	cache.Put(storage.PageID(1), 1, node1)
 
 	// Should now hit (for txnID >= 1)
-	retrieved, hit := cache.get(internal.PageID(1), 1)
+	retrieved, hit := cache.get(storage.PageID(1), 1)
 	if !hit {
 		t.Error("Expected cache hit for Page 1")
 	}
@@ -62,16 +62,16 @@ func TestPageCacheMVCC(t *testing.T) {
 	cache := NewPageCache(10, nil)
 
 	// Add version 1 of Page 1
-	node1 := makeTestNode(internal.PageID(1))
-	cache.Put(internal.PageID(1), 1, node1)
+	node1 := makeTestNode(storage.PageID(1))
+	cache.Put(storage.PageID(1), 1, node1)
 
 	// Add version 2 of Page 1
-	node2 := makeTestNode(internal.PageID(1))
+	node2 := makeTestNode(storage.PageID(1))
 	node2.NumKeys = 5 // Different data
-	cache.Put(internal.PageID(1), 2, node2)
+	cache.Put(storage.PageID(1), 2, node2)
 
 	// Reader at txnID=1 should see version 1
-	retrieved, hit := cache.get(internal.PageID(1), 1)
+	retrieved, hit := cache.get(storage.PageID(1), 1)
 	if !hit {
 		t.Error("Expected cache hit for txnID=1")
 	}
@@ -80,7 +80,7 @@ func TestPageCacheMVCC(t *testing.T) {
 	}
 
 	// Reader at txnID=2 should see version 2
-	retrieved, hit = cache.get(internal.PageID(1), 2)
+	retrieved, hit = cache.get(storage.PageID(1), 2)
 	if !hit {
 		t.Error("Expected cache hit for txnID=2")
 	}
@@ -89,7 +89,7 @@ func TestPageCacheMVCC(t *testing.T) {
 	}
 
 	// Reader at txnID=3 should see version 2 (latest committed)
-	retrieved, hit = cache.get(internal.PageID(1), 3)
+	retrieved, hit = cache.get(storage.PageID(1), 3)
 	if !hit {
 		t.Error("Expected cache hit for txnID=3")
 	}
@@ -130,7 +130,7 @@ func TestPageCacheEviction(t *testing.T) {
 
 	// Add 19 pages
 	for i := 1; i <= 19; i++ {
-		cache.Put(internal.PageID(i), uint64(i), makeTestNode(internal.PageID(i)))
+		cache.Put(storage.PageID(i), uint64(i), makeTestNode(storage.PageID(i)))
 	}
 
 	if cache.size() != 19 {
@@ -138,7 +138,7 @@ func TestPageCacheEviction(t *testing.T) {
 	}
 
 	// Add 20th Page - triggers eviction
-	cache.Put(internal.PageID(20), 20, makeTestNode(internal.PageID(20)))
+	cache.Put(storage.PageID(20), 20, makeTestNode(storage.PageID(20)))
 
 	// Should be at 16 now
 	size := cache.size()
@@ -154,13 +154,13 @@ func TestPageCacheEviction(t *testing.T) {
 
 	// Pages 1-4 (LRU) should be evicted
 	for i := 1; i <= 4; i++ {
-		if _, hit := cache.get(internal.PageID(i), uint64(i)); hit {
+		if _, hit := cache.get(storage.PageID(i), uint64(i)); hit {
 			t.Errorf("Page %d should have been evicted", i)
 		}
 	}
 
 	// Page 20 (newest) should still be there
-	if _, hit := cache.get(internal.PageID(20), 20); !hit {
+	if _, hit := cache.get(storage.PageID(20), 20); !hit {
 		t.Error("Page 20 should still be in cache")
 	}
 }

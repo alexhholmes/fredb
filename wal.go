@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"fredb/internal"
+	"fredb/internal/storage"
 )
 
 // WAL implements Write-Ahead Logging for crash recovery and batched commits
@@ -64,7 +64,7 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 // KNOWN LIMITATION: Uses two separate write() calls (header + data).
 // If crash occurs between writes, WAL will have partial record, causing
 // recovery to fail. Future fix: buffer entire record for atomic write or add checksums.
-func (w *WAL) AppendPage(txnID uint64, pageID internal.PageID, page *internal.Page) error {
+func (w *WAL) AppendPage(txnID uint64, pageID storage.PageID, page *storage.Page) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -73,7 +73,7 @@ func (w *WAL) AppendPage(txnID uint64, pageID internal.PageID, page *internal.Pa
 	header[0] = WALRecordPage
 	binary.LittleEndian.PutUint64(header[1:9], txnID)
 	binary.LittleEndian.PutUint64(header[9:17], uint64(pageID))
-	binary.LittleEndian.PutUint32(header[17:21], internal.PageSize)
+	binary.LittleEndian.PutUint32(header[17:21], storage.PageSize)
 
 	// Write header
 	if _, err := w.file.Write(header); err != nil {
@@ -86,7 +86,7 @@ func (w *WAL) AppendPage(txnID uint64, pageID internal.PageID, page *internal.Pa
 	}
 
 	// Update offset and track bytes since sync
-	bytesWritten := int64(WALRecordHeaderSize + internal.PageSize)
+	bytesWritten := int64(WALRecordHeaderSize + storage.PageSize)
 	w.offset += bytesWritten
 	w.bytesSinceSync += bytesWritten
 
@@ -171,12 +171,12 @@ func (w *WAL) syncUnsafe() error {
 type WALRecord struct {
 	Type   uint8
 	TxnID  uint64
-	PageID internal.PageID
-	Page   *internal.Page
+	PageID storage.PageID
+	Page   *storage.Page
 }
 
 // Replay reads the WAL and applies all committed transactions after fromTxnID
-func (w *WAL) Replay(fromTxnID uint64, applyFn func(internal.PageID, *internal.Page) error) error {
+func (w *WAL) Replay(fromTxnID uint64, applyFn func(storage.PageID, *storage.Page) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -207,17 +207,17 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(internal.PageID, *internal.P
 		// Parse header
 		recordType := header[0]
 		txnID := binary.LittleEndian.Uint64(header[1:9])
-		pageID := internal.PageID(binary.LittleEndian.Uint64(header[9:17]))
+		pageID := storage.PageID(binary.LittleEndian.Uint64(header[9:17]))
 		dataLen := binary.LittleEndian.Uint32(header[17:21])
 
 		switch recordType {
 		case WALRecordPage:
 			// Read Page data
-			if dataLen != internal.PageSize {
+			if dataLen != storage.PageSize {
 				return fmt.Errorf("WAL replay: invalid Page size: %d", dataLen)
 			}
 
-			page := &internal.Page{}
+			page := &storage.Page{}
 			if _, err := w.file.Read(page.Data[:]); err != nil {
 				return fmt.Errorf("WAL replay: failed to read Page data: %w", err)
 			}
@@ -326,11 +326,11 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 	return nil
 }
 
-// CleanupLatch removes WAL page latches for pages that have been checkpointed
+// CleanupLatch removes WAL pages latches for pages that have been checkpointed
 // AND are visible to all active readers (txnID < minReaderTxn).
 func (w *WAL) CleanupLatch(checkpointTxn, minReaderTxn uint64) {
 	w.pages.Range(func(key, value interface{}) bool {
-		pageID := key.(internal.PageID)
+		pageID := key.(storage.PageID)
 		txnID := value.(uint64)
 
 		// Only remove latch if BOTH conditions true:

@@ -7,12 +7,12 @@ import (
 )
 
 func BenchmarkDBGet(b *testing.B) {
-	tmpfile := "/tmp/bench_db_get.DB"
+	tmpfile := "/tmp/bench_db_get.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
-		b.Fatalf("Failed to create DB: %v", err)
+		b.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -23,7 +23,7 @@ func BenchmarkDBGet(b *testing.B) {
 		value := fmt.Sprintf("value%08d", i)
 		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
-			b.Fatalf("Failed to populate DB: %v", err)
+			b.Fatalf("Failed to populate db: %v", err)
 		}
 	}
 
@@ -40,12 +40,12 @@ func BenchmarkDBGet(b *testing.B) {
 }
 
 func BenchmarkDBSet(b *testing.B) {
-	tmpfile := "/tmp/bench_db_set.DB"
+	tmpfile := "/tmp/bench_db_set.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
-		b.Fatalf("Failed to create DB: %v", err)
+		b.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -62,13 +62,13 @@ func BenchmarkDBSet(b *testing.B) {
 }
 
 func BenchmarkDBMixed(b *testing.B) {
-	tmpfile := "/tmp/bench_db_mixed.DB"
+	tmpfile := "/tmp/bench_db_mixed.db"
 	defer os.Remove(tmpfile)
 
 	// Use WALSyncBytes mode for better throughput during pre-population
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
-		b.Fatalf("Failed to create DB: %v", err)
+		b.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -87,7 +87,7 @@ func BenchmarkDBMixed(b *testing.B) {
 			value := fmt.Sprintf("value%08d", idx)
 			if err := tx.Set([]byte(key), []byte(value)); err != nil {
 				tx.Rollback()
-				b.Fatalf("Failed to populate DB: %v", err)
+				b.Fatalf("Failed to populate db: %v", err)
 			}
 		}
 
@@ -132,12 +132,12 @@ func BenchmarkDBMixed(b *testing.B) {
 }
 
 func BenchmarkDBConcurrentReads(b *testing.B) {
-	tmpfile := "/tmp/bench_db_concurrent_reads.DB"
+	tmpfile := "/tmp/bench_db_concurrent_reads.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
-		b.Fatalf("Failed to create DB: %v", err)
+		b.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -148,7 +148,7 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 		value := fmt.Sprintf("value%08d", i)
 		err := db.Set([]byte(key), []byte(value))
 		if err != nil {
-			b.Fatalf("Failed to populate DB: %v", err)
+			b.Fatalf("Failed to populate db: %v", err)
 		}
 	}
 
@@ -186,12 +186,12 @@ func BenchmarkBTreeMixed(b *testing.B) {
 	// Benchmark mixed workload (80% reads, 20% writes)
 	// - Pre-populate tree
 	// - Run mixed operations
-	tmpfile := "/tmp/bench_mixed.DB"
+	tmpfile := "/tmp/bench_mixed.db"
 	_ = os.Remove(tmpfile)
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
-		b.Fatalf("Failed to create DB: %v", err)
+		b.Fatalf("Failed to create db: %v", err)
 	}
 	defer func() {
 		_ = db.Close()

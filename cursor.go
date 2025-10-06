@@ -3,7 +3,7 @@ package fredb
 import (
 	"bytes"
 
-	"fredb/internal"
+	"fredb/internal/storage"
 )
 
 // Special marker Values for Seek operations
@@ -30,7 +30,7 @@ func init() {
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
 type pathElem struct {
-	node       *internal.Node
+	node       *storage.Node
 	childIndex int
 }
 
@@ -73,7 +73,7 @@ func (it *Cursor) Seek(key []byte) error {
 
 	// get root from transaction for snapshot isolation
 	// Use tx.root if set (modified in this tx), otherwise use btree.root
-	var node *internal.Node
+	var node *storage.Node
 	if it.tx != nil && it.tx.root != nil {
 		node = it.tx.root
 	} else {

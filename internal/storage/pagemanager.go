@@ -1,19 +1,17 @@
-package fredb
+package storage
 
 import (
 	"fmt"
 	"os"
 	"sync"
 	"unsafe"
-
-	"fredb/internal"
 )
 
 // PageManager implements PageManager with disk-based storage
 type PageManager struct {
 	mu         sync.Mutex // Protects meta and freelist access
 	file       *os.File
-	meta       internal.MetaPage
+	meta       MetaPage
 	freelist   *FreeList
 	versionMap *VersionMap // Version relocation tracking for old versions needed by long-running readers
 }
@@ -57,12 +55,12 @@ func NewPageManager(path string) (*PageManager, error) {
 }
 
 // ReadPage reads a Page from disk
-func (dm *PageManager) ReadPage(id internal.PageID) (*internal.Page, error) {
+func (dm *PageManager) ReadPage(id PageID) (*Page, error) {
 	return dm.readPageAt(id)
 }
 
 // AllocatePage allocates a new Page (from freelist or grows file)
-func (dm *PageManager) AllocatePage() (internal.PageID, error) {
+func (dm *PageManager) AllocatePage() (PageID, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -73,11 +71,11 @@ func (dm *PageManager) AllocatePage() (internal.PageID, error) {
 	}
 
 	// Grow file
-	id = internal.PageID(dm.meta.NumPages)
+	id = PageID(dm.meta.NumPages)
 	dm.meta.NumPages++
 
 	// Initialize empty Page
-	emptyPage := &internal.Page{}
+	emptyPage := &Page{}
 	if err := dm.writePageAtUnsafe(id, emptyPage); err != nil {
 		return 0, err
 	}
@@ -86,7 +84,7 @@ func (dm *PageManager) AllocatePage() (internal.PageID, error) {
 }
 
 // FreePage adds a Page to the freelist
-func (dm *PageManager) FreePage(id internal.PageID) error {
+func (dm *PageManager) FreePage(id PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -95,7 +93,7 @@ func (dm *PageManager) FreePage(id internal.PageID) error {
 }
 
 // FreePending adds pages to the pending freelist at the given transaction ID
-func (dm *PageManager) FreePending(txnID uint64, pageIDs []internal.PageID) error {
+func (dm *PageManager) FreePending(txnID uint64, pageIDs []PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -104,7 +102,7 @@ func (dm *PageManager) FreePending(txnID uint64, pageIDs []internal.PageID) erro
 }
 
 // GetMeta returns the current metadata
-func (dm *PageManager) GetMeta() internal.MetaPage {
+func (dm *PageManager) GetMeta() MetaPage {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	return dm.meta
@@ -112,7 +110,7 @@ func (dm *PageManager) GetMeta() internal.MetaPage {
 
 // PutMeta updates the metadata and persists it to disk
 // Writes to the inactive meta Page and fsyncs for durability
-func (dm *PageManager) PutMeta(meta internal.MetaPage) error {
+func (dm *PageManager) PutMeta(meta MetaPage) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -121,9 +119,9 @@ func (dm *PageManager) PutMeta(meta internal.MetaPage) error {
 
 	// Write to inactive meta Page (alternates based on TxnID)
 	// TxnID % 2 determines which Page: 0 or 1
-	metaPage := &internal.Page{}
+	metaPage := &Page{}
 	metaPage.WriteMeta(&meta)
-	metaPageID := internal.PageID(meta.TxnID % 2)
+	metaPageID := PageID(meta.TxnID % 2)
 
 	// Write meta Page to disk (unsafe - already holding lock)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
@@ -147,9 +145,9 @@ func (dm *PageManager) Close() error {
 	if uint64(pagesNeeded) > dm.meta.FreelistPages {
 		// Mark old freelist pages as pending (not immediately reusable)
 		// Using current TxnID ensures they're only released after this close() completes
-		oldPages := make([]internal.PageID, dm.meta.FreelistPages)
+		oldPages := make([]PageID, dm.meta.FreelistPages)
 		for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-			oldPages[i] = internal.PageID(dm.meta.FreelistID) + internal.PageID(i)
+			oldPages[i] = PageID(dm.meta.FreelistID) + PageID(i)
 		}
 		dm.freelist.FreePending(dm.meta.TxnID, oldPages)
 
@@ -157,20 +155,20 @@ func (dm *PageManager) Close() error {
 		pagesNeeded = dm.freelist.PagesNeeded()
 
 		// Move freelist to new pages at end of file
-		dm.meta.FreelistID = internal.PageID(dm.meta.NumPages)
+		dm.meta.FreelistID = PageID(dm.meta.NumPages)
 		dm.meta.FreelistPages = uint64(pagesNeeded)
 		dm.meta.NumPages += uint64(pagesNeeded)
 	}
 
 	// Write freelist
-	freelistPages := make([]*internal.Page, pagesNeeded)
+	freelistPages := make([]*Page, pagesNeeded)
 	for i := 0; i < pagesNeeded; i++ {
-		freelistPages[i] = &internal.Page{}
+		freelistPages[i] = &Page{}
 	}
 	dm.freelist.Serialize(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := dm.writePageAtUnsafe(internal.PageID(dm.meta.FreelistID)+internal.PageID(i), freelistPages[i]); err != nil {
+		if err := dm.writePageAtUnsafe(PageID(dm.meta.FreelistID)+PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
@@ -180,9 +178,9 @@ func (dm *PageManager) Close() error {
 	dm.meta.Checksum = dm.meta.CalculateChecksum()
 
 	// Write meta to alternating Page
-	metaPage := &internal.Page{}
+	metaPage := &Page{}
 	metaPage.WriteMeta(&dm.meta)
-	metaPageID := internal.PageID(dm.meta.TxnID % 2)
+	metaPageID := PageID(dm.meta.TxnID % 2)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
@@ -193,10 +191,10 @@ func (dm *PageManager) Close() error {
 // initializeNewDB creates a new database with dual meta pages and empty freelist
 func (dm *PageManager) initializeNewDB() error {
 	// Initialize meta Page
-	dm.meta = internal.MetaPage{
-		Magic:           internal.MagicNumber,
-		Version:         internal.FormatVersion,
-		PageSize:        internal.PageSize,
+	dm.meta = MetaPage{
+		Magic:           MagicNumber,
+		Version:         FormatVersion,
+		PageSize:        PageSize,
 		RootPageID:      0, // Will be set by BTree
 		FreelistID:      2, // Page 2
 		FreelistPages:   1, // One freelist Page
@@ -207,7 +205,7 @@ func (dm *PageManager) initializeNewDB() error {
 	dm.meta.Checksum = dm.meta.CalculateChecksum()
 
 	// Write meta to both pages 0 and 1
-	metaPage := &internal.Page{}
+	metaPage := &Page{}
 	metaPage.WriteMeta(&dm.meta)
 
 	if err := dm.WritePage(0, metaPage); err != nil {
@@ -218,7 +216,7 @@ func (dm *PageManager) initializeNewDB() error {
 	}
 
 	// Write empty freelist to Page 2
-	freelistPages := []*internal.Page{&internal.Page{}}
+	freelistPages := []*Page{&Page{}}
 	dm.freelist.Serialize(freelistPages)
 	if err := dm.WritePage(2, freelistPages[0]); err != nil {
 		return err
@@ -267,9 +265,9 @@ func (dm *PageManager) loadExistingDB() error {
 	}
 
 	// Load freelist
-	freelistPages := make([]*internal.Page, dm.meta.FreelistPages)
+	freelistPages := make([]*Page, dm.meta.FreelistPages)
 	for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-		page, err := dm.readPageAt(dm.meta.FreelistID + internal.PageID(i))
+		page, err := dm.readPageAt(dm.meta.FreelistID + PageID(i))
 		if err != nil {
 			return err
 		}
@@ -286,31 +284,31 @@ func (dm *PageManager) loadExistingDB() error {
 
 // readPageAt reads a Page from a specific offset
 // Note: Caller should check db.wal.pages before calling this to avoid reading stale data
-func (dm *PageManager) readPageAt(id internal.PageID) (*internal.Page, error) {
-	return dm.readPageAtUnsafe(id)
+func (dm *PageManager) readPageAt(id PageID) (*Page, error) {
+	return dm.ReadPageAtUnsafe(id)
 }
 
-// readPageAtUnsafe reads a Page from disk without WAL latch check
+// ReadPageAtUnsafe reads a Page from disk without WAL latch check
 // Used during checkpoint to read old disk versions before overwriting
-func (dm *PageManager) readPageAtUnsafe(id internal.PageID) (*internal.Page, error) {
+func (dm *PageManager) ReadPageAtUnsafe(id PageID) (*Page, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
-	offset := int64(id) * internal.PageSize
-	page := &internal.Page{}
-	n, err := dm.file.ReadAt(page.Data[:], offset)
+	offset := int64(id) * PageSize
+	page1 := &Page{}
+	n, err := dm.file.ReadAt(page1.Data[:], offset)
 	if err != nil {
 		return nil, err
 	}
-	if n != internal.PageSize {
-		return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, internal.PageSize)
+	if n != PageSize {
+		return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, PageSize)
 	}
 
-	return page, nil
+	return page1, nil
 }
 
 // WritePage writes a Page to a specific offset (with locking)
-func (dm *PageManager) WritePage(id internal.PageID, page *internal.Page) error {
+func (dm *PageManager) WritePage(id PageID, page *Page) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -318,14 +316,14 @@ func (dm *PageManager) WritePage(id internal.PageID, page *internal.Page) error 
 }
 
 // writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)
-func (dm *PageManager) writePageAtUnsafe(id internal.PageID, page *internal.Page) error {
-	offset := int64(id) * internal.PageSize
-	n, err := dm.file.WriteAt(page.Data[:], offset)
+func (dm *PageManager) writePageAtUnsafe(id PageID, page1 *Page) error {
+	offset := int64(id) * PageSize
+	n, err := dm.file.WriteAt(page1.Data[:], offset)
 	if err != nil {
 		return err
 	}
-	if n != internal.PageSize {
-		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, internal.PageSize)
+	if n != PageSize {
+		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, PageSize)
 	}
 
 	return nil
@@ -333,26 +331,26 @@ func (dm *PageManager) writePageAtUnsafe(id internal.PageID, page *internal.Page
 
 const (
 	// PendingMarker indicates transition from free IDs to pending entries
-	PendingMarker = internal.PageID(0xFFFFFFFFFFFFFFFF)
+	PendingMarker = PageID(0xFFFFFFFFFFFFFFFF)
 )
 
 // FreeList tracks free pages for reuse
 type FreeList struct {
-	ids              []internal.PageID            // sorted array of free Page IDs
-	pending          map[uint64][]internal.PageID // txnID -> pages freed at that transaction
-	preventUpToTxnID uint64                       // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
+	ids              []PageID            // sorted array of free Page IDs
+	pending          map[uint64][]PageID // txnID -> pages freed at that transaction
+	preventUpToTxnID uint64              // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 }
 
 // NewFreeList creates an empty freelist
 func NewFreeList() *FreeList {
 	return &FreeList{
-		ids:     make([]internal.PageID, 0),
-		pending: make(map[uint64][]internal.PageID),
+		ids:     make([]PageID, 0),
+		pending: make(map[uint64][]PageID),
 	}
 }
 
 // Allocate returns a free Page ID, or 0 if none available
-func (f *FreeList) Allocate() internal.PageID {
+func (f *FreeList) Allocate() PageID {
 	if len(f.ids) == 0 {
 		// No free pages available
 		// If prevention is active and there are pending pages that could be released,
@@ -407,7 +405,7 @@ func (f *FreeList) Allocate() internal.PageID {
 }
 
 // Free adds a Page ID to the free list
-func (f *FreeList) Free(id internal.PageID) {
+func (f *FreeList) Free(id PageID) {
 	// Check if already in free list to prevent duplicates
 	for _, existingID := range f.ids {
 		if existingID == id {
@@ -434,7 +432,7 @@ func (f *FreeList) Size() int {
 // FreePending adds pages to the pending map at the given transaction ID.
 // These pages are not immediately reusable - they'll be moved to free
 // when all readers with txnID < this have finished.
-func (f *FreeList) FreePending(txnID uint64, pageIDs []internal.PageID) {
+func (f *FreeList) FreePending(txnID uint64, pageIDs []PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
@@ -500,10 +498,10 @@ func (f *FreeList) PagesNeeded() int {
 		pagesNeeded++
 		// First Page can hold PageSize bytes
 		// But we use 8 bytes for count, so PageSize - 8 for data
-		if remainingBytes <= internal.PageSize {
+		if remainingBytes <= PageSize {
 			remainingBytes = 0
 		} else {
-			remainingBytes -= internal.PageSize
+			remainingBytes -= PageSize
 		}
 	}
 
@@ -511,9 +509,9 @@ func (f *FreeList) PagesNeeded() int {
 }
 
 // Serialize writes freelist to pages starting at given slice
-func (f *FreeList) Serialize(pages []*internal.Page) {
+func (f *FreeList) Serialize(pages []*Page) {
 	// Build linear buffer with all data
-	buf := make([]byte, 0, internal.PageSize*len(pages))
+	buf := make([]byte, 0, PageSize*len(pages))
 
 	// Write free count
 	countBytes := make([]byte, 8)
@@ -523,7 +521,7 @@ func (f *FreeList) Serialize(pages []*internal.Page) {
 	// Write free IDs
 	for _, id := range f.ids {
 		idBytes := make([]byte, 8)
-		*(*internal.PageID)(unsafe.Pointer(&idBytes[0])) = id
+		*(*PageID)(unsafe.Pointer(&idBytes[0])) = id
 		buf = append(buf, idBytes...)
 	}
 
@@ -531,7 +529,7 @@ func (f *FreeList) Serialize(pages []*internal.Page) {
 	if len(f.pending) > 0 {
 		// Write marker
 		markerBytes := make([]byte, 8)
-		*(*internal.PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
+		*(*PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
 		buf = append(buf, markerBytes...)
 
 		// Write pending count
@@ -568,7 +566,7 @@ func (f *FreeList) Serialize(pages []*internal.Page) {
 			// Write Page IDs
 			for _, pageID := range pageIDs {
 				pidBytes := make([]byte, 8)
-				*(*internal.PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
+				*(*PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
 				buf = append(buf, pidBytes...)
 			}
 		}
@@ -583,12 +581,12 @@ func (f *FreeList) Serialize(pages []*internal.Page) {
 }
 
 // Deserialize reads freelist from pages
-func (f *FreeList) Deserialize(pages []*internal.Page) {
-	f.ids = make([]internal.PageID, 0)
-	f.pending = make(map[uint64][]internal.PageID)
+func (f *FreeList) Deserialize(pages []*Page) {
+	f.ids = make([]PageID, 0)
+	f.pending = make(map[uint64][]PageID)
 
 	// Build linear buffer from pages
-	buf := make([]byte, 0, internal.PageSize*len(pages))
+	buf := make([]byte, 0, PageSize*len(pages))
 	for _, page := range pages {
 		buf = append(buf, page.Data[:]...)
 	}
@@ -607,7 +605,7 @@ func (f *FreeList) Deserialize(pages []*internal.Page) {
 		if offset+8 > len(buf) {
 			break
 		}
-		id := *(*internal.PageID)(unsafe.Pointer(&buf[offset]))
+		id := *(*PageID)(unsafe.Pointer(&buf[offset]))
 		f.ids = append(f.ids, id)
 		offset += 8
 	}
@@ -616,7 +614,7 @@ func (f *FreeList) Deserialize(pages []*internal.Page) {
 	if offset+8 > len(buf) {
 		return
 	}
-	marker := *(*internal.PageID)(unsafe.Pointer(&buf[offset]))
+	marker := *(*PageID)(unsafe.Pointer(&buf[offset]))
 	if marker != PendingMarker {
 		return // No pending data
 	}
@@ -646,12 +644,12 @@ func (f *FreeList) Deserialize(pages []*internal.Page) {
 		offset += 8
 
 		// Read Page IDs
-		pageIDs := make([]internal.PageID, 0, pageCount)
+		pageIDs := make([]PageID, 0, pageCount)
 		for j := uint64(0); j < pageCount; j++ {
 			if offset+8 > len(buf) {
 				break
 			}
-			pageID := *(*internal.PageID)(unsafe.Pointer(&buf[offset]))
+			pageID := *(*PageID)(unsafe.Pointer(&buf[offset]))
 			pageIDs = append(pageIDs, pageID)
 			offset += 8
 		}
@@ -693,30 +691,30 @@ func (f *FreeList) AllowAllAllocations() {
 //   - Reader@5 can still load version@3 from Page 500
 type VersionMap struct {
 	// Map: originalPageID -> (txnID -> relocatedPageID)
-	relocations map[internal.PageID]map[uint64]internal.PageID
+	relocations map[PageID]map[uint64]PageID
 	mu          sync.RWMutex
 }
 
 // NewVersionMap creates a new version relocation tracker
 func NewVersionMap() *VersionMap {
 	return &VersionMap{
-		relocations: make(map[internal.PageID]map[uint64]internal.PageID),
+		relocations: make(map[PageID]map[uint64]PageID),
 	}
 }
 
 // Track records that a Page version has been relocated to a new location
-func (vm *VersionMap) Track(originalPageID internal.PageID, txnID uint64, relocatedPageID internal.PageID) {
+func (vm *VersionMap) Track(originalPageID PageID, txnID uint64, relocatedPageID PageID) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
 	if vm.relocations[originalPageID] == nil {
-		vm.relocations[originalPageID] = make(map[uint64]internal.PageID)
+		vm.relocations[originalPageID] = make(map[uint64]PageID)
 	}
 	vm.relocations[originalPageID][txnID] = relocatedPageID
 }
 
 // Get returns the relocated Page ID for a specific version, or 0 if not relocated
-func (vm *VersionMap) Get(originalPageID internal.PageID, txnID uint64) internal.PageID {
+func (vm *VersionMap) Get(originalPageID PageID, txnID uint64) PageID {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 
@@ -728,7 +726,7 @@ func (vm *VersionMap) Get(originalPageID internal.PageID, txnID uint64) internal
 
 // GetLatestVisible returns the relocated Page ID for the latest version visible to txnID,
 // or 0 if no visible version is relocated. Used for MVCC snapshot isolation.
-func (vm *VersionMap) GetLatestVisible(originalPageID internal.PageID, maxTxnID uint64) (internal.PageID, uint64) {
+func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (PageID, uint64) {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 
@@ -739,7 +737,7 @@ func (vm *VersionMap) GetLatestVisible(originalPageID internal.PageID, maxTxnID 
 
 	// Find latest version where versionTxnID <= maxTxnID
 	var latestTxnID uint64
-	var latestPageID internal.PageID
+	var latestPageID PageID
 
 	for versionTxnID, relocatedPageID := range versions {
 		if versionTxnID <= maxTxnID && versionTxnID > latestTxnID {
@@ -752,7 +750,7 @@ func (vm *VersionMap) GetLatestVisible(originalPageID internal.PageID, maxTxnID 
 }
 
 // Remove removes a relocation entry (called when version is no longer needed)
-func (vm *VersionMap) Remove(originalPageID internal.PageID, txnID uint64) {
+func (vm *VersionMap) Remove(originalPageID PageID, txnID uint64) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
@@ -766,11 +764,11 @@ func (vm *VersionMap) Remove(originalPageID internal.PageID, txnID uint64) {
 
 // Cleanup removes all relocations for versions older than minReaderTxn
 // Returns the relocated Page IDs that can now be freed
-func (vm *VersionMap) Cleanup(minReaderTxn uint64) []internal.PageID {
+func (vm *VersionMap) Cleanup(minReaderTxn uint64) []PageID {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	var toFree []internal.PageID
+	var toFree []PageID
 
 	for originalPageID, versions := range vm.relocations {
 		for txnID, relocatedPageID := range versions {
@@ -803,16 +801,46 @@ func (vm *VersionMap) Size() int {
 }
 
 // GetLatestVisible returns the relocated Page ID for the latest version visible to txnID
-func (pm *PageManager) GetLatestVisible(originalPageID internal.PageID, maxTxnID uint64) (internal.PageID, uint64) {
+func (pm *PageManager) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (PageID, uint64) {
 	return pm.versionMap.GetLatestVisible(originalPageID, maxTxnID)
 }
 
 // CleanupVersions removes all relocations for versions older than minReaderTxn
-func (pm *PageManager) CleanupVersions(minReaderTxn uint64) []internal.PageID {
+func (pm *PageManager) CleanupVersions(minReaderTxn uint64) []PageID {
 	return pm.versionMap.Cleanup(minReaderTxn)
 }
 
 // TrackRelocation records that a Page version has been relocated to a new location
-func (pm *PageManager) TrackRelocation(originalPageID internal.PageID, txnID uint64, relocatedPageID internal.PageID) {
+func (pm *PageManager) TrackRelocation(originalPageID PageID, txnID uint64, relocatedPageID PageID) {
 	pm.versionMap.Track(originalPageID, txnID, relocatedPageID)
+}
+
+// PreventAllocationUpTo prevents allocation of pages freed up to and including the specified txnID.
+// This is used during checkpoint to prevent allocating pages that were freed by transactions
+// being checkpointed, as those pages might still be needed by readers at older transaction IDs.
+func (pm *PageManager) PreventAllocationUpTo(txnID uint64) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.freelist.PreventAllocationUpTo(txnID)
+}
+
+// AllowAllAllocations clears the allocation prevention, allowing all free pages to be allocated again.
+func (pm *PageManager) AllowAllAllocations() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.freelist.AllowAllAllocations()
+}
+
+// Sync flushes any buffered writes to disk
+func (pm *PageManager) Sync() error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.file.Sync()
+}
+
+// ReleasePages moves pages from pending to free for all transactions < minTxnID
+func (pm *PageManager) ReleasePages(minTxnID uint64) int {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.freelist.Release(minTxnID)
 }

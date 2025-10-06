@@ -10,12 +10,12 @@ import (
 func TestTxBasicOperations(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_basic.DB"
+	tmpfile := "/tmp/test_tx_basic.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -63,12 +63,12 @@ func TestTxCommitRollback(t *testing.T) {
 	t.Parallel()
 
 	// COW now implemented for simple leaf modifications
-	tmpfile := "/tmp/test_tx_commit_rollback.DB"
+	tmpfile := "/tmp/test_tx_commit_rollback.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -131,12 +131,12 @@ func TestTxCommitRollback(t *testing.T) {
 func TestTxSingleWriter(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_single_writer.DB"
+	tmpfile := "/tmp/test_tx_single_writer.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -170,12 +170,12 @@ func TestTxSingleWriter(t *testing.T) {
 func TestTxMultipleReaders(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_multiple_readers.DB"
+	tmpfile := "/tmp/test_tx_multiple_readers.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -226,12 +226,12 @@ func TestTxMultipleReaders(t *testing.T) {
 func TestTxWriteOnReadOnly(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_write_readonly.DB"
+	tmpfile := "/tmp/test_tx_write_readonly.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -255,12 +255,12 @@ func TestTxWriteOnReadOnly(t *testing.T) {
 func TestTxDoneCheck(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_done.DB"
+	tmpfile := "/tmp/test_tx_done.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -305,12 +305,12 @@ func TestTxAutoRollback(t *testing.T) {
 	t.Parallel()
 
 	// COW now implemented for simple leaf modifications
-	tmpfile := "/tmp/test_tx_auto_rollback.DB"
+	tmpfile := "/tmp/test_tx_auto_rollback.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -342,12 +342,12 @@ func TestTxAutoRollback(t *testing.T) {
 func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_multiple_begin.DB"
+	tmpfile := "/tmp/test_tx_multiple_begin.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -401,12 +401,12 @@ func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 func TestTxOperationsAfterClose(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_after_close.DB"
+	tmpfile := "/tmp/test_tx_after_close.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 
 	// Insert some data
@@ -424,10 +424,10 @@ func TestTxOperationsAfterClose(t *testing.T) {
 	// Close database
 	err = db.Close()
 	if err != nil {
-		t.Errorf("Failed to close DB: %v", err)
+		t.Errorf("Failed to close db: %v", err)
 	}
 
-	// Operations on transaction after DB.Close() should still work
+	// Operations on transaction after db.Close() should still work
 	// because transaction captured snapshot
 	val, err := tx.Get([]byte("key1"))
 	if err != nil {
@@ -452,12 +452,12 @@ func TestTxOperationsAfterClose(t *testing.T) {
 func TestTxConcurrentWriteBegin(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_concurrent_write_begin.DB"
+	tmpfile := "/tmp/test_tx_concurrent_write_begin.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
@@ -531,12 +531,12 @@ func TestTxConcurrentWriteBegin(t *testing.T) {
 func TestTxWriteThenReadMultiple(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_write_then_read.DB"
+	tmpfile := "/tmp/test_tx_write_then_read.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
+		t.Fatalf("Failed to create db: %v", err)
 	}
 	defer db.Close()
 
