@@ -11,7 +11,7 @@ func TestDiskPageManagerBasic(t *testing.T) {
 	t.Parallel()
 
 	// Create temp file
-	tmpfile := "/tmp/test_disk.db"
+	tmpfile := "/tmp/test_disk.DB"
 	defer os.Remove(tmpfile)
 
 	// Create new database
@@ -39,7 +39,7 @@ func TestDiskPageManagerBasic(t *testing.T) {
 
 	// close (flushes to disk)
 	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Reopen database
@@ -75,7 +75,7 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 	t.Parallel()
 
 	// Use unique filename per test to avoid parallel test collisions
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
 	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
@@ -94,7 +94,7 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 	}
 
 	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Reopen and verify all keys
@@ -124,7 +124,7 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 func TestDiskPageManagerDelete(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_delete.db"
+	tmpfile := "/tmp/test_delete.DB"
 	defer os.Remove(tmpfile)
 
 	// Create database
@@ -169,7 +169,7 @@ func TestDiskPageManagerDelete(t *testing.T) {
 func TestDBFileFormat(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_format.db"
+	tmpfile := "/tmp/test_db_format.DB"
 	defer os.Remove(tmpfile)
 
 	// Create DB and write some data
@@ -296,7 +296,7 @@ func TestDBFileHexDump(t *testing.T) {
 		t.Skip("Skipping hex dump test in short mode")
 	}
 
-	tmpfile := "/tmp/test_db_hexdump.db"
+	tmpfile := "/tmp/test_db_hexdump.DB"
 	defer os.Remove(tmpfile)
 
 	// Create DB with known data
@@ -402,7 +402,7 @@ func formatHexDump(data []byte) string {
 func TestDBCorruptionDetection(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_corruption.db"
+	tmpfile := "/tmp/test_db_corruption.DB"
 	defer os.Remove(tmpfile)
 
 	// Create valid DB
@@ -462,7 +462,7 @@ func dumpBytes(label string, data []byte) string {
 func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := fmt.Sprintf("/tmp/test_both_meta_corrupt_%d.db", os.Getpid())
+	tmpfile := fmt.Sprintf("/tmp/test_both_meta_corrupt_%d.DB", os.Getpid())
 	os.Remove(tmpfile) // Clean up any previous test file
 	defer os.Remove(tmpfile)
 
@@ -530,7 +530,7 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_checksum_corrupt.db"
+	tmpfile := "/tmp/test_checksum_corrupt.DB"
 	defer os.Remove(tmpfile)
 
 	// Create valid DB
@@ -582,7 +582,7 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
 	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
@@ -660,7 +660,7 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_last_committed.db"
+	tmpfile := "/tmp/test_last_committed.DB"
 	defer os.Remove(tmpfile)
 
 	// Create DB and do a single commit
@@ -767,7 +767,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_wrong_magic.db"
+	tmpfile := "/tmp/test_crash_recovery_wrong_magic.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -820,7 +820,7 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_root_zero.db"
+	tmpfile := "/tmp/test_crash_recovery_root_zero.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -885,7 +885,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 func TestCrashRecoveryTruncatedFile(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_truncated.db"
+	tmpfile := "/tmp/test_crash_recovery_truncated.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -924,7 +924,7 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_same_txnid.db"
+	tmpfile := "/tmp/test_crash_recovery_same_txnid.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)

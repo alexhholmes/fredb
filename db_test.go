@@ -13,8 +13,8 @@ import (
 var slow = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a temporary test database
-func setupTestDB(t *testing.T) *db {
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+func setupTestDB(t *testing.T) *DB {
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
 	_ = os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -33,7 +33,7 @@ func setupTestDB(t *testing.T) *db {
 func TestDBBasicOperations(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_basic.db"
+	tmpfile := "/tmp/test_db_basic.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -90,7 +90,7 @@ func TestDBBasicOperations(t *testing.T) {
 func TestDBErrors(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_errors.db"
+	tmpfile := "/tmp/test_db_errors.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -115,7 +115,7 @@ func TestDBErrors(t *testing.T) {
 func TestDBClose(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_close.db"
+	tmpfile := "/tmp/test_db_close.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -154,7 +154,7 @@ func TestDBConcurrency(t *testing.T) {
 	// - Mix of get/Set operations
 	// - Verify no races or corruption
 	// - Check final state consistency
-	tmpfile := "/tmp/test_db_concurrency.db"
+	tmpfile := "/tmp/test_db_concurrency.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -248,7 +248,7 @@ func TestDBConcurrentReads(t *testing.T) {
 	// - Insert test data
 	// - Launch multiple reader goroutines
 	// - Verify all complete successfully
-	tmpfile := "/tmp/test_db_concurrent_reads.db"
+	tmpfile := "/tmp/test_db_concurrent_reads.DB"
 	os.Remove(tmpfile) // Clean up any old test file
 	defer os.Remove(tmpfile)
 
@@ -331,7 +331,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 	// - Launch multiple writer goroutines
 	// - Each writes unique keys
 	// - Verify all keys present at end
-	tmpfile := "/tmp/test_db_concurrent_writes.db"
+	tmpfile := "/tmp/test_db_concurrent_writes.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -438,7 +438,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 func TestTxSnapshotIsolation(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_snapshot_isolation.db"
+	tmpfile := "/tmp/test_tx_snapshot_isolation.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -603,7 +603,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		t.Skip("Skipping slow rollback test; use -slow to enable")
 	}
 
-	tmpfile := "/tmp/test_tx_rollback_contention.db"
+	tmpfile := "/tmp/test_tx_rollback_contention.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -828,7 +828,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	// At ~4KB per Page with branching, expect < 10MB
 	info, err := os.Stat(tmpfile)
 	if err != nil {
-		t.Errorf("Failed to stat db file: %v", err)
+		t.Errorf("Failed to stat DB file: %v", err)
 	} else {
 		sizeMB := float64(info.Size()) / (1024 * 1024)
 		t.Logf("Database file size: %.2f MB", sizeMB)
@@ -843,7 +843,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 func TestDBLargeKeysPerPage(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_large_keys.db"
+	tmpfile := "/tmp/test_db_large_keys.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)

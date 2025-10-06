@@ -22,7 +22,7 @@ var (
 type Tx struct {
 	txnID    uint64           // Unique transaction ID
 	writable bool             // Is this a read-write transaction?
-	db       *db              // Database this transaction belongs to (concrete type for internal access)
+	db       *DB              // Database this transaction belongs to (concrete type for internal access)
 	root     *Node            // Root Node at transaction start
 	pages    map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	pending  []PageID         // Pages allocated in this transaction (for COW)
@@ -73,9 +73,9 @@ func (tx *Tx) Set(key, value []byte) error {
 	}
 
 	// Use COW-aware insertion with splits
-	// Keep changes in tx.root (transaction-local), not db.store.root
+	// Keep changes in tx.root (transaction-local), not DB.store.root
 
-	// Use tx.root if set, otherwise start from db.store.root
+	// Use tx.root if set, otherwise start from DB.store.root
 	root := tx.root
 	if root == nil {
 		root = tx.db.store.root
@@ -154,7 +154,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		return err
 	}
 
-	// Update transaction-local root (NOT db.store.root)
+	// Update transaction-local root (NOT DB.store.root)
 	// Changes become visible only on Commit()
 	tx.root = newRoot
 
@@ -172,9 +172,9 @@ func (tx *Tx) Delete(key []byte) error {
 	}
 
 	// Full COW-aware deletion with merge/borrow support
-	// Keep changes in tx.root (transaction-local), not db.store.root
+	// Keep changes in tx.root (transaction-local), not DB.store.root
 
-	// Use tx.root if set, otherwise start from db.store.root
+	// Use tx.root if set, otherwise start from DB.store.root
 	root := tx.root
 	if root == nil {
 		root = tx.db.store.root
@@ -204,7 +204,7 @@ func (tx *Tx) Delete(key []byte) error {
 		}
 	}
 
-	// Update transaction-local root (NOT db.store.root)
+	// Update transaction-local root (NOT DB.store.root)
 	// Changes become visible only on Commit()
 	tx.root = newRoot
 
@@ -236,7 +236,7 @@ func (tx *Tx) Commit() error {
 	// Capture old root for rollback if commit fails
 	oldRoot := tx.db.store.root
 
-	// Apply transaction-local root to db.store.root
+	// Apply transaction-local root to DB.store.root
 	// This makes all COW changes visible to future transactions
 	if tx.root != nil {
 		tx.db.store.root = tx.root

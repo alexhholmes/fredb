@@ -60,7 +60,7 @@ func NewDiskPageManager(path string, opts DBOptions) (*PageManager, error) {
 			file.Close()
 			return nil, err
 		}
-		// WAL recovery happens in db.Open() after BTree+cache exist
+		// WAL recovery happens in DB.Open() after BTree+cache exist
 	}
 
 	return dm, nil

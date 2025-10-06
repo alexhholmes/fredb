@@ -33,7 +33,7 @@ const (
 	MaxValueSize = (1 << 31) - 2
 )
 
-type db struct {
+type DB struct {
 	mu     sync.RWMutex
 	store  *BTree
 	closed bool // Database closed flag
@@ -49,7 +49,7 @@ type db struct {
 	wg       sync.WaitGroup // Clean shutdown
 }
 
-func Open(path string, options ...DBOption) (*db, error) {
+func Open(path string, options ...DBOption) (*DB, error) {
 	// Apply options
 	opts := defaultDBOptions()
 	for _, opt := range options {
@@ -74,7 +74,7 @@ func Open(path string, options ...DBOption) (*db, error) {
 	// Initialize nextTxnID from disk to ensure monotonic IDs across sessions
 	meta := pager.GetMeta()
 
-	d := &db{
+	d := &DB{
 		store:     btree,
 		nextTxnID: meta.TxnID, // Resume from last committed TxnID
 		releaseC:  make(chan uint64),
@@ -92,7 +92,7 @@ func Open(path string, options ...DBOption) (*db, error) {
 	return d, nil
 }
 
-func (d *db) Get(key []byte) ([]byte, error) {
+func (d *DB) Get(key []byte) ([]byte, error) {
 	var result []byte
 	err := d.View(func(tx *Tx) error {
 		val, err := tx.Get(key)
@@ -105,19 +105,19 @@ func (d *db) Get(key []byte) ([]byte, error) {
 	return result, err
 }
 
-func (d *db) Set(key, value []byte) error {
+func (d *DB) Set(key, value []byte) error {
 	return d.Update(func(tx *Tx) error {
 		return tx.Set(key, value)
 	})
 }
 
-func (d *db) Delete(key []byte) error {
+func (d *DB) Delete(key []byte) error {
 	return d.Update(func(tx *Tx) error {
 		return tx.Delete(key)
 	})
 }
 
-func (d *db) Begin(writable bool) (*Tx, error) {
+func (d *DB) Begin(writable bool) (*Tx, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -165,7 +165,7 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 // View executes a function within a read-only transaction.
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is rolled back (read-only).
-func (d *db) View(fn func(*Tx) error) error {
+func (d *DB) View(fn func(*Tx) error) error {
 	tx, err := d.Begin(false)
 	if err != nil {
 		return err
@@ -178,7 +178,7 @@ func (d *db) View(fn func(*Tx) error) error {
 // Update executes a function within a read-write transaction.
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is committed.
-func (d *db) Update(fn func(*Tx) error) error {
+func (d *DB) Update(fn func(*Tx) error) error {
 	tx, err := d.Begin(true)
 	if err != nil {
 		return err
@@ -192,7 +192,7 @@ func (d *db) Update(fn func(*Tx) error) error {
 	return tx.Commit()
 }
 
-func (d *db) Close() error {
+func (d *DB) Close() error {
 	// Stop background goroutines
 	select {
 	case <-d.stopC:
@@ -222,7 +222,7 @@ func (d *db) Close() error {
 }
 
 // backgroundReleaser periodically releases pending pages when safe
-func (d *db) backgroundReleaser() {
+func (d *DB) backgroundReleaser() {
 	defer d.wg.Done()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -249,7 +249,7 @@ func (d *db) backgroundReleaser() {
 }
 
 // backgroundCheckpointer periodically checkpoints the WAL to disk
-func (d *db) backgroundCheckpointer() {
+func (d *DB) backgroundCheckpointer() {
 	defer d.wg.Done()
 
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -268,7 +268,7 @@ func (d *db) backgroundCheckpointer() {
 }
 
 // checkpoint writes WAL transactions to main file and truncates WAL
-func (d *db) checkpoint() error {
+func (d *DB) checkpoint() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -409,7 +409,7 @@ func (d *db) checkpoint() error {
 
 // minReaderTxn returns the minimum transaction ID across all active transactions (readers + writer).
 // This determines which pending pages can be safely released to the freelist.
-func (d *db) minReaderTxn() uint64 {
+func (d *DB) minReaderTxn() uint64 {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -434,7 +434,7 @@ func (d *db) minReaderTxn() uint64 {
 // minReaderTxnForCheckpoint returns minimum transaction ID for checkpoint operations.
 // Unlike minReaderTxn, this uses lastCommittedTxn as the floor when no readers exist.
 // This prevents checkpoint from allocating pages that were just freed.
-func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
+func (d *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	// Start with last committed transaction as minimum
 	// This ensures pages freed by that transaction won't be reallocated during checkpoint
 	min := lastCommittedTxn
@@ -457,7 +457,7 @@ func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 }
 
 // releasePages calls Release on the freelist with the given minimum transaction ID
-func (d *db) releasePages(minTxn uint64) {
+func (d *DB) releasePages(minTxn uint64) {
 	// Need to access the PageManager's freelist
 	dm := d.store.pager
 	dm.mu.Lock()

@@ -10,7 +10,7 @@ import (
 func TestTxBasicOperations(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_basic.db"
+	tmpfile := "/tmp/test_tx_basic.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -63,7 +63,7 @@ func TestTxCommitRollback(t *testing.T) {
 	t.Parallel()
 
 	// COW now implemented for simple leaf modifications
-	tmpfile := "/tmp/test_tx_commit_rollback.db"
+	tmpfile := "/tmp/test_tx_commit_rollback.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -131,7 +131,7 @@ func TestTxCommitRollback(t *testing.T) {
 func TestTxSingleWriter(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_single_writer.db"
+	tmpfile := "/tmp/test_tx_single_writer.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -170,7 +170,7 @@ func TestTxSingleWriter(t *testing.T) {
 func TestTxMultipleReaders(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_multiple_readers.db"
+	tmpfile := "/tmp/test_tx_multiple_readers.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -226,7 +226,7 @@ func TestTxMultipleReaders(t *testing.T) {
 func TestTxWriteOnReadOnly(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_write_readonly.db"
+	tmpfile := "/tmp/test_tx_write_readonly.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -255,7 +255,7 @@ func TestTxWriteOnReadOnly(t *testing.T) {
 func TestTxDoneCheck(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_done.db"
+	tmpfile := "/tmp/test_tx_done.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -305,7 +305,7 @@ func TestTxAutoRollback(t *testing.T) {
 	t.Parallel()
 
 	// COW now implemented for simple leaf modifications
-	tmpfile := "/tmp/test_tx_auto_rollback.db"
+	tmpfile := "/tmp/test_tx_auto_rollback.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -342,7 +342,7 @@ func TestTxAutoRollback(t *testing.T) {
 func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_multiple_begin.db"
+	tmpfile := "/tmp/test_tx_multiple_begin.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -401,7 +401,7 @@ func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 func TestTxOperationsAfterClose(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_after_close.db"
+	tmpfile := "/tmp/test_tx_after_close.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -427,7 +427,7 @@ func TestTxOperationsAfterClose(t *testing.T) {
 		t.Errorf("Failed to close DB: %v", err)
 	}
 
-	// Operations on transaction after db.Close() should still work
+	// Operations on transaction after DB.Close() should still work
 	// because transaction captured snapshot
 	val, err := tx.Get([]byte("key1"))
 	if err != nil {
@@ -452,7 +452,7 @@ func TestTxOperationsAfterClose(t *testing.T) {
 func TestTxConcurrentWriteBegin(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_concurrent_write_begin.db"
+	tmpfile := "/tmp/test_tx_concurrent_write_begin.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -531,7 +531,7 @@ func TestTxConcurrentWriteBegin(t *testing.T) {
 func TestTxWriteThenReadMultiple(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_write_then_read.db"
+	tmpfile := "/tmp/test_tx_write_then_read.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)

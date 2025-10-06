@@ -8,7 +8,7 @@ import (
 
 // TestWALRecoveryBasic tests that uncommitted WAL entries are recovered after restart
 func TestWALRecoveryBasic(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_basic.db"
+	dbPath := "/tmp/test_wal_recovery_basic.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -64,7 +64,7 @@ func TestWALRecoveryBasic(t *testing.T) {
 
 // TestWALRecoveryUncommitted tests that uncommitted transactions are discarded
 func TestWALRecoveryUncommitted(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_uncommitted.db"
+	dbPath := "/tmp/test_wal_recovery_uncommitted.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -140,7 +140,7 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 
 // TestCheckpointIdempotency tests that checkpoint replay is idempotent
 func TestCheckpointIdempotency(t *testing.T) {
-	dbPath := "/tmp/test_checkpoint_idempotency.db"
+	dbPath := "/tmp/test_checkpoint_idempotency.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -229,7 +229,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 // TestWALRecoveryMultipleTransactions tests recovery of multiple transactions
 func TestWALRecoveryMultipleTransactions(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_multi.db"
+	dbPath := "/tmp/test_wal_recovery_multi.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -299,7 +299,7 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 
 // TestWALTruncateSafety tests that WAL cannot be truncated before checkpoint
 func TestWALTruncateSafety(t *testing.T) {
-	dbPath := "/tmp/test_wal_truncate_safety.db"
+	dbPath := "/tmp/test_wal_truncate_safety.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
