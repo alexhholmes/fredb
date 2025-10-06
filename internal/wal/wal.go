@@ -1,4 +1,4 @@
-package fredb
+package wal
 
 import (
 	"encoding/binary"
@@ -8,6 +8,29 @@ import (
 	"sync"
 
 	"fredb/internal/base"
+)
+
+// WALSyncMode controls when the WAL is fsynced to disk.
+type WALSyncMode int
+
+const (
+	// WALSyncEveryCommit fsyncs on every transaction commit (BoltDB-style).
+	// - Guarantees zero data loss on power failure
+	// - Limited by fsync latency (typically 1-10ms per commit)
+	// - Use for: Financial transactions, critical data, etcd or Raft
+	WALSyncEveryCommit WALSyncMode = iota
+
+	// WALSyncBytes fsyncs when bytesPerSync bytes have been written (RocksDB-style).
+	// - Higher throughput than per-commit fsync
+	// - Data loss window: up to bytesPerSync bytes on power failure
+	// - Use for: Analytics, caches, high-throughput workloads
+	WALSyncBytes
+
+	// WALSyncOff disables fsync entirely (testing/bulk loads only).
+	// - Maximum throughput
+	// - All unflushed data lost on crash
+	// - Use for: Testing, bulk imports with external durability
+	WALSyncOff
 )
 
 // WAL implements Write-Ahead Logging for crash recovery and batched commits
@@ -22,7 +45,7 @@ type WAL struct {
 	bytesSinceSync int64 // Bytes written since last fsync
 
 	// Page tracking - latches prevent stale disk reads
-	pages sync.Map // PageID -> uint64 (txnID) - pages in WAL but not yet on disk
+	Pages sync.Map // PageID -> uint64 (txnID) - Pages in WAL but not yet on disk
 }
 
 // Record types
@@ -91,7 +114,7 @@ func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) erro
 	w.bytesSinceSync += bytesWritten
 
 	// Set latch to prevent stale disk reads
-	w.pages.Store(pageID, txnID)
+	w.Pages.Store(pageID, txnID)
 
 	return nil
 }
@@ -231,7 +254,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 			})
 
 		case WALRecordCommit:
-			// Transaction committed - apply all pages if txnID > fromTxnID
+			// Transaction committed - apply all Pages if txnID > fromTxnID
 			if txnID > fromTxnID {
 				for _, record := range uncommitted[txnID] {
 					if err := applyFn(record.PageID, record.Page); err != nil {
@@ -326,10 +349,10 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 	return nil
 }
 
-// CleanupLatch removes WAL pages latches for pages that have been checkpointed
+// CleanupLatch removes WAL Pages latches for Pages that have been checkpointed
 // AND are visible to all active readers (txnID < minReaderTxn).
 func (w *WAL) CleanupLatch(checkpointTxn, minReaderTxn uint64) {
-	w.pages.Range(func(key, value interface{}) bool {
+	w.Pages.Range(func(key, value interface{}) bool {
 		pageID := key.(base.PageID)
 		txnID := value.(uint64)
 
@@ -337,7 +360,7 @@ func (w *WAL) CleanupLatch(checkpointTxn, minReaderTxn uint64) {
 		// 1. Page is checkpointed (written to disk)
 		// 2. All active readers can see this version (no reader needs older version)
 		if txnID <= checkpointTxn && txnID < minReaderTxn {
-			w.pages.Delete(pageID)
+			w.Pages.Delete(pageID)
 		}
 		return true // Continue iteration
 	})

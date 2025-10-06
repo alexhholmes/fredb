@@ -9,6 +9,7 @@ import (
 	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/storage"
+	"fredb/internal/wal"
 )
 
 var (
@@ -50,8 +51,8 @@ type DB interface {
 type db struct {
 	mu     sync.RWMutex
 	Store  *BTree
-	WAL    *WAL // Write-ahead log for durability
-	closed bool // Database closed flag
+	WAL    *wal.WAL // Write-ahead log for durability
+	closed bool     // Database closed flag
 
 	// Transaction state
 	writerTx  *Tx    // Current write transaction (nil if none)
@@ -73,7 +74,7 @@ func Open(path string, options ...DBOption) (DB, error) {
 
 	// Open WAL (db owns WAL lifecycle)
 	walPath := path + ".wal"
-	wal, err := NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
+	wal, err := wal.NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +138,7 @@ func (d *db) recoverFromWAL(cache *cache.PageCache) error {
 		cache.Put(pageID, header.TxnID, node)
 
 		// Rebuild WAL latch to prevent stale disk reads
-		d.WAL.pages.Store(pageID, header.TxnID)
+		d.WAL.Pages.Store(pageID, header.TxnID)
 
 		return nil
 	})
@@ -378,7 +379,7 @@ func (d *db) checkpoint() error {
 			// This handles crash between file.Sync() and PutMeta()
 			if oldTxnID >= newTxnID {
 				// Already has this version or newer, skip write
-				d.WAL.pages.Delete(pageID) // Clear latch even if skipping
+				d.WAL.Pages.Delete(pageID) // Clear latch even if skipping
 				return nil
 			}
 
@@ -412,7 +413,7 @@ func (d *db) checkpoint() error {
 
 		// Remove WAL latch immediately after writing to disk
 		// This allows readers to access the Page from disk instead of being blocked
-		d.WAL.pages.Delete(pageID)
+		d.WAL.Pages.Delete(pageID)
 
 		return nil
 	})
