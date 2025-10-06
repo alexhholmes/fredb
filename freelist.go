@@ -7,30 +7,30 @@ import (
 
 const (
 	// FreeListPageCapacity is max number of PageIDs per freelist Page
-	// (PageSize - 8 bytes for count) / 8 bytes per pageID
+	// (PageSize - 8 bytes for count) / 8 bytes per PageID
 	FreeListPageCapacity = (PageSize - 8) / 8
 
 	// PendingMarker indicates transition from free IDs to pending entries
-	PendingMarker = pageID(0xFFFFFFFFFFFFFFFF)
+	PendingMarker = PageID(0xFFFFFFFFFFFFFFFF)
 )
 
 // FreeList tracks free pages for reuse
 type FreeList struct {
-	ids              []pageID            // sorted array of free Page IDs
-	pending          map[uint64][]pageID // txnID -> pages freed at that transaction
+	ids              []PageID            // sorted array of free Page IDs
+	pending          map[uint64][]PageID // txnID -> pages freed at that transaction
 	preventUpToTxnID uint64              // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 }
 
 // NewFreeList creates an empty freelist
 func NewFreeList() *FreeList {
 	return &FreeList{
-		ids:     make([]pageID, 0),
-		pending: make(map[uint64][]pageID),
+		ids:     make([]PageID, 0),
+		pending: make(map[uint64][]PageID),
 	}
 }
 
 // Allocate returns a free Page ID, or 0 if none available
-func (f *FreeList) Allocate() pageID {
+func (f *FreeList) Allocate() PageID {
 	if len(f.ids) == 0 {
 		// No free pages available
 		// If prevention is active and there are pending pages that could be released,
@@ -75,7 +75,7 @@ func (f *FreeList) Allocate() pageID {
 	for txnID, pageIDs := range f.pending {
 		for _, pid := range pageIDs {
 			if pid == id {
-				panic(fmt.Sprintf("BUG: Allocated pageID %d still in pending[%d] after removal (removed %d occurrences)",
+				panic(fmt.Sprintf("BUG: Allocated PageID %d still in pending[%d] after removal (removed %d occurrences)",
 					id, txnID, removedCount))
 			}
 		}
@@ -85,7 +85,7 @@ func (f *FreeList) Allocate() pageID {
 }
 
 // Free adds a Page ID to the free list
-func (f *FreeList) Free(id pageID) {
+func (f *FreeList) Free(id PageID) {
 	// Check if already in free list to prevent duplicates
 	for _, existingID := range f.ids {
 		if existingID == id {
@@ -112,7 +112,7 @@ func (f *FreeList) Size() int {
 // FreePending adds pages to the pending map at the given transaction ID.
 // These pages are not immediately reusable - they'll be moved to free
 // when all readers with txnID < this have finished.
-func (f *FreeList) FreePending(txnID uint64, pageIDs []pageID) {
+func (f *FreeList) FreePending(txnID uint64, pageIDs []PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
@@ -201,7 +201,7 @@ func (f *FreeList) Serialize(pages []*Page) {
 	// Write free IDs
 	for _, id := range f.ids {
 		idBytes := make([]byte, 8)
-		*(*pageID)(unsafe.Pointer(&idBytes[0])) = id
+		*(*PageID)(unsafe.Pointer(&idBytes[0])) = id
 		buf = append(buf, idBytes...)
 	}
 
@@ -209,7 +209,7 @@ func (f *FreeList) Serialize(pages []*Page) {
 	if len(f.pending) > 0 {
 		// Write marker
 		markerBytes := make([]byte, 8)
-		*(*pageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
+		*(*PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
 		buf = append(buf, markerBytes...)
 
 		// Write pending count
@@ -246,7 +246,7 @@ func (f *FreeList) Serialize(pages []*Page) {
 			// Write Page IDs
 			for _, pageID := range pageIDs {
 				pidBytes := make([]byte, 8)
-				*(*pageID)(unsafe.Pointer(&pidBytes[0])) = pageID
+				*(*PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
 				buf = append(buf, pidBytes...)
 			}
 		}
@@ -262,8 +262,8 @@ func (f *FreeList) Serialize(pages []*Page) {
 
 // Deserialize reads freelist from pages
 func (f *FreeList) Deserialize(pages []*Page) {
-	f.ids = make([]pageID, 0)
-	f.pending = make(map[uint64][]pageID)
+	f.ids = make([]PageID, 0)
+	f.pending = make(map[uint64][]PageID)
 
 	// Build linear buffer from pages
 	buf := make([]byte, 0, PageSize*len(pages))
@@ -285,7 +285,7 @@ func (f *FreeList) Deserialize(pages []*Page) {
 		if offset+8 > len(buf) {
 			break
 		}
-		id := *(*pageID)(unsafe.Pointer(&buf[offset]))
+		id := *(*PageID)(unsafe.Pointer(&buf[offset]))
 		f.ids = append(f.ids, id)
 		offset += 8
 	}
@@ -294,7 +294,7 @@ func (f *FreeList) Deserialize(pages []*Page) {
 	if offset+8 > len(buf) {
 		return
 	}
-	marker := *(*pageID)(unsafe.Pointer(&buf[offset]))
+	marker := *(*PageID)(unsafe.Pointer(&buf[offset]))
 	if marker != PendingMarker {
 		return // No pending data
 	}
@@ -324,12 +324,12 @@ func (f *FreeList) Deserialize(pages []*Page) {
 		offset += 8
 
 		// Read Page IDs
-		pageIDs := make([]pageID, 0, pageCount)
+		pageIDs := make([]PageID, 0, pageCount)
 		for j := uint64(0); j < pageCount; j++ {
 			if offset+8 > len(buf) {
 				break
 			}
-			pageID := *(*pageID)(unsafe.Pointer(&buf[offset]))
+			pageID := *(*PageID)(unsafe.Pointer(&buf[offset]))
 			pageIDs = append(pageIDs, pageID)
 			offset += 8
 		}

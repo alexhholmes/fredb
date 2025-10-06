@@ -693,7 +693,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// Record the older TxnID (should only have key1)
 	var olderTxn uint64
-	var olderRoot pageID
+	var olderRoot PageID
 	if meta0.TxnID < meta1.TxnID {
 		olderTxn = meta0.TxnID
 		olderRoot = meta0.RootPageID

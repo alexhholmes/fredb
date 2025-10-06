@@ -26,9 +26,9 @@ type Tx struct {
 	db      *db              // Database this transaction belongs to (concrete type for internal access)
 	meta    *MetaPage        // Snapshot of metadata at transaction start
 	root    *Node            // Root Node at transaction start
-	pages   map[pageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending []pageID         // Pages allocated in this transaction (for COW)
-	freed   []pageID         // Pages freed in this transaction (for freelist)
+	pages   map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending []PageID         // Pages allocated in this transaction (for COW)
+	freed   []PageID         // Pages freed in this transaction (for freelist)
 
 	done bool // Has Commit() or Rollback() been called?
 }
@@ -105,7 +105,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			numKeys:  1,
 			keys:     [][]byte{midKey},
 			values:   [][]byte{midVal},
-			children: []pageID{leftChild.pageID, rightChild.pageID},
+			children: []PageID{leftChild.pageID, rightChild.pageID},
 		}
 
 		// Store the new root in TX-local cache
@@ -146,7 +146,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			numKeys:  1,
 			keys:     [][]byte{midKey},
 			values:   [][]byte{midVal},
-			children: []pageID{leftChild.pageID, rightChild.pageID},
+			children: []PageID{leftChild.pageID, rightChild.pageID},
 		}
 
 		tx.pages[newRootID] = newRoot
@@ -388,7 +388,7 @@ func (tx *Tx) check() error {
 }
 
 // Loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(id pageID) (*Node, error) {
+func (tx *Tx) loadNode(id PageID) (*Node, error) {
 	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
 		if node, exists := tx.pages[id]; exists {
@@ -423,7 +423,7 @@ func (tx *Tx) loadNode(id pageID) (*Node, error) {
 			node.numKeys = 0
 			node.keys = make([][]byte, 0)
 			node.values = make([][]byte, 0)
-			node.children = make([]pageID, 0)
+			node.children = make([]PageID, 0)
 		}
 
 		// Cycle detection: check if deserialized Node references itself
@@ -466,7 +466,7 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	}
 
 	// 2. Check if this Node already belongs to this transaction (pending allocations)
-	// If its pageID is in tx.pending, it was allocated in this transaction
+	// If its PageID is in tx.pending, it was allocated in this transaction
 	for _, pid := range tx.pending {
 		if pid == node.pageID {
 			// Node already owned by this transaction, no COW needed
@@ -504,7 +504,7 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 
 // Allocates a new Page for this transaction.
 // The allocated Page is tracked in tx.pending for COW semantics
-func (tx *Tx) allocatePage() (pageID, *Page, error) {
+func (tx *Tx) allocatePage() (PageID, *Page, error) {
 	// Retry allocation if we get a Page that's in tx.freed
 	// This can happen when background releaser moves pages from pending to free
 	const maxRetries = 10
@@ -520,7 +520,7 @@ retryLoop:
 		// Check for duplicate in tx.pending (should never happen)
 		for _, pid := range tx.pending {
 			if pid == pageID {
-				return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+				return 0, nil, fmt.Errorf("FATAL: freelist returned PageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
 					pageID, tx.txnID, tx.pending, tx.freed)
 			}
 		}
@@ -538,7 +538,7 @@ retryLoop:
 		// Track in pending pages (for COW)
 		tx.pending = append(tx.pending, pageID)
 
-		// Invalidate any stale cache entries for this reused pageID
+		// Invalidate any stale cache entries for this reused PageID
 		// When a Page is freed and reallocated, old versions must be removed
 		tx.db.store.cache.Invalidate(pageID)
 
@@ -557,7 +557,7 @@ retryLoop:
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.
 // This prevents the same Page from being freed multiple times in a transaction.
-func (tx *Tx) addFreed(pageID pageID) {
+func (tx *Tx) addFreed(pageID PageID) {
 	if pageID == 0 {
 		return
 	}

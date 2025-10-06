@@ -10,7 +10,7 @@ const (
 
 // Node represents a B-tree Node with decoded Page data
 type Node struct {
-	pageID pageID
+	pageID PageID
 	dirty  bool
 
 	// Decoded Node data
@@ -18,7 +18,7 @@ type Node struct {
 	numKeys  uint16
 	keys     [][]byte
 	values   [][]byte // Empty and unused in branch nodes
-	children []pageID
+	children []PageID
 }
 
 // isFull checks if a Node is full
@@ -167,7 +167,7 @@ func (n *Node) deserialize(p *Page) error {
 		// deserialize branch Node (B+ tree: only keys, no values)
 		n.keys = make([][]byte, n.numKeys)
 		n.values = nil // Branch nodes don't have values
-		n.children = make([]pageID, n.numKeys+1)
+		n.children = make([]PageID, n.numKeys+1)
 
 		// Read children[0]
 		n.children[0] = p.readBranchFirstChild()
@@ -212,7 +212,7 @@ func (n *Node) isUnderflow() bool {
 }
 
 // clone creates a deep copy of this Node for copy-on-write
-// The clone is marked dirty and does not have a pageID allocated yet
+// The clone is marked dirty and does not have a PageID allocated yet
 func (n *Node) clone() *Node {
 	cloned := &Node{
 		pageID:  0,
@@ -239,7 +239,7 @@ func (n *Node) clone() *Node {
 
 	// Deep copy children (branch nodes only)
 	if !n.isLeaf && len(n.children) > 0 {
-		cloned.children = make([]pageID, len(n.children))
+		cloned.children = make([]PageID, len(n.children))
 		copy(cloned.children, n.children)
 	}
 

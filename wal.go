@@ -26,7 +26,7 @@ const (
 	WALRecordCommit uint8 = 2 // Commit marker
 )
 
-// Record format: [Type:1][TxnID:8][pageID:8][DataLen:4][Data:N]
+// Record format: [Type:1][TxnID:8][PageID:8][DataLen:4][Data:N]
 const WALRecordHeaderSize = 1 + 8 + 8 + 4
 
 // NewWAL opens or creates a WAL file with the specified sync mode
@@ -54,8 +54,8 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 }
 
 // AppendPage writes a Page record to the WAL
-// Format: [WALRecordPage:1][TxnID:8][pageID:8][PageSize:4][Page.data:PageSize]
-func (w *WAL) AppendPage(txnID uint64, pageID pageID, page *Page) error {
+// Format: [WALRecordPage:1][TxnID:8][PageID:8][PageSize:4][Page.data:PageSize]
+func (w *WAL) AppendPage(txnID uint64, pageID PageID, page *Page) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -159,12 +159,12 @@ func (w *WAL) syncUnsafe() error {
 type WALRecord struct {
 	Type   uint8
 	TxnID  uint64
-	PageID pageID
+	PageID PageID
 	Page   *Page
 }
 
 // Replay reads the WAL and applies all committed transactions after fromTxnID
-func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *Page) error) error {
+func (w *WAL) Replay(fromTxnID uint64, applyFn func(PageID, *Page) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -174,7 +174,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *Page) error) error 
 	}
 
 	// Track uncommitted transactions
-	// Map: TxnID -> list of (pageID, Page) to apply if commit marker found
+	// Map: TxnID -> list of (PageID, Page) to apply if commit marker found
 	uncommitted := make(map[uint64][]WALRecord)
 
 	header := make([]byte, WALRecordHeaderSize)
@@ -195,7 +195,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *Page) error) error 
 		// Parse header
 		recordType := header[0]
 		txnID := binary.LittleEndian.Uint64(header[1:9])
-		pageID := pageID(binary.LittleEndian.Uint64(header[9:17]))
+		pageID := PageID(binary.LittleEndian.Uint64(header[9:17]))
 		dataLen := binary.LittleEndian.Uint32(header[17:21])
 
 		switch recordType {

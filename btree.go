@@ -58,7 +58,7 @@ func NewBTree(pager PageManager) (*BTree, error) {
 		numKeys:  0,
 		keys:     make([][]byte, 0),
 		values:   make([][]byte, 0),
-		children: make([]pageID, 0),
+		children: make([]PageID, 0),
 	}
 
 	bt.root = root
@@ -143,7 +143,7 @@ func (bt *BTree) searchNode(tx *Tx, node *Node, key []byte) ([]byte, error) {
 }
 
 // loadNode loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (bt *BTree) loadNode(tx *Tx, pageID pageID) (*Node, error) {
+func (bt *BTree) loadNode(tx *Tx, pageID PageID) (*Node, error) {
 	// MVCC requires a transaction for snapshot isolation
 	if tx == nil {
 		return nil, fmt.Errorf("loadNode requires a transaction (cannot be nil)")
@@ -158,7 +158,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID pageID) (*Node, error) {
 
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
 	node, found := bt.cache.GetOrLoad(pageID, tx.txnID, func() (*Node, uint64, error) {
-		// Load from disk (called by at most one thread per pageID)
+		// Load from disk (called by at most one thread per PageID)
 		page, err := bt.pager.ReadPage(pageID)
 		if err != nil {
 			return nil, 0, err
@@ -183,7 +183,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID pageID) (*Node, error) {
 			node.numKeys = 0
 			node.keys = make([][]byte, 0)
 			node.values = make([][]byte, 0)
-			node.children = make([]pageID, 0)
+			node.children = make([]PageID, 0)
 		}
 
 		// Cycle detection: active if deserialized Node references itself
@@ -227,7 +227,7 @@ func removeAt(slice [][]byte, index int) [][]byte {
 }
 
 // removeChildAt removes child at index from slice
-func removeChildAt(slice []pageID, index int) []pageID {
+func removeChildAt(slice []PageID, index int) []PageID {
 	return append(slice[:index], slice[index+1:]...)
 }
 
@@ -369,7 +369,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 		}
 
 		// Build new children array atomically to avoid slice sharing issues
-		newChildren := make([]pageID, len(n.children)+1)
+		newChildren := make([]PageID, len(n.children)+1)
 		copy(newChildren[:i], n.children[:i])     // Before split point
 		newChildren[i] = leftChild.pageID         // Left child
 		newChildren[i+1] = rightChild.pageID      // Right child
@@ -401,7 +401,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 		}
 	}
 
-	// Store original child pageID to detect COW
+	// Store original child PageID to detect COW
 	oldChildID := child.pageID
 
 	// Recursive insert (may COW child)
@@ -433,7 +433,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *Node, key, value []byte) (*Node, error
 		}
 
 		// Build new children array
-		newChildren := make([]pageID, len(n.children)+1)
+		newChildren := make([]PageID, len(n.children)+1)
 		copy(newChildren[:i], n.children[:i])
 		newChildren[i] = leftChild.pageID
 		newChildren[i+1] = rightChild.pageID
@@ -620,7 +620,7 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *Node, parentK
 		// Branch nodes don't have values
 
 		// Move the last child pointer too
-		node.children = append([]pageID{leftSibling.children[len(leftSibling.children)-1]}, node.children...)
+		node.children = append([]PageID{leftSibling.children[len(leftSibling.children)-1]}, node.children...)
 		leftSibling.children = leftSibling.children[:len(leftSibling.children)-1]
 
 		// Remove the last key from left sibling
@@ -972,7 +972,7 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 		numKeys:  uint16(rightKeyCount),
 		keys:     make([][]byte, 0),
 		values:   make([][]byte, 0),
-		children: make([]pageID, 0),
+		children: make([]PageID, 0),
 	}
 
 	// Copy right half of keys to new Node
@@ -1018,7 +1018,7 @@ func (bt *BTree) splitChild(tx *Tx, child *Node) (*Node, *Node, []byte, []byte, 
 
 	// Keep left portion in child - children (branch only)
 	if !child.isLeaf {
-		leftChildren := make([]pageID, mid+1)
+		leftChildren := make([]PageID, mid+1)
 		copy(leftChildren, child.children[:mid+1])
 		child.children = leftChildren
 	}

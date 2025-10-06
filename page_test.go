@@ -9,8 +9,8 @@ func TestPageHeaderAlignment(t *testing.T) {
 	t.Parallel()
 
 	// Verify struct sizes match expectations (no padding)
-	if size := unsafe.Sizeof(pageID(0)); size != 8 {
-		t.Errorf("pageID size = %d bytes, expected 8", size)
+	if size := unsafe.Sizeof(PageID(0)); size != 8 {
+		t.Errorf("PageID size = %d bytes, expected 8", size)
 	}
 
 	if size := unsafe.Sizeof(pageHeader{}); size != 40 {
@@ -20,7 +20,7 @@ func TestPageHeaderAlignment(t *testing.T) {
 	// Verify field offsets (no padding needed)
 	var h pageHeader
 	if offset := unsafe.Offsetof(h.PageID); offset != 0 {
-		t.Errorf("pageID offset = %d, expected 0", offset)
+		t.Errorf("PageID offset = %d, expected 0", offset)
 	}
 	if offset := unsafe.Offsetof(h.Flags); offset != 8 {
 		t.Errorf("Flags offset = %d, expected 8", offset)
@@ -61,7 +61,7 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 	readHdr := page.header()
 
 	if readHdr.PageID != writeHdr.PageID {
-		t.Errorf("pageID: got %d, want %d", readHdr.PageID, writeHdr.PageID)
+		t.Errorf("PageID: got %d, want %d", readHdr.PageID, writeHdr.PageID)
 	}
 	if readHdr.Flags != writeHdr.Flags {
 		t.Errorf("Flags: got %d, want %d", readHdr.Flags, writeHdr.Flags)
@@ -96,7 +96,7 @@ func TestPageHeaderByteLayout(t *testing.T) {
 
 	// Verify actual byte layout (little-endian, no padding)
 	expected := []byte{
-		// pageID (8 bytes, little-endian)
+		// PageID (8 bytes, little-endian)
 		0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
 		// Flags (2 bytes, little-endian)
 		0x34, 0x12,
@@ -354,7 +354,7 @@ func TestBranchFirstChildRoundTrip(t *testing.T) {
 	page.writeHeader(&header)
 
 	// Write first child
-	childID := pageID(42)
+	childID := PageID(42)
 	page.writeBranchFirstChild(childID)
 
 	// Read back

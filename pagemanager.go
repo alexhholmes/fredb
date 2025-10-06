@@ -8,11 +8,11 @@ import (
 
 // PageManager handles disk I/O
 type PageManager interface {
-	ReadPage(id pageID) (*Page, error)
-	WritePage(id pageID, page *Page) error
-	AllocatePage() (pageID, error)
-	FreePage(id pageID) error
-	FreePending(txnID uint64, pageIDs []pageID) error
+	ReadPage(id PageID) (*Page, error)
+	WritePage(id PageID, page *Page) error
+	AllocatePage() (PageID, error)
+	FreePage(id PageID) error
+	FreePending(txnID uint64, pageIDs []PageID) error
 	GetMeta() *MetaPage
 	PutMeta(meta *MetaPage) error
 	Close() error
@@ -27,7 +27,7 @@ type DiskPageManager struct {
 	meta     MetaPage
 	freelist *FreeList
 	wal      *WAL     // Write-ahead log for durability
-	walPages sync.Map // pageID -> uint64 (txnID) - tracks pages in WAL but not yet on disk
+	walPages sync.Map // PageID -> uint64 (txnID) - tracks pages in WAL but not yet on disk
 }
 
 // NewDiskPageManager opens or creates a database file
@@ -81,12 +81,12 @@ func NewDiskPageManager(path string, opts DBOptions) (*DiskPageManager, error) {
 }
 
 // ReadPage reads a Page from disk
-func (dm *DiskPageManager) ReadPage(id pageID) (*Page, error) {
+func (dm *DiskPageManager) ReadPage(id PageID) (*Page, error) {
 	return dm.readPageAt(id)
 }
 
 // AllocatePage allocates a new Page (from freelist or grows file)
-func (dm *DiskPageManager) AllocatePage() (pageID, error) {
+func (dm *DiskPageManager) AllocatePage() (PageID, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -99,7 +99,7 @@ func (dm *DiskPageManager) AllocatePage() (pageID, error) {
 	}
 
 	// Grow file
-	id = pageID(dm.meta.NumPages)
+	id = PageID(dm.meta.NumPages)
 	dm.meta.NumPages++
 
 	// Initialize empty Page
@@ -112,7 +112,7 @@ func (dm *DiskPageManager) AllocatePage() (pageID, error) {
 }
 
 // FreePage adds a Page to the freelist
-func (dm *DiskPageManager) FreePage(id pageID) error {
+func (dm *DiskPageManager) FreePage(id PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -121,7 +121,7 @@ func (dm *DiskPageManager) FreePage(id pageID) error {
 }
 
 // FreePending adds pages to the pending freelist at the given transaction ID
-func (dm *DiskPageManager) FreePending(txnID uint64, pageIDs []pageID) error {
+func (dm *DiskPageManager) FreePending(txnID uint64, pageIDs []PageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -130,7 +130,7 @@ func (dm *DiskPageManager) FreePending(txnID uint64, pageIDs []pageID) error {
 }
 
 // AppendPageWAL writes a Page to the WAL
-func (dm *DiskPageManager) AppendPageWAL(txnID uint64, pageID pageID, page *Page) error {
+func (dm *DiskPageManager) AppendPageWAL(txnID uint64, pageID PageID, page *Page) error {
 	// Mark Page as having WAL-only data (latch to prevent stale disk reads)
 	dm.walPages.Store(pageID, txnID)
 	return dm.wal.AppendPage(txnID, pageID, page)
@@ -164,7 +164,7 @@ func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
 	checkpointTxn := meta.CheckpointTxnID
 
 	dm.walPages.Range(func(key, value interface{}) bool {
-		pageID := key.(pageID)
+		pageID := key.(PageID)
 		txnID := value.(uint64)
 
 		// Only remove latch if BOTH conditions true:
@@ -178,7 +178,7 @@ func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
 }
 
 // ReplayWAL replays WAL transactions from the given transaction ID
-func (dm *DiskPageManager) ReplayWAL(fromTxnID uint64, applyFn func(pageID, *Page) error) error {
+func (dm *DiskPageManager) ReplayWAL(fromTxnID uint64, applyFn func(PageID, *Page) error) error {
 	return dm.wal.Replay(fromTxnID, applyFn)
 }
 
@@ -205,7 +205,7 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	// TxnID % 2 determines which Page: 0 or 1
 	metaPage := &Page{}
 	metaPage.writeMeta(meta)
-	metaPageID := pageID(meta.TxnID % 2)
+	metaPageID := PageID(meta.TxnID % 2)
 
 	// Write meta Page to disk (unsafe - already holding lock)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
@@ -229,9 +229,9 @@ func (dm *DiskPageManager) Close() error {
 	if uint64(pagesNeeded) > dm.meta.FreelistPages {
 		// Mark old freelist pages as pending (not immediately reusable)
 		// Using current TxnID ensures they're only released after this close() completes
-		oldPages := make([]pageID, dm.meta.FreelistPages)
+		oldPages := make([]PageID, dm.meta.FreelistPages)
 		for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-			oldPages[i] = pageID(dm.meta.FreelistID) + pageID(i)
+			oldPages[i] = PageID(dm.meta.FreelistID) + PageID(i)
 		}
 		dm.freelist.FreePending(dm.meta.TxnID, oldPages)
 
@@ -239,7 +239,7 @@ func (dm *DiskPageManager) Close() error {
 		pagesNeeded = dm.freelist.PagesNeeded()
 
 		// Move freelist to new pages at end of file
-		dm.meta.FreelistID = pageID(dm.meta.NumPages)
+		dm.meta.FreelistID = PageID(dm.meta.NumPages)
 		dm.meta.FreelistPages = uint64(pagesNeeded)
 		dm.meta.NumPages += uint64(pagesNeeded)
 	}
@@ -252,7 +252,7 @@ func (dm *DiskPageManager) Close() error {
 	dm.freelist.Serialize(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := dm.writePageAtUnsafe(pageID(dm.meta.FreelistID)+pageID(i), freelistPages[i]); err != nil {
+		if err := dm.writePageAtUnsafe(PageID(dm.meta.FreelistID)+PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
@@ -264,7 +264,7 @@ func (dm *DiskPageManager) Close() error {
 	// Write meta to alternating Page
 	metaPage := &Page{}
 	metaPage.writeMeta(&dm.meta)
-	metaPageID := pageID(dm.meta.TxnID % 2)
+	metaPageID := PageID(dm.meta.TxnID % 2)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
@@ -358,7 +358,7 @@ func (dm *DiskPageManager) loadExistingDB() error {
 	// Load freelist
 	freelistPages := make([]*Page, dm.meta.FreelistPages)
 	for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-		page, err := dm.readPageAt(dm.meta.FreelistID + pageID(i))
+		page, err := dm.readPageAt(dm.meta.FreelistID + PageID(i))
 		if err != nil {
 			return err
 		}
@@ -374,7 +374,7 @@ func (dm *DiskPageManager) loadExistingDB() error {
 }
 
 // readPageAt reads a Page from a specific offset
-func (dm *DiskPageManager) readPageAt(id pageID) (*Page, error) {
+func (dm *DiskPageManager) readPageAt(id PageID) (*Page, error) {
 	// Check if Page has WAL-only data (latch prevents reading stale disk data)
 	if _, hasWALData := dm.walPages.Load(id); hasWALData {
 		// Page exists in WAL but not yet checkpointed to disk
@@ -387,7 +387,7 @@ func (dm *DiskPageManager) readPageAt(id pageID) (*Page, error) {
 
 // readPageAtUnsafe reads a Page from disk without WAL latch check
 // Used during checkpoint to read old disk versions before overwriting
-func (dm *DiskPageManager) readPageAtUnsafe(id pageID) (*Page, error) {
+func (dm *DiskPageManager) readPageAtUnsafe(id PageID) (*Page, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -405,7 +405,7 @@ func (dm *DiskPageManager) readPageAtUnsafe(id pageID) (*Page, error) {
 }
 
 // WritePage writes a Page to a specific offset (with locking)
-func (dm *DiskPageManager) WritePage(id pageID, page *Page) error {
+func (dm *DiskPageManager) WritePage(id PageID, page *Page) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -413,7 +413,7 @@ func (dm *DiskPageManager) WritePage(id pageID, page *Page) error {
 }
 
 // writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)
-func (dm *DiskPageManager) writePageAtUnsafe(id pageID, page *Page) error {
+func (dm *DiskPageManager) writePageAtUnsafe(id PageID, page *Page) error {
 	offset := int64(id) * PageSize
 	n, err := dm.file.WriteAt(page.data[:], offset)
 	if err != nil {
@@ -432,8 +432,8 @@ var _ PageManager = (*InMemoryPageManager)(nil)
 
 // InMemoryPageManager implements PageManager with in-memory storage
 type InMemoryPageManager struct {
-	pages      map[pageID]*Page
-	nextPageID pageID
+	pages      map[PageID]*Page
+	nextPageID PageID
 	meta       MetaPage
 }
 
@@ -453,40 +453,40 @@ func NewInMemoryPageManager() *InMemoryPageManager {
 	meta.Checksum = meta.calculateChecksum()
 
 	return &InMemoryPageManager{
-		pages:      make(map[pageID]*Page),
+		pages:      make(map[PageID]*Page),
 		nextPageID: 1, // Start at 1, 0 reserved for nil
 		meta:       meta,
 	}
 }
 
 // ReadPage reads a Page from memory
-func (m *InMemoryPageManager) ReadPage(id pageID) (*Page, error) {
+func (m *InMemoryPageManager) ReadPage(id PageID) (*Page, error) {
 	page, exists := m.pages[id]
 	if !exists {
 		return nil, fmt.Errorf("Page %d not found", id)
 	}
 
 	// Return a copy to simulate disk read
-	pageCopy := &page{}
+	pageCopy := &Page{}
 	copy(pageCopy.data[:], page.data[:])
 	return pageCopy, nil
 }
 
 // WritePage writes a Page to memory
-func (m *InMemoryPageManager) WritePage(id pageID, page *Page) error {
+func (m *InMemoryPageManager) WritePage(id PageID, page *Page) error {
 	if page == nil {
 		return fmt.Errorf("cannot write nil Page")
 	}
 
 	// Store a copy to simulate disk write
-	pageCopy := &page{}
+	pageCopy := &Page{}
 	copy(pageCopy.data[:], page.data[:])
 	m.pages[id] = pageCopy
 	return nil
 }
 
 // AllocatePage allocates a new Page
-func (m *InMemoryPageManager) AllocatePage() (pageID, error) {
+func (m *InMemoryPageManager) AllocatePage() (PageID, error) {
 	id := m.nextPageID
 	m.nextPageID++
 	m.meta.NumPages++
@@ -497,13 +497,13 @@ func (m *InMemoryPageManager) AllocatePage() (pageID, error) {
 }
 
 // FreePage marks a Page as free (just removes from map)
-func (m *InMemoryPageManager) FreePage(id pageID) error {
+func (m *InMemoryPageManager) FreePage(id PageID) error {
 	delete(m.pages, id)
 	return nil
 }
 
 // FreePending is a no-op for in-memory storage (no pending management needed)
-func (m *InMemoryPageManager) FreePending(txnID uint64, pageIDs []pageID) error {
+func (m *InMemoryPageManager) FreePending(txnID uint64, pageIDs []PageID) error {
 	// No-op: in-memory doesn't need pending management
 	return nil
 }

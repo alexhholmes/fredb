@@ -11,7 +11,7 @@ const (
 	LeafPageFlag   uint16 = 0x01
 	BranchPageFlag uint16 = 0x02
 
-	pageHeaderSize    = 40 // pageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + _NextLeaf(8) + _PrevLeaf(8)
+	pageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + _NextLeaf(8) + _PrevLeaf(8)
 	leafElementSize   = 12
 	branchElementSize = 16
 
@@ -21,14 +21,14 @@ const (
 	FormatVersion uint16 = 1
 )
 
-type pageID uint64
+type PageID uint64
 
 // Page is raw disk Page (4096 bytes)
 //
 // LEAF PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ header (40 bytes)                                                   │
-// │ pageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
+// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ leafElement[0] (12 bytes)                                           │
 // │ KeyOffset, KeySize, ValueOffset, ValueSize, Reserved                │
@@ -47,7 +47,7 @@ type pageID uint64
 // BRANCH PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ header (40 bytes)                                                   │
-// │ pageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
+// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ branchElement[0] (16 bytes)                                         │
 // │ KeyOffset, KeySize, Reserved, ChildID                               │
@@ -69,15 +69,15 @@ type Page struct {
 }
 
 // pageHeader represents the fixed-size header at the start of each Page
-// Layout: [pageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][_NextLeaf: 8][_PrevLeaf: 8]
+// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][_NextLeaf: 8][_PrevLeaf: 8]
 type pageHeader struct {
-	PageID    pageID // 8 bytes
+	PageID    PageID // 8 bytes
 	Flags     uint16 // 2 bytes (leaf/branch)
 	NumKeys   uint16 // 2 bytes
 	Padding   uint32 // 4 bytes (alignment)
 	TxnID     uint64 // 8 bytes - transaction that committed this Page version
-	_NextLeaf pageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
-	_PrevLeaf pageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
+	_NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
+	_PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
 }
 
 // leafElement represents metadata for a key-value pair in a leaf Page
@@ -97,7 +97,7 @@ type branchElement struct {
 	KeyOffset uint16 // 2 bytes: offset from data area start
 	KeySize   uint16 // 2 bytes
 	Reserved  uint32 // 4 bytes: unused (for future use or alignment)
-	ChildID   pageID // 8 bytes
+	ChildID   PageID // 8 bytes
 }
 
 // header returns the Page header decoded from Page data
@@ -181,16 +181,16 @@ func (p *Page) getValue(offset, size uint16) ([]byte, error) {
 	return p.data[start:end], nil
 }
 
-// writeBranchFirstChild writes the first child pageID to a fixed location at the end of the Page
-func (p *Page) writeBranchFirstChild(childID pageID) {
+// writeBranchFirstChild writes the first child PageID to a fixed location at the end of the Page
+func (p *Page) writeBranchFirstChild(childID PageID) {
 	offset := PageSize - 8
-	*(*pageID)(unsafe.Pointer(&p.data[offset])) = childID
+	*(*PageID)(unsafe.Pointer(&p.data[offset])) = childID
 }
 
-// readBranchFirstChild reads the first child pageID from a fixed location at the end of the Page
-func (p *Page) readBranchFirstChild() pageID {
+// readBranchFirstChild reads the first child PageID from a fixed location at the end of the Page
+func (p *Page) readBranchFirstChild() PageID {
 	offset := PageSize - 8
-	return *(*pageID)(unsafe.Pointer(&p.data[offset]))
+	return *(*PageID)(unsafe.Pointer(&p.data[offset]))
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1
@@ -200,8 +200,8 @@ type MetaPage struct {
 	Magic           uint32 // 4 bytes: 0x66726462 ("frdb")
 	Version         uint16 // 2 bytes: format version (1)
 	PageSize        uint16 // 2 bytes: Page size (4096)
-	RootPageID      pageID // 8 bytes: root of B-tree
-	FreelistID      pageID // 8 bytes: start of freelist
+	RootPageID      PageID // 8 bytes: root of B-tree
+	FreelistID      PageID // 8 bytes: start of freelist
 	FreelistPages   uint64 // 8 bytes: number of contiguous freelist pages
 	TxnID           uint64 // 8 bytes: transaction counter
 	CheckpointTxnID uint64 // 8 bytes: last checkpointed transaction
