@@ -9,18 +9,18 @@ func TestPageHeaderAlignment(t *testing.T) {
 	t.Parallel()
 
 	// Verify struct sizes match expectations (no padding)
-	if size := unsafe.Sizeof(PageID(0)); size != 8 {
-		t.Errorf("PageID size = %d bytes, expected 8", size)
+	if size := unsafe.Sizeof(pageID(0)); size != 8 {
+		t.Errorf("pageID size = %d bytes, expected 8", size)
 	}
 
-	if size := unsafe.Sizeof(PageHeader{}); size != 40 {
-		t.Errorf("PageHeader size = %d bytes, expected 40", size)
+	if size := unsafe.Sizeof(pageHeader{}); size != 40 {
+		t.Errorf("pageHeader size = %d bytes, expected 40", size)
 	}
 
 	// Verify field offsets (no padding needed)
-	var h PageHeader
+	var h pageHeader
 	if offset := unsafe.Offsetof(h.PageID); offset != 0 {
-		t.Errorf("PageID offset = %d, expected 0", offset)
+		t.Errorf("pageID offset = %d, expected 0", offset)
 	}
 	if offset := unsafe.Offsetof(h.Flags); offset != 8 {
 		t.Errorf("Flags offset = %d, expected 8", offset)
@@ -45,23 +45,23 @@ func TestPageHeaderAlignment(t *testing.T) {
 func TestPageHeaderRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header
-	writeHdr := PageHeader{
+	writeHdr := pageHeader{
 		PageID:  42,
 		Flags:   LeafPageFlag,
 		NumKeys: 10,
 		Padding: 99,
 		TxnID:   123,
 	}
-	page.WriteHeader(&writeHdr)
+	page.writeHeader(&writeHdr)
 
 	// Read back using unsafe pointer
-	readHdr := page.Header()
+	readHdr := page.header()
 
 	if readHdr.PageID != writeHdr.PageID {
-		t.Errorf("PageID: got %d, want %d", readHdr.PageID, writeHdr.PageID)
+		t.Errorf("pageID: got %d, want %d", readHdr.PageID, writeHdr.PageID)
 	}
 	if readHdr.Flags != writeHdr.Flags {
 		t.Errorf("Flags: got %d, want %d", readHdr.Flags, writeHdr.Flags)
@@ -80,10 +80,10 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 func TestPageHeaderByteLayout(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header with known values
-	hdr := PageHeader{
+	hdr := pageHeader{
 		PageID:    0x0123456789ABCDEF, // 8 bytes
 		Flags:     0x1234,             // 2 bytes
 		NumKeys:   0x5678,             // 2 bytes
@@ -92,11 +92,11 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		_NextLeaf: 0xFEDCBA9876543210, // 8 bytes
 		_PrevLeaf: 0x0011223344556677, // 8 bytes
 	}
-	page.WriteHeader(&hdr)
+	page.writeHeader(&hdr)
 
 	// Verify actual byte layout (little-endian, no padding)
 	expected := []byte{
-		// PageID (8 bytes, little-endian)
+		// pageID (8 bytes, little-endian)
 		0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
 		// Flags (2 bytes, little-endian)
 		0x34, 0x12,
@@ -122,36 +122,36 @@ func TestPageHeaderByteLayout(t *testing.T) {
 func TestLeafElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	if size := unsafe.Sizeof(LeafElement{}); size != 12 {
-		t.Errorf("LeafElement size = %d bytes, expected 12", size)
+	if size := unsafe.Sizeof(leafElement{}); size != 12 {
+		t.Errorf("leafElement size = %d bytes, expected 12", size)
 	}
 }
 
 func TestLeafElementByteLayout(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header first (need valid header for element writes)
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   LeafPageFlag,
 		NumKeys: 1,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
 	// Write leaf element with known values
-	elem := LeafElement{
+	elem := leafElement{
 		KeyOffset:   0x1234,     // 2 bytes
 		KeySize:     0x5678,     // 2 bytes
 		ValueOffset: 0x9ABC,     // 2 bytes
 		ValueSize:   0xDEF0,     // 2 bytes
 		Reserved:    0x12345678, // 4 bytes
 	}
-	page.WriteLeafElement(0, &elem)
+	page.writeLeafElement(0, &elem)
 
-	// Verify actual byte layout starting at PageHeaderSize (little-endian)
-	offset := PageHeaderSize
+	// Verify actual byte layout starting at pageHeaderSize (little-endian)
+	offset := pageHeaderSize
 	expected := []byte{
 		// KeyOffset (2 bytes, little-endian)
 		0x34, 0x12,
@@ -175,37 +175,37 @@ func TestLeafElementByteLayout(t *testing.T) {
 func TestLeafElementRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header first
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   LeafPageFlag,
 		NumKeys: 2,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
 	// Write leaf elements
-	elem1 := LeafElement{
+	elem1 := leafElement{
 		KeyOffset:   0,
 		KeySize:     5,
 		ValueOffset: 5,
 		ValueSize:   10,
 		Reserved:    0,
 	}
-	page.WriteLeafElement(0, &elem1)
+	page.writeLeafElement(0, &elem1)
 
-	elem2 := LeafElement{
+	elem2 := leafElement{
 		KeyOffset:   15,
 		KeySize:     3,
 		ValueOffset: 18,
 		ValueSize:   7,
 		Reserved:    0,
 	}
-	page.WriteLeafElement(1, &elem2)
+	page.writeLeafElement(1, &elem2)
 
 	// Read back using unsafe pointer
-	elements := page.LeafElements()
+	elements := page.leafElements()
 
 	if len(elements) != 2 {
 		t.Fatalf("got %d elements, want 2", len(elements))
@@ -235,35 +235,35 @@ func TestLeafElementRoundTrip(t *testing.T) {
 func TestBranchElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	if size := unsafe.Sizeof(BranchElement{}); size != 16 {
-		t.Errorf("BranchElement size = %d bytes, expected 16", size)
+	if size := unsafe.Sizeof(branchElement{}); size != 16 {
+		t.Errorf("branchElement size = %d bytes, expected 16", size)
 	}
 }
 
 func TestBranchElementByteLayout(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header first (need valid header for element writes)
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   BranchPageFlag,
 		NumKeys: 1,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
 	// Write branch element with known values (B+ tree: no values in branches)
-	elem := BranchElement{
+	elem := branchElement{
 		KeyOffset: 0x1234,             // 2 bytes
 		KeySize:   0x5678,             // 2 bytes
 		Reserved:  0x9ABCDEF0,         // 4 bytes
 		ChildID:   0x0123456789ABCDEF, // 8 bytes
 	}
-	page.WriteBranchElement(0, &elem)
+	page.writeBranchElement(0, &elem)
 
-	// Verify actual byte layout starting at PageHeaderSize (little-endian)
-	offset := PageHeaderSize
+	// Verify actual byte layout starting at pageHeaderSize (little-endian)
+	offset := pageHeaderSize
 	expected := []byte{
 		// KeyOffset (2 bytes, little-endian)
 		0x34, 0x12,
@@ -285,35 +285,35 @@ func TestBranchElementByteLayout(t *testing.T) {
 func TestBranchElementRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header first
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   BranchPageFlag,
 		NumKeys: 2,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
 	// Write branch elements (B+ tree: no values in branches)
-	elem1 := BranchElement{
+	elem1 := branchElement{
 		KeyOffset: 8,
 		KeySize:   5,
 		Reserved:  0,
 		ChildID:   100,
 	}
-	page.WriteBranchElement(0, &elem1)
+	page.writeBranchElement(0, &elem1)
 
-	elem2 := BranchElement{
+	elem2 := branchElement{
 		KeyOffset: 13,
 		KeySize:   3,
 		Reserved:  0,
 		ChildID:   200,
 	}
-	page.WriteBranchElement(1, &elem2)
+	page.writeBranchElement(1, &elem2)
 
 	// Read back using unsafe pointer
-	elements := page.BranchElements()
+	elements := page.branchElements()
 
 	if len(elements) != 2 {
 		t.Fatalf("got %d elements, want 2", len(elements))
@@ -343,22 +343,22 @@ func TestBranchElementRoundTrip(t *testing.T) {
 func TestBranchFirstChildRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   BranchPageFlag,
 		NumKeys: 0,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
 	// Write first child
-	childID := PageID(42)
-	page.WriteBranchFirstChild(childID)
+	childID := pageID(42)
+	page.writeBranchFirstChild(childID)
 
 	// Read back
-	readChildID := page.ReadBranchFirstChild()
+	readChildID := page.readBranchFirstChild()
 
 	if readChildID != childID {
 		t.Errorf("ChildID: got %d, want %d", readChildID, childID)
@@ -378,41 +378,41 @@ func TestDataAreaStart(t *testing.T) {
 			name:     "leaf with 0 keys",
 			flags:    LeafPageFlag,
 			numKeys:  0,
-			expected: PageHeaderSize,
+			expected: pageHeaderSize,
 		},
 		{
 			name:     "leaf with 10 keys",
 			flags:    LeafPageFlag,
 			numKeys:  10,
-			expected: PageHeaderSize + 10*LeafElementSize,
+			expected: pageHeaderSize + 10*leafElementSize,
 		},
 		{
 			name:     "branch with 0 keys",
 			flags:    BranchPageFlag,
 			numKeys:  0,
-			expected: PageHeaderSize,
+			expected: pageHeaderSize,
 		},
 		{
 			name:     "branch with 5 keys",
 			flags:    BranchPageFlag,
 			numKeys:  5,
-			expected: PageHeaderSize + 5*BranchElementSize,
+			expected: pageHeaderSize + 5*branchElementSize,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var page Page
-			header := PageHeader{
+			var page page
+			header := pageHeader{
 				PageID:  1,
 				Flags:   tt.flags,
 				NumKeys: tt.numKeys,
 			}
-			page.WriteHeader(&header)
+			page.writeHeader(&header)
 
-			dataStart := page.DataAreaStart()
+			dataStart := page.dataAreaStart()
 			if dataStart != tt.expected {
-				t.Errorf("DataAreaStart() = %d, want %d", dataStart, tt.expected)
+				t.Errorf("dataAreaStart() = %d, want %d", dataStart, tt.expected)
 			}
 		})
 	}
@@ -421,26 +421,26 @@ func TestDataAreaStart(t *testing.T) {
 func TestGetKeyValue(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header for leaf with 1 key
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   LeafPageFlag,
 		NumKeys: 1,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
-	dataStart := page.DataAreaStart()
+	dataStart := page.dataAreaStart()
 
 	// Write leaf element with absolute offsets
-	elem := LeafElement{
+	elem := leafElement{
 		KeyOffset:   uint16(dataStart),
 		KeySize:     5,
 		ValueOffset: uint16(dataStart + 5),
 		ValueSize:   10,
 	}
-	page.WriteLeafElement(0, &elem)
+	page.writeLeafElement(0, &elem)
 
 	// Write actual key/value data in data area
 	key := []byte("hello")
@@ -448,38 +448,38 @@ func TestGetKeyValue(t *testing.T) {
 	copy(page.data[dataStart:], key)
 	copy(page.data[dataStart+5:], value)
 
-	// Read back using GetKey/GetValue
-	readKey, err := page.GetKey(elem.KeyOffset, elem.KeySize)
+	// Read back using getKey/getValue
+	readKey, err := page.getKey(elem.KeyOffset, elem.KeySize)
 	if err != nil {
-		t.Fatalf("GetKey() error = %v", err)
+		t.Fatalf("getKey() error = %v", err)
 	}
-	readValue, err := page.GetValue(elem.ValueOffset, elem.ValueSize)
+	readValue, err := page.getValue(elem.ValueOffset, elem.ValueSize)
 	if err != nil {
-		t.Fatalf("GetValue() error = %v", err)
+		t.Fatalf("getValue() error = %v", err)
 	}
 
 	if string(readKey) != string(key) {
-		t.Errorf("GetKey() = %q, want %q", readKey, key)
+		t.Errorf("getKey() = %q, want %q", readKey, key)
 	}
 	if string(readValue) != string(value) {
-		t.Errorf("GetValue() = %q, want %q", readValue, value)
+		t.Errorf("getValue() = %q, want %q", readValue, value)
 	}
 }
 
 func TestGetKeyValueBoundsChecking(t *testing.T) {
 	t.Parallel()
 
-	var page Page
+	var page page
 
 	// Write header for leaf with 1 key
-	header := PageHeader{
+	header := pageHeader{
 		PageID:  1,
 		Flags:   LeafPageFlag,
 		NumKeys: 1,
 	}
-	page.WriteHeader(&header)
+	page.writeHeader(&header)
 
-	dataStart := page.DataAreaStart()
+	dataStart := page.dataAreaStart()
 
 	tests := []struct {
 		name    string
@@ -515,9 +515,9 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := page.GetKey(tt.offset, tt.size)
+			_, err := page.getKey(tt.offset, tt.size)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("GetKey() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("getKey() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}

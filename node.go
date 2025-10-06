@@ -10,7 +10,7 @@ const (
 
 // node represents a B-tree node with decoded page data
 type node struct {
-	pageID PageID
+	pageID pageID
 	dirty  bool
 
 	// Decoded node data
@@ -18,7 +18,7 @@ type node struct {
 	numKeys  uint16
 	keys     [][]byte
 	values   [][]byte // Empty and unused in branch nodes
-	children []PageID
+	children []pageID
 }
 
 // isFull checks if a node is full
@@ -30,16 +30,16 @@ func (n *node) isFull() bool {
 
 // serializedSize calculates the size of the serialized node
 func (n *node) serializedSize() int {
-	size := PageHeaderSize
+	size := pageHeaderSize
 
 	if n.isLeaf {
-		size += int(n.numKeys) * LeafElementSize
+		size += int(n.numKeys) * leafElementSize
 		for i := 0; i < int(n.numKeys); i++ {
 			size += len(n.keys[i]) + len(n.values[i])
 		}
 	} else {
 		// B+ tree: branch nodes only store keys (no values)
-		size += int(n.numKeys) * BranchElementSize
+		size += int(n.numKeys) * branchElementSize
 		size += 8 // children[0]
 		for i := 0; i < int(n.numKeys); i++ {
 			size += len(n.keys[i]) // Only keys, no values
@@ -49,18 +49,18 @@ func (n *node) serializedSize() int {
 	return size
 }
 
-// serialize encodes the node data into a fresh Page
-func (n *node) serialize(txnID uint64) (*Page, error) {
+// serialize encodes the node data into a fresh page
+func (n *node) serialize(txnID uint64) (*page, error) {
 	// Check size
 	if n.serializedSize() > PageSize {
 		return nil, ErrPageOverflow
 	}
 
 	// Create fresh page
-	page := &Page{}
+	page := &page{}
 
 	// Write header
-	header := &PageHeader{
+	header := &pageHeader{
 		PageID:    n.pageID,
 		NumKeys:   n.numKeys,
 		TxnID:     txnID,
@@ -72,7 +72,7 @@ func (n *node) serialize(txnID uint64) (*Page, error) {
 	} else {
 		header.Flags = BranchPageFlag
 	}
-	page.WriteHeader(header)
+	page.writeHeader(header)
 
 	if n.isLeaf {
 		// serialize leaf node - pack from end backward
@@ -92,19 +92,19 @@ func (n *node) serialize(txnID uint64) (*Page, error) {
 			copy(page.data[dataOffset:], key)
 			keyOffset := dataOffset
 
-			elem := &LeafElement{
+			elem := &leafElement{
 				KeyOffset:   keyOffset,
 				KeySize:     uint16(len(key)),
 				ValueOffset: valueOffset,
 				ValueSize:   uint16(len(value)),
 			}
-			page.WriteLeafElement(i, elem)
+			page.writeLeafElement(i, elem)
 		}
 	} else {
 		// serialize branch node (B+ tree: only keys, no values)
 		// Write children[0] at fixed location (last 8 bytes)
 		if len(n.children) > 0 {
-			page.WriteBranchFirstChild(n.children[0])
+			page.writeBranchFirstChild(n.children[0])
 		}
 
 		// Pack keys from end backward (reserve last 8 bytes for children[0])
@@ -117,13 +117,13 @@ func (n *node) serialize(txnID uint64) (*Page, error) {
 			dataOffset -= uint16(len(key))
 			copy(page.data[dataOffset:], key)
 
-			elem := &BranchElement{
+			elem := &branchElement{
 				KeyOffset: dataOffset,
 				KeySize:   uint16(len(key)),
 				Reserved:  0, // No values in B+ tree branches
 				ChildID:   n.children[i+1],
 			}
-			page.WriteBranchElement(i, elem)
+			page.writeBranchElement(i, elem)
 		}
 	}
 
@@ -131,8 +131,8 @@ func (n *node) serialize(txnID uint64) (*Page, error) {
 }
 
 // deserialize decodes the page data into node fields
-func (n *node) deserialize(p *Page) error {
-	header := p.Header()
+func (n *node) deserialize(p *page) error {
+	header := p.header()
 	n.pageID = header.PageID
 	n.numKeys = header.NumKeys
 	n.isLeaf = (header.Flags & LeafPageFlag) != 0
@@ -143,12 +143,12 @@ func (n *node) deserialize(p *Page) error {
 		n.values = make([][]byte, n.numKeys)
 		n.children = nil
 
-		elements := p.LeafElements()
+		elements := p.leafElements()
 		for i := 0; i < int(n.numKeys); i++ {
 			elem := elements[i]
 
 			// Copy key
-			keyData, err := p.GetKey(elem.KeyOffset, elem.KeySize)
+			keyData, err := p.getKey(elem.KeyOffset, elem.KeySize)
 			if err != nil {
 				return err
 			}
@@ -156,7 +156,7 @@ func (n *node) deserialize(p *Page) error {
 			copy(n.keys[i], keyData)
 
 			// Copy value
-			valueData, err := p.GetValue(elem.ValueOffset, elem.ValueSize)
+			valueData, err := p.getValue(elem.ValueOffset, elem.ValueSize)
 			if err != nil {
 				return err
 			}
@@ -167,17 +167,17 @@ func (n *node) deserialize(p *Page) error {
 		// deserialize branch node (B+ tree: only keys, no values)
 		n.keys = make([][]byte, n.numKeys)
 		n.values = nil // Branch nodes don't have values
-		n.children = make([]PageID, n.numKeys+1)
+		n.children = make([]pageID, n.numKeys+1)
 
 		// Read children[0]
-		n.children[0] = p.ReadBranchFirstChild()
+		n.children[0] = p.readBranchFirstChild()
 
-		elements := p.BranchElements()
+		elements := p.branchElements()
 		for i := 0; i < int(n.numKeys); i++ {
 			elem := elements[i]
 
 			// Copy key
-			keyData, err := p.GetKey(elem.KeyOffset, elem.KeySize)
+			keyData, err := p.getKey(elem.KeyOffset, elem.KeySize)
 			if err != nil {
 				return err
 			}
@@ -239,7 +239,7 @@ func (n *node) clone() *node {
 
 	// Deep copy children (branch nodes only)
 	if !n.isLeaf && len(n.children) > 0 {
-		cloned.children = make([]PageID, len(n.children))
+		cloned.children = make([]pageID, len(n.children))
 		copy(cloned.children, n.children)
 	}
 

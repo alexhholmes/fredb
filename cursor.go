@@ -67,7 +67,7 @@ func (it *Cursor) SeekLast() error {
 //   - Seek(START) positions at first key in database
 //   - Seek(END) positions at last key in database (or invalid if empty)
 func (it *Cursor) Seek(key []byte) error {
-	// Validate transaction state
+	// validate transaction state
 	if err := it.active(); err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func (it *Cursor) Seek(key []byte) error {
 // Returns true if advanced successfully, false if exhausted
 // B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Next() bool {
-	// Validate transaction state
+	// validate transaction state
 	if err := it.active(); err != nil {
 		it.valid = false
 		return false
@@ -169,7 +169,7 @@ func (it *Cursor) Next() bool {
 // Returns true if moved successfully, false if at beginning
 // B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Prev() bool {
-	// Validate transaction state
+	// validate transaction state
 	if err := it.active(); err != nil {
 		it.valid = false
 		return false

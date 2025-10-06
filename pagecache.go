@@ -12,7 +12,7 @@ import (
 type PageCache struct {
 	maxSize  int                          // Max total versions (e.g., 1024)
 	lowWater int                          // Evict to this (80% of max)
-	entries  map[PageID][]*VersionedEntry // Multiple versions per page
+	entries  map[pageID][]*VersionedEntry // Multiple versions per page
 	lruList  *list.List                   // Doubly-linked list (front=MRU, back=LRU)
 	mu       sync.RWMutex
 	pager    PageManager // For flushing dirty pages during eviction
@@ -21,8 +21,8 @@ type PageCache struct {
 	versionMap *VersionMap
 
 	// Atomic GetOrLoad coordination
-	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
-	generations sync.Map // map[PageID]uint64 - detect invalidation during load
+	loadStates  sync.Map // map[pageID]*loadState - coordinate concurrent disk loads
+	generations sync.Map // map[pageID]uint64 - detect invalidation during load
 
 	// Stats
 	hits      atomic.Uint64
@@ -30,7 +30,7 @@ type PageCache struct {
 	evictions atomic.Uint64
 }
 
-// loadState coordinates concurrent disk loads for the same PageID
+// loadState coordinates concurrent disk loads for the same pageID
 type loadState struct {
 	mu        sync.Mutex
 	loading   bool          // Is someone currently loading?
@@ -42,7 +42,7 @@ type loadState struct {
 
 // VersionedEntry represents a cached node version with MVCC tracking
 type VersionedEntry struct {
-	pageID     PageID
+	pageID     pageID
 	txnID      uint64        // Transaction that committed this version
 	node       *node         // Parsed BTree node
 	pinCount   int           // Ref count (0 = evictable)
@@ -67,7 +67,7 @@ func NewPageCache(maxSize int, pager PageManager) *PageCache {
 	return &PageCache{
 		maxSize:    maxSize,
 		lowWater:   (maxSize * 4) / 5, // 80%
-		entries:    make(map[PageID][]*VersionedEntry),
+		entries:    make(map[pageID][]*VersionedEntry),
 		lruList:    list.New(),
 		pager:      pager,
 		versionMap: NewVersionMap(),
@@ -77,7 +77,7 @@ func NewPageCache(maxSize int, pager PageManager) *PageCache {
 // Get retrieves a node version visible to the transaction (MVCC snapshot isolation).
 // Returns the latest version where version.txnID <= txnID.
 // Returns (node, true) on cache hit, (nil, false) on miss.
-func (c *PageCache) Get(pageID PageID, txnID uint64) (*node, bool) {
+func (c *PageCache) Get(pageID pageID, txnID uint64) (*node, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -109,7 +109,7 @@ func (c *PageCache) Get(pageID PageID, txnID uint64) (*node, bool) {
 
 // Put adds a new version of a page to the cache.
 // The version is tagged with the committing transaction's ID for MVCC.
-func (c *PageCache) Put(pageID PageID, txnID uint64, node *node) {
+func (c *PageCache) Put(pageID pageID, txnID uint64, node *node) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -150,7 +150,7 @@ func (c *PageCache) Put(pageID PageID, txnID uint64, node *node) {
 
 // Unpin is a no-op in the versioned cache (kept for API compatibility).
 // With the hybrid model, pages in use are in tx.pages, not the global cache.
-func (c *PageCache) Unpin(pageID PageID) {
+func (c *PageCache) Unpin(pageID pageID) {
 	// No-op: versioned cache doesn't use pinning
 }
 
@@ -196,7 +196,7 @@ func (c *PageCache) FlushDirty(pager *PageManager) error {
 
 // WriteDirtyPages is deprecated in versioned cache (no-op for compatibility).
 // With the hybrid model, tx.Commit() handles writes directly.
-func (c *PageCache) WriteDirtyPages(pageIDs []PageID, pager PageManager) error {
+func (c *PageCache) WriteDirtyPages(pageIDs []pageID, pager PageManager) error {
 	// No-op: hybrid model writes pages directly in tx.Commit()
 	return nil
 }
@@ -219,8 +219,8 @@ func (c *PageCache) Size() int {
 }
 
 // Invalidate removes all cached versions of a page.
-// Used when a PageID is reallocated to prevent stale cache hits.
-func (c *PageCache) Invalidate(pageID PageID) {
+// Used when a pageID is reallocated to prevent stale cache hits.
+func (c *PageCache) Invalidate(pageID pageID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -251,7 +251,7 @@ func (c *PageCache) Invalidate(pageID PageID) {
 // GetOrLoad retrieves a node from cache or loads it from disk atomically.
 // Coordinates concurrent loads to prevent multiple threads loading the same page.
 // Returns (node, true) if version is visible, (nil, false) otherwise.
-func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
+func (c *PageCache) GetOrLoad(pageID pageID, txnID uint64,
 	loadFunc func() (*node, uint64, error)) (*node, bool) {
 
 	// Fast path: active cache first
@@ -269,7 +269,7 @@ func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
 	// Capture generation before load to detect invalidation
 	startGen := c.getGeneration(pageID)
 
-	// LoadOrStore ensures only one loadState exists per PageID
+	// LoadOrStore ensures only one loadState exists per pageID
 	stateVal, _ := c.loadStates.LoadOrStore(pageID, &loadState{
 		done: make(chan struct{}),
 	})
@@ -322,7 +322,7 @@ func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
 	// Check if page was invalidated during load
 	endGen := c.getGeneration(pageID)
 	if endGen != startGen {
-		// Page was freed/reallocated during load, discard
+		// page was freed/reallocated during load, discard
 		c.loadStates.Delete(pageID)
 		return nil, false
 	}
@@ -342,9 +342,9 @@ func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
 	return c.loadRelocatedVersion(pageID, txnID)
 }
 
-// getGeneration returns the current generation counter for a PageID.
+// getGeneration returns the current generation counter for a pageID.
 // Used to detect invalidation during disk loads.
-func (c *PageCache) getGeneration(pageID PageID) uint64 {
+func (c *PageCache) getGeneration(pageID pageID) uint64 {
 	if val, ok := c.generations.Load(pageID); ok {
 		return val.(uint64)
 	}
@@ -353,7 +353,7 @@ func (c *PageCache) getGeneration(pageID PageID) uint64 {
 
 // loadRelocatedVersion attempts to load an older relocated version visible to txnID.
 // Returns (node, true) if found, (nil, false) otherwise.
-func (c *PageCache) loadRelocatedVersion(pageID PageID, txnID uint64) (*node, bool) {
+func (c *PageCache) loadRelocatedVersion(pageID pageID, txnID uint64) (*node, bool) {
 	relocatedPageID, relocatedTxnID := c.versionMap.GetLatestVisible(pageID, txnID)
 	if relocatedPageID == 0 {
 		return nil, false
@@ -369,7 +369,7 @@ func (c *PageCache) loadRelocatedVersion(pageID PageID, txnID uint64) (*node, bo
 		pageID: pageID, // Use original pageID, not relocated
 		dirty:  false,
 	}
-	header := page.Header()
+	header := page.header()
 	if header.NumKeys == 0 {
 		return nil, false
 	}

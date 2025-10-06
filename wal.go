@@ -22,11 +22,11 @@ type WAL struct {
 
 // Record types
 const (
-	WALRecordPage   uint8 = 1 // Page write
+	WALRecordPage   uint8 = 1 // page write
 	WALRecordCommit uint8 = 2 // Commit marker
 )
 
-// Record format: [Type:1][TxnID:8][PageID:8][DataLen:4][Data:N]
+// Record format: [Type:1][TxnID:8][pageID:8][DataLen:4][Data:N]
 const WALRecordHeaderSize = 1 + 8 + 8 + 4
 
 // NewWAL opens or creates a WAL file with the specified sync mode
@@ -54,8 +54,8 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 }
 
 // AppendPage writes a page record to the WAL
-// Format: [WALRecordPage:1][TxnID:8][PageID:8][PageSize:4][page.data:PageSize]
-func (w *WAL) AppendPage(txnID uint64, pageID PageID, page *Page) error {
+// Format: [WALRecordPage:1][TxnID:8][pageID:8][PageSize:4][page.data:PageSize]
+func (w *WAL) AppendPage(txnID uint64, pageID pageID, page *page) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -159,12 +159,12 @@ func (w *WAL) syncUnsafe() error {
 type WALRecord struct {
 	Type   uint8
 	TxnID  uint64
-	PageID PageID
-	Page   *Page
+	PageID pageID
+	Page   *page
 }
 
 // Replay reads the WAL and applies all committed transactions after fromTxnID
-func (w *WAL) Replay(fromTxnID uint64, applyFn func(PageID, *Page) error) error {
+func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *page) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -174,7 +174,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(PageID, *Page) error) error 
 	}
 
 	// Track uncommitted transactions
-	// Map: TxnID -> list of (PageID, Page) to apply if commit marker found
+	// Map: TxnID -> list of (pageID, page) to apply if commit marker found
 	uncommitted := make(map[uint64][]WALRecord)
 
 	header := make([]byte, WALRecordHeaderSize)
@@ -195,7 +195,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(PageID, *Page) error) error 
 		// Parse header
 		recordType := header[0]
 		txnID := binary.LittleEndian.Uint64(header[1:9])
-		pageID := PageID(binary.LittleEndian.Uint64(header[9:17]))
+		pageID := pageID(binary.LittleEndian.Uint64(header[9:17]))
 		dataLen := binary.LittleEndian.Uint32(header[17:21])
 
 		switch recordType {
@@ -205,7 +205,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(PageID, *Page) error) error 
 				return fmt.Errorf("WAL replay: invalid page size: %d", dataLen)
 			}
 
-			page := &Page{}
+			page := &page{}
 			if _, err := w.file.Read(page.data[:]); err != nil {
 				return fmt.Errorf("WAL replay: failed to read page data: %w", err)
 			}

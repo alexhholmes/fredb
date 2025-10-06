@@ -188,7 +188,7 @@ func TestDBFileFormat(t *testing.T) {
 		t.Fatalf("Failed to close DB: %v", err)
 	}
 
-	// Validate file exists and has correct structure
+	// validate file exists and has correct structure
 	info, err := os.Stat(tmpfile)
 	if err != nil {
 		t.Fatalf("DB file not found: %v", err)
@@ -212,7 +212,7 @@ func TestDBFileFormat(t *testing.T) {
 	}
 	defer file.Close()
 
-	page0 := &Page{}
+	page0 := &page{}
 	n, err := file.Read(page0.data[:])
 	if err != nil {
 		t.Fatalf("Failed to read meta page 0: %v", err)
@@ -221,7 +221,7 @@ func TestDBFileFormat(t *testing.T) {
 		t.Fatalf("Short read: got %d bytes, expected %d", n, PageSize)
 	}
 
-	page1 := &Page{}
+	page1 := &page{}
 	n, err = file.Read(page1.data[:])
 	if err != nil {
 		t.Fatalf("Failed to read meta page 1: %v", err)
@@ -230,11 +230,11 @@ func TestDBFileFormat(t *testing.T) {
 		t.Fatalf("Short read: got %d bytes, expected %d", n, PageSize)
 	}
 
-	meta0 := page0.ReadMeta()
-	meta1 := page1.ReadMeta()
+	meta0 := page0.readMeta()
+	meta1 := page1.readMeta()
 
 	// close() increments TxnID from 0 to 1, so writes to page 1 (1 % 2 = 1)
-	// Page 1 should have the latest meta with RootPageID set
+	// page 1 should have the latest meta with RootPageID set
 	t.Logf("Meta page 0 TxnID: %d, RootPageID: %d", meta0.TxnID, meta0.RootPageID)
 	t.Logf("Meta page 1 TxnID: %d, RootPageID: %d", meta1.TxnID, meta1.RootPageID)
 
@@ -246,33 +246,33 @@ func TestDBFileFormat(t *testing.T) {
 		meta = meta1
 	}
 
-	// Validate magic number
+	// validate magic number
 	if meta.Magic != MagicNumber {
 		t.Errorf("Invalid magic number: got 0x%08x, expected 0x%08x", meta.Magic, MagicNumber)
 	}
 
-	// Validate version
+	// validate version
 	if meta.Version != FormatVersion {
 		t.Errorf("Invalid version: got %d, expected %d", meta.Version, FormatVersion)
 	}
 
-	// Validate page size
+	// validate page size
 	if meta.PageSize != PageSize {
 		t.Errorf("Invalid page size: got %d, expected %d", meta.PageSize, PageSize)
 	}
 
-	// Validate RootPageID is persisted after close
+	// validate RootPageID is persisted after close
 	if meta.RootPageID == 0 {
 		t.Errorf("RootPageID is zero after close - should be persisted to meta")
 	}
 
-	// Validate freelist location
+	// validate freelist location
 	if meta.FreelistID != 2 {
 		t.Errorf("Freelist ID: got %d, expected 2", meta.FreelistID)
 	}
 
-	// Validate checksum
-	if err := meta.Validate(); err != nil {
+	// validate checksum
+	if err := meta.validate(); err != nil {
 		t.Errorf("Meta validation failed: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestDBFileHexDump(t *testing.T) {
 		t.Fatalf("Failed to read page 0: %v", err)
 	}
 
-	t.Logf("\n=== Page 0 (Meta) - First 128 bytes ===")
+	t.Logf("\n=== page 0 (Meta) - First 128 bytes ===")
 	t.Logf("%s", formatHexDump(page0[:128]))
 
 	// Read meta page 1
@@ -339,7 +339,7 @@ func TestDBFileHexDump(t *testing.T) {
 		t.Fatalf("Failed to read page 1: %v", err)
 	}
 
-	t.Logf("\n=== Page 1 (Meta backup) - First 128 bytes ===")
+	t.Logf("\n=== page 1 (Meta backup) - First 128 bytes ===")
 	t.Logf("%s", formatHexDump(page1[:128]))
 
 	// Read freelist page 2
@@ -349,7 +349,7 @@ func TestDBFileHexDump(t *testing.T) {
 		t.Fatalf("Failed to read page 2: %v", err)
 	}
 
-	t.Logf("\n=== Page 2 (Freelist) - First 128 bytes ===")
+	t.Logf("\n=== page 2 (Freelist) - First 128 bytes ===")
 	t.Logf("%s", formatHexDump(page2[:128]))
 
 	// Read root page (page 3 likely)
@@ -359,7 +359,7 @@ func TestDBFileHexDump(t *testing.T) {
 		t.Fatalf("Failed to read page 3: %v", err)
 	}
 
-	t.Logf("\n=== Page 3 (B-tree root) - First 256 bytes ===")
+	t.Logf("\n=== page 3 (B-tree root) - First 256 bytes ===")
 	t.Logf("%s", formatHexDump(page3[:256]))
 }
 
@@ -488,13 +488,13 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	}
 
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
-	// Corrupt page 0 meta magic (at PageHeaderSize offset)
-	_, err = file.WriteAt(corruptData, int64(PageHeaderSize))
+	// Corrupt page 0 meta magic (at pageHeaderSize offset)
+	_, err = file.WriteAt(corruptData, int64(pageHeaderSize))
 	if err != nil {
 		t.Fatalf("Failed to corrupt page 0: %v", err)
 	}
-	// Corrupt page 1 meta magic (at PageSize + PageHeaderSize offset)
-	_, err = file.WriteAt(corruptData, int64(PageSize+PageHeaderSize))
+	// Corrupt page 1 meta magic (at PageSize + pageHeaderSize offset)
+	_, err = file.WriteAt(corruptData, int64(PageSize+pageHeaderSize))
 	if err != nil {
 		t.Fatalf("Failed to corrupt page 1: %v", err)
 	}
@@ -503,14 +503,14 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 
 	// Verify corruption was applied
 	verifyFile, _ := os.Open(tmpfile)
-	verifyPage0 := &Page{}
+	verifyPage0 := &page{}
 	verifyFile.Read(verifyPage0.data[:])
-	verifyPage1 := &Page{}
+	verifyPage1 := &page{}
 	verifyFile.Read(verifyPage1.data[:])
 	verifyFile.Close()
 
-	t.Logf("After corruption - Page 0 meta magic: %x", verifyPage0.data[PageHeaderSize:PageHeaderSize+4])
-	t.Logf("After corruption - Page 1 meta magic: %x", verifyPage1.data[PageHeaderSize:PageHeaderSize+4])
+	t.Logf("After corruption - page 0 meta magic: %x", verifyPage0.data[pageHeaderSize:pageHeaderSize+4])
+	t.Logf("After corruption - page 1 meta magic: %x", verifyPage1.data[pageHeaderSize:pageHeaderSize+4])
 
 	// Check file size
 	info, _ := os.Stat(tmpfile)
@@ -612,17 +612,17 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 		t.Fatalf("Failed to open file: %v", err)
 	}
 
-	page0 := &Page{}
+	page0 := &page{}
 	file.Read(page0.data[:])
-	page1 := &Page{}
+	page1 := &page{}
 	file.Read(page1.data[:])
 	file.Close()
 
-	meta0 := page0.ReadMeta()
-	meta1 := page1.ReadMeta()
+	meta0 := page0.readMeta()
+	meta1 := page1.readMeta()
 
-	t.Logf("Page 0 TxnID: %d", meta0.TxnID)
-	t.Logf("Page 1 TxnID: %d", meta1.TxnID)
+	t.Logf("page 0 TxnID: %d", meta0.TxnID)
+	t.Logf("page 1 TxnID: %d", meta1.TxnID)
 
 	// One should have higher TxnID than the other
 	if meta0.TxnID == meta1.TxnID {
@@ -635,22 +635,22 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 		activeMeta = meta0
 		// TxnID should be even (written to page 0)
 		if activeMeta.TxnID%2 != 0 {
-			t.Errorf("Page 0 has odd TxnID %d, expected even", activeMeta.TxnID)
+			t.Errorf("page 0 has odd TxnID %d, expected even", activeMeta.TxnID)
 		}
 	} else {
 		activeMeta = meta1
 		// TxnID should be odd (written to page 1)
 		if activeMeta.TxnID%2 != 1 {
-			t.Errorf("Page 1 has even TxnID %d, expected odd", activeMeta.TxnID)
+			t.Errorf("page 1 has even TxnID %d, expected odd", activeMeta.TxnID)
 		}
 	}
 
 	// Both should be valid
-	if err := meta0.Validate(); err != nil {
-		t.Errorf("Page 0 invalid: %v", err)
+	if err := meta0.validate(); err != nil {
+		t.Errorf("page 0 invalid: %v", err)
 	}
-	if err := meta1.Validate(); err != nil {
-		t.Errorf("Page 1 invalid: %v", err)
+	if err := meta1.validate(); err != nil {
+		t.Errorf("page 1 invalid: %v", err)
 	}
 
 	t.Logf("Meta page alternating writes validated successfully")
@@ -680,20 +680,20 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	page0 := &Page{}
+	page0 := &page{}
 	file.Read(page0.data[:])
-	page1 := &Page{}
+	page1 := &page{}
 	file.Read(page1.data[:])
 	file.Close()
 
-	meta0 := page0.ReadMeta()
-	meta1 := page1.ReadMeta()
-	t.Logf("After second Set: Page 0 TxnID=%d RootPageID=%d, Page 1 TxnID=%d RootPageID=%d",
+	meta0 := page0.readMeta()
+	meta1 := page1.readMeta()
+	t.Logf("After second Set: page 0 TxnID=%d RootPageID=%d, page 1 TxnID=%d RootPageID=%d",
 		meta0.TxnID, meta0.RootPageID, meta1.TxnID, meta1.RootPageID)
 
 	// Record the older TxnID (should only have key1)
 	var olderTxn uint64
-	var olderRoot PageID
+	var olderRoot pageID
 	if meta0.TxnID < meta1.TxnID {
 		olderTxn = meta0.TxnID
 		olderRoot = meta0.RootPageID
@@ -710,21 +710,21 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 		t.Fatalf("Failed to open file: %v", err)
 	}
 
-	page0 = &Page{}
+	page0 = &page{}
 	file.ReadAt(page0.data[:], 0)
-	page1 = &Page{}
+	page1 = &page{}
 	file.ReadAt(page1.data[:], int64(PageSize))
 
-	meta0 = page0.ReadMeta()
-	meta1 = page1.ReadMeta()
+	meta0 = page0.readMeta()
+	meta1 = page1.readMeta()
 
 	// Corrupt the newer one
 	var corruptOffset int64
 	if meta0.TxnID > meta1.TxnID {
-		corruptOffset = int64(PageHeaderSize)
+		corruptOffset = int64(pageHeaderSize)
 		t.Logf("Corrupting page 0 (TxnID %d)", meta0.TxnID)
 	} else {
-		corruptOffset = int64(PageSize + PageHeaderSize)
+		corruptOffset = int64(PageSize + pageHeaderSize)
 		t.Logf("Corrupting page 1 (TxnID %d)", meta1.TxnID)
 	}
 
@@ -793,7 +793,7 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 
 	// Write wrong magic number at page 0
 	wrongMagic := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	_, err = file.WriteAt(wrongMagic, int64(PageHeaderSize))
+	_, err = file.WriteAt(wrongMagic, int64(pageHeaderSize))
 	if err != nil {
 		t.Fatalf("Failed to write wrong magic: %v", err)
 	}
@@ -845,19 +845,19 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	}
 
 	// Read current meta from page 0
-	page := &Page{}
+	page := &page{}
 	_, err = file.ReadAt(page.data[:], 0)
 	if err != nil {
 		t.Fatalf("Failed to read meta: %v", err)
 	}
 
 	// Parse and modify
-	meta := page.ReadMeta()
+	meta := page.readMeta()
 	meta.RootPageID = 0 // Set to 0 (invalid state if TxnID > 0)
-	meta.Checksum = meta.CalculateChecksum()
+	meta.Checksum = meta.calculateChecksum()
 
 	// Write back
-	page.WriteMeta(meta)
+	page.writeMeta(meta)
 	_, err = file.WriteAt(page.data[:], 0)
 	if err != nil {
 		t.Fatalf("Failed to write modified meta: %v", err)
@@ -949,28 +949,28 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	}
 
 	// Read meta from page 0
-	page0 := &Page{}
+	page0 := &page{}
 	_, err = file.ReadAt(page0.data[:], 0)
 	if err != nil {
 		t.Fatalf("Failed to read meta 0: %v", err)
 	}
-	meta0 := page0.ReadMeta()
+	meta0 := page0.readMeta()
 
 	// Read meta from page 1
-	page1 := &Page{}
+	page1 := &page{}
 	_, err = file.ReadAt(page1.data[:], PageSize)
 	if err != nil {
 		t.Fatalf("Failed to read meta 1: %v", err)
 	}
-	meta1 := page1.ReadMeta()
+	meta1 := page1.readMeta()
 
 	// Make both have same TxnID
 	meta1.TxnID = meta0.TxnID
 	meta1.RootPageID = 999 // Different root (invalid)
-	meta1.Checksum = meta1.CalculateChecksum()
+	meta1.Checksum = meta1.calculateChecksum()
 
 	// Write back page 1
-	page1.WriteMeta(meta1)
+	page1.writeMeta(meta1)
 	_, err = file.WriteAt(page1.data[:], int64(PageSize))
 	if err != nil {
 		t.Fatalf("Failed to write meta 1: %v", err)

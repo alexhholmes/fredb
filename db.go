@@ -125,14 +125,14 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 		writable: writable,
 		meta:     nil,          // Reserved for future BTree metadata tracking
 		root:     d.store.root, // Capture snapshot for MVCC isolation
-		pending:  make([]PageID, 0),
-		freed:    make([]PageID, 0),
+		pending:  make([]pageID, 0),
+		freed:    make([]pageID, 0),
 		done:     false,
 	}
 
 	// Initialize TX-local cache for write transactions
 	if writable {
-		tx.pages = make(map[PageID]*node)
+		tx.pages = make(map[pageID]*node)
 	}
 
 	// Track active transaction
@@ -296,14 +296,14 @@ func (d *db) checkpoint() error {
 
 	// Replay WAL from last checkpoint to current
 	// IMPORTANT: Before overwriting each page, check if old disk version needs preservation
-	err := dm.ReplayWAL(checkpointTxn, func(pageID PageID, newPage *Page) error {
+	err := dm.ReplayWAL(checkpointTxn, func(pageID pageID, newPage *page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the WAL latch check for this read
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
 
 		if readErr == nil && oldPage != nil {
 			// Parse old version's TxnID
-			oldHeader := oldPage.Header()
+			oldHeader := oldPage.header()
 			oldTxnID := oldHeader.TxnID
 
 			// If any active reader might need this old version, relocate it

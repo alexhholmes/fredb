@@ -14,8 +14,8 @@ import (
 // - On restart, pending pages are freed (no readers exist)
 //
 // Example:
-//   - Page 100 has version@3 (cached)
-//   - Page 100 updated to version@8 (checkpointed to disk at pageID=100)
+//   - page 100 has version@3 (cached)
+//   - page 100 updated to version@8 (checkpointed to disk at pageID=100)
 //   - Cache needs space, evicts version@3
 //   - Relocate version@3 to free page 500
 //   - Track: versionMap[100][3] = 500
@@ -23,30 +23,30 @@ import (
 //   - Reader@5 can still load version@3 from page 500
 type VersionMap struct {
 	// Map: originalPageID -> (txnID -> relocatedPageID)
-	relocations map[PageID]map[uint64]PageID
+	relocations map[pageID]map[uint64]pageID
 	mu          sync.RWMutex
 }
 
 // NewVersionMap creates a new version relocation tracker
 func NewVersionMap() *VersionMap {
 	return &VersionMap{
-		relocations: make(map[PageID]map[uint64]PageID),
+		relocations: make(map[pageID]map[uint64]pageID),
 	}
 }
 
 // Track records that a page version has been relocated to a new location
-func (vm *VersionMap) Track(originalPageID PageID, txnID uint64, relocatedPageID PageID) {
+func (vm *VersionMap) Track(originalPageID pageID, txnID uint64, relocatedPageID pageID) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
 	if vm.relocations[originalPageID] == nil {
-		vm.relocations[originalPageID] = make(map[uint64]PageID)
+		vm.relocations[originalPageID] = make(map[uint64]pageID)
 	}
 	vm.relocations[originalPageID][txnID] = relocatedPageID
 }
 
 // Get returns the relocated page ID for a specific version, or 0 if not relocated
-func (vm *VersionMap) Get(originalPageID PageID, txnID uint64) PageID {
+func (vm *VersionMap) Get(originalPageID pageID, txnID uint64) pageID {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 
@@ -58,7 +58,7 @@ func (vm *VersionMap) Get(originalPageID PageID, txnID uint64) PageID {
 
 // GetLatestVisible returns the relocated page ID for the latest version visible to txnID,
 // or 0 if no visible version is relocated. Used for MVCC snapshot isolation.
-func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (PageID, uint64) {
+func (vm *VersionMap) GetLatestVisible(originalPageID pageID, maxTxnID uint64) (pageID, uint64) {
 	vm.mu.RLock()
 	defer vm.mu.RUnlock()
 
@@ -69,7 +69,7 @@ func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (
 
 	// Find latest version where versionTxnID <= maxTxnID
 	var latestTxnID uint64
-	var latestPageID PageID
+	var latestPageID pageID
 
 	for versionTxnID, relocatedPageID := range versions {
 		if versionTxnID <= maxTxnID && versionTxnID > latestTxnID {
@@ -82,7 +82,7 @@ func (vm *VersionMap) GetLatestVisible(originalPageID PageID, maxTxnID uint64) (
 }
 
 // Remove removes a relocation entry (called when version is no longer needed)
-func (vm *VersionMap) Remove(originalPageID PageID, txnID uint64) {
+func (vm *VersionMap) Remove(originalPageID pageID, txnID uint64) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
@@ -96,11 +96,11 @@ func (vm *VersionMap) Remove(originalPageID PageID, txnID uint64) {
 
 // Cleanup removes all relocations for versions older than minReaderTxn
 // Returns the relocated page IDs that can now be freed
-func (vm *VersionMap) Cleanup(minReaderTxn uint64) []PageID {
+func (vm *VersionMap) Cleanup(minReaderTxn uint64) []pageID {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	var toFree []PageID
+	var toFree []pageID
 
 	for originalPageID, versions := range vm.relocations {
 		for txnID, relocatedPageID := range versions {
