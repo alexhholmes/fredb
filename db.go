@@ -203,10 +203,8 @@ func (d *db) Close() error {
 	}
 
 	// Force sync WAL before checkpoint to ensure all data is durable
-	if dm, ok := d.store.pager.(*DiskPageManager); ok {
-		if err := dm.ForceSyncWAL(); err != nil {
-			return err
-		}
+	if err := d.store.pager.ForceSyncWAL(); err != nil {
+		return err
 	}
 
 	// Final checkpoint to flush WAL
@@ -280,10 +278,7 @@ func (d *db) checkpoint() error {
 		return nil
 	}
 
-	dm, ok := d.store.pager.(*DiskPageManager)
-	if !ok {
-		return nil // In-memory database, skip checkpoint
-	}
+	dm := d.store.pager
 
 	// get current transaction boundary
 	meta := dm.GetMeta()
@@ -463,15 +458,14 @@ func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 
 // releasePages calls Release on the freelist with the given minimum transaction ID
 func (d *db) releasePages(minTxn uint64) {
-	// Need to access the DiskPageManager's freelist
-	if dm, ok := d.store.pager.(*DiskPageManager); ok {
-		dm.mu.Lock()
-		dm.freelist.Release(minTxn)
-		dm.mu.Unlock()
+	// Need to access the PageManager's freelist
+	dm := d.store.pager
+	dm.mu.Lock()
+	dm.freelist.Release(minTxn)
+	dm.mu.Unlock()
 
-		// Cleanup WAL Page latches for checkpointed pages visible to all readers
-		dm.CleanupLatchOnWAL(minTxn)
-	}
+	// Cleanup WAL Page latches for checkpointed pages visible to all readers
+	dm.CleanupLatchOnWAL(minTxn)
 
 	// Cleanup relocated Page versions that are no longer needed
 	d.store.cache.cleanupRelocatedVersions(minTxn)

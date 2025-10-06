@@ -91,21 +91,20 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 	}
 
 	// Directly access pager to write WAL without commit marker
-	if dm, ok := db.store.pager.(*DiskPageManager); ok {
-		// Flush dirty pages to WAL without commit
-		for pageID, node := range tx.pages {
-			page, err := node.serialize(tx.txnID)
-			if err != nil {
-				t.Fatalf("Failed to serialize: %v", err)
-			}
-			if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
-				t.Fatalf("Failed to append to WAL: %v", err)
-			}
+	dm := db.store.pager
+	// Flush dirty pages to WAL without commit
+	for pageID, node := range tx.pages {
+		page, err := node.serialize(tx.txnID)
+		if err != nil {
+			t.Fatalf("Failed to serialize: %v", err)
 		}
-		// Force fsync WAL
-		if err := dm.ForceSyncWAL(); err != nil {
-			t.Fatalf("Failed to sync WAL: %v", err)
+		if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
+			t.Fatalf("Failed to append to WAL: %v", err)
 		}
+	}
+	// Force fsync WAL
+	if err := dm.ForceSyncWAL(); err != nil {
+		t.Fatalf("Failed to sync WAL: %v", err)
 	}
 
 	// Rollback transaction to avoid proper cleanup
@@ -164,7 +163,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Get current meta to simulate partial checkpoint
-	dm := db.store.pager.(*DiskPageManager)
+	dm := db.store.pager
 	meta := dm.GetMeta()
 	checkpointTxnID := meta.CheckpointTxnID
 
@@ -324,7 +323,7 @@ func TestWALTruncateSafety(t *testing.T) {
 	}
 
 	// Get current meta
-	dm := db.store.pager.(*DiskPageManager)
+	dm := db.store.pager
 	meta := dm.GetMeta()
 
 	// Try to truncate WAL beyond checkpoint - should fail

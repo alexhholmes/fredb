@@ -298,19 +298,18 @@ func TestFreelistNoPageLeaks(t *testing.T) {
 	}
 
 	// Also active that freelist size is reasonable
-	if dm, ok := db.store.pager.(*DiskPageManager); ok {
-		dm.mu.Lock()
-		freeSize := dm.freelist.Size()
-		pendingSize := dm.freelist.PendingSize()
-		dm.mu.Unlock()
+	dm := db.store.pager
+	dm.mu.Lock()
+	freeSize := dm.freelist.Size()
+	pendingSize := dm.freelist.PendingSize()
+	dm.mu.Unlock()
 
-		// After all operations complete and readers finish,
-		// pending should be empty and free list should contain reclaimed pages
-		if pendingSize > 10 {
-			t.Errorf("Pending list still has %d pages after operations complete", pendingSize)
-		}
-
-		t.Logf("Test complete: Pages grew from %d to %d (growth: %d), Free: %d, Pending: %d",
-			initialPages, finalPages, pageGrowth, freeSize, pendingSize)
+	// After all operations complete and readers finish,
+	// pending should be empty and free list should contain reclaimed pages
+	if pendingSize > 10 {
+		t.Errorf("Pending list still has %d pages after operations complete", pendingSize)
 	}
+
+	t.Logf("Test complete: Pages grew from %d to %d (growth: %d), Free: %d, Pending: %d",
+		initialPages, finalPages, pageGrowth, freeSize, pendingSize)
 }

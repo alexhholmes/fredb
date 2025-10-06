@@ -15,7 +15,7 @@ type PageCache struct {
 	entries  map[PageID][]*versionEntry // Multiple versions per Page
 	lruList  *list.List                 // Doubly-linked list (front=MRU, back=LRU)
 	mu       sync.RWMutex
-	pager    PageManager // For flushing dirty pages during eviction
+	pager    *PageManager // For flushing dirty pages during eviction
 
 	// Version relocation tracking for old versions needed by long-running readers
 	versionMap *VersionMap
@@ -56,7 +56,7 @@ const (
 )
 
 // NewPageCache creates a new Page cache with the specified maximum size
-func NewPageCache(maxSize int, pager PageManager) *PageCache {
+func NewPageCache(maxSize int, pager *PageManager) *PageCache {
 	if maxSize < MinCacheSize {
 		maxSize = MinCacheSize
 	}

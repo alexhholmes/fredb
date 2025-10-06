@@ -7,13 +7,13 @@ import (
 
 // BTree is the main structure
 type BTree struct {
-	pager PageManager
+	pager *PageManager
 	root  *Node
 	cache *PageCache // LRU cache for non-root nodes
 }
 
 // NewBTree creates a new BTree with the given PageManager
-func NewBTree(pager PageManager) (*BTree, error) {
+func NewBTree(pager *PageManager) (*BTree, error) {
 	meta := pager.GetMeta()
 
 	bt := &BTree{
@@ -99,7 +99,7 @@ func (bt *BTree) close() error {
 
 	// Flush all cached nodes
 	if bt.cache != nil {
-		if err := bt.cache.flushDirty(&bt.pager); err != nil {
+		if err := bt.cache.flushDirty(bt.pager); err != nil {
 			return err
 		}
 	}

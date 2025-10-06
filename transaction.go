@@ -253,12 +253,11 @@ func (tx *Tx) Commit() error {
 		}
 
 		// Write to WAL instead of disk
-		if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
-			if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
-				// Restore old root on failure
-				tx.db.store.root = oldRoot
-				return err
-			}
+		dm := tx.db.store.pager
+		if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
+			// Restore old root on failure
+			tx.db.store.root = oldRoot
+			return err
 		}
 
 		// Clear dirty flag after successful write
@@ -270,28 +269,26 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Append commit marker to WAL
-	if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
-		if err := dm.CommitWAL(tx.txnID); err != nil {
-			tx.db.store.root = oldRoot
-			return err
-		}
+	dm := tx.db.store.pager
+	if err := dm.CommitWAL(tx.txnID); err != nil {
+		tx.db.store.root = oldRoot
+		return err
+	}
 
-		// Conditionally fsync WAL based on sync mode (this is the commit point!)
-		if err := dm.SyncWAL(); err != nil {
-			tx.db.store.root = oldRoot
-			return err
-		}
+	// Conditionally fsync WAL based on sync mode (this is the commit point!)
+	if err := dm.SyncWAL(); err != nil {
+		tx.db.store.root = oldRoot
+		return err
 	}
 
 	// Add freed pages to pending at this transaction ID
 	// These pages were part of the previous version and can be reclaimed
 	// when all readers that might reference them have finished.
 	if len(tx.freed) > 0 {
-		if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
-			dm.mu.Lock()
-			dm.freelist.FreePending(tx.txnID, tx.freed)
-			dm.mu.Unlock()
-		}
+		dm := tx.db.store.pager
+		dm.mu.Lock()
+		dm.freelist.FreePending(tx.txnID, tx.freed)
+		dm.mu.Unlock()
 	}
 
 	// Write meta Page to disk for persistence
@@ -339,15 +336,14 @@ func (tx *Tx) Rollback() error {
 		// Return allocated but uncommitted pages to the freelist
 		// These pages were allocated during the transaction but never used
 		if len(tx.pending) > 0 {
-			if dm, ok := tx.db.store.pager.(*DiskPageManager); ok {
-				dm.mu.Lock()
-				// Add directly to free list, not pending - these can be reused immediately
-				// since they were never part of any committed state
-				for _, pageID := range tx.pending {
-					dm.freelist.Free(pageID)
-				}
-				dm.mu.Unlock()
+			dm := tx.db.store.pager
+			dm.mu.Lock()
+			// Add directly to free list, not pending - these can be reused immediately
+			// since they were never part of any committed state
+			for _, pageID := range tx.pending {
+				dm.freelist.Free(pageID)
 			}
+			dm.mu.Unlock()
 		}
 
 		tx.db.writerTx = nil
@@ -507,7 +503,7 @@ func (tx *Tx) allocatePage() (PageID, *Page, error) {
 retryLoop:
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Allocate from pager (uses freelist or grows file)
-		// DiskPageManager.allocatePage() is thread-safe via mutex
+		// PageManager.allocatePage() is thread-safe via mutex
 		pageID, err := tx.db.store.pager.AllocatePage()
 		if err != nil {
 			return 0, nil, err
