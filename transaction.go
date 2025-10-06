@@ -253,8 +253,7 @@ func (tx *Tx) Commit() error {
 		}
 
 		// Write to WAL instead of disk
-		dm := tx.db.store.pager
-		if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
+		if err := tx.db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
 			// Restore old root on failure
 			tx.db.store.root = oldRoot
 			return err
@@ -269,14 +268,13 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Append commit marker to WAL
-	dm := tx.db.store.pager
-	if err := dm.CommitWAL(tx.txnID); err != nil {
+	if err := tx.db.wal.AppendCommit(tx.txnID); err != nil {
 		tx.db.store.root = oldRoot
 		return err
 	}
 
 	// Conditionally fsync WAL based on sync mode (this is the commit point!)
-	if err := dm.SyncWAL(); err != nil {
+	if err := tx.db.wal.Sync(); err != nil {
 		tx.db.store.root = oldRoot
 		return err
 	}

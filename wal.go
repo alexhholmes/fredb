@@ -18,6 +18,9 @@ type WAL struct {
 	syncMode       WALSyncMode
 	bytesPerSync   int64
 	bytesSinceSync int64 // Bytes written since last fsync
+
+	// Page tracking - latches prevent stale disk reads
+	pages sync.Map // PageID -> uint64 (txnID) - pages in WAL but not yet on disk
 }
 
 // Record types
@@ -84,6 +87,9 @@ func (w *WAL) AppendPage(txnID uint64, pageID PageID, page *Page) error {
 	bytesWritten := int64(WALRecordHeaderSize + PageSize)
 	w.offset += bytesWritten
 	w.bytesSinceSync += bytesWritten
+
+	// Set latch to prevent stale disk reads
+	w.pages.Store(pageID, txnID)
 
 	return nil
 }
@@ -316,6 +322,23 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 	w.offset = newSize
 
 	return nil
+}
+
+// CleanupLatch removes WAL page latches for pages that have been checkpointed
+// AND are visible to all active readers (txnID < minReaderTxn).
+func (w *WAL) CleanupLatch(checkpointTxn, minReaderTxn uint64) {
+	w.pages.Range(func(key, value interface{}) bool {
+		pageID := key.(PageID)
+		txnID := value.(uint64)
+
+		// Only remove latch if BOTH conditions true:
+		// 1. Page is checkpointed (written to disk)
+		// 2. All active readers can see this version (no reader needs older version)
+		if txnID <= checkpointTxn && txnID < minReaderTxn {
+			w.pages.Delete(pageID)
+		}
+		return true // Continue iteration
+	})
 }
 
 // Close closes the WAL file

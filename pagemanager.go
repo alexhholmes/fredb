@@ -12,36 +12,24 @@ type PageManager struct {
 	file     *os.File
 	meta     MetaPage
 	freelist *FreeList
-	wal      *WAL     // Write-ahead log for durability
-	walPages sync.Map // PageID -> uint64 (txnID) - tracks pages in WAL but not yet on disk
 }
 
-// NewDiskPageManager opens or creates a database file
-func NewDiskPageManager(path string, opts DBOptions) (*PageManager, error) {
+// NewPageManager opens or creates a database file
+func NewPageManager(path string) (*PageManager, error) {
 	// Open file with read/write, create if not exists
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, err
 	}
 
-	// Open WAL with sync configuration
-	walPath := path + ".wal"
-	wal, err := NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
-	if err != nil {
-		file.Close()
-		return nil, err
-	}
-
 	dm := &PageManager{
 		file:     file,
 		freelist: NewFreeList(),
-		wal:      wal,
 	}
 
 	// Check if new file (empty)
 	info, err := file.Stat()
 	if err != nil {
-		wal.Close()
 		file.Close()
 		return nil, err
 	}
@@ -49,18 +37,15 @@ func NewDiskPageManager(path string, opts DBOptions) (*PageManager, error) {
 	if info.Size() == 0 {
 		// New database - initialize
 		if err := dm.initializeNewDB(); err != nil {
-			wal.Close()
 			file.Close()
 			return nil, err
 		}
 	} else {
 		// Existing database - load meta and freelist
 		if err := dm.loadExistingDB(); err != nil {
-			wal.Close()
 			file.Close()
 			return nil, err
 		}
-		// WAL recovery happens in DB.Open() after BTree+cache exist
 	}
 
 	return dm, nil
@@ -79,8 +64,6 @@ func (dm *PageManager) AllocatePage() (PageID, error) {
 	// Try freelist first
 	id := dm.freelist.Allocate()
 	if id != 0 {
-		// Remove WAL latch for reused pages (they're being repurposed)
-		dm.walPages.Delete(id)
 		return id, nil
 	}
 
@@ -113,91 +96,6 @@ func (dm *PageManager) FreePending(txnID uint64, pageIDs []PageID) error {
 
 	dm.freelist.FreePending(txnID, pageIDs)
 	return nil
-}
-
-// AppendPageWAL writes a Page to the WAL
-func (dm *PageManager) AppendPageWAL(txnID uint64, pageID PageID, page *Page) error {
-	// Mark Page as having WAL-only data (latch to prevent stale disk reads)
-	dm.walPages.Store(pageID, txnID)
-	return dm.wal.AppendPage(txnID, pageID, page)
-}
-
-// CommitWAL writes a commit marker to the WAL
-func (dm *PageManager) CommitWAL(txnID uint64) error {
-	return dm.wal.AppendCommit(txnID)
-}
-
-// SyncWAL conditionally fsyncs the WAL based on sync mode
-func (dm *PageManager) SyncWAL() error {
-	return dm.wal.Sync()
-}
-
-// ForceSyncWAL unconditionally fsyncs the WAL
-func (dm *PageManager) ForceSyncWAL() error {
-	return dm.wal.ForceSync()
-}
-
-// TruncateWAL truncates the WAL up to the given transaction ID
-// SAFETY: Verifies that upToTxnID has been checkpointed before truncating
-func (dm *PageManager) TruncateWAL(upToTxnID uint64) error {
-	// Safety check: verify this txnID has been checkpointed
-	meta := dm.GetMeta()
-	if meta.CheckpointTxnID < upToTxnID {
-		return fmt.Errorf("cannot truncate WAL to txn %d: only checkpointed up to %d",
-			upToTxnID, meta.CheckpointTxnID)
-	}
-	return dm.wal.Truncate(upToTxnID)
-}
-
-// CleanupLatchOnWAL removes WAL Page latches for pages that have been checkpointed
-// AND are visible to all active readers (txnID < minReaderTxn).
-// This allows readers to load these pages from disk instead of requiring cache/VersionMap.
-func (dm *PageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
-	meta := dm.GetMeta()
-	checkpointTxn := meta.CheckpointTxnID
-
-	dm.walPages.Range(func(key, value interface{}) bool {
-		pageID := key.(PageID)
-		txnID := value.(uint64)
-
-		// Only remove latch if BOTH conditions true:
-		// 1. Page is checkpointed (written to disk)
-		// 2. All active readers can see this version (no reader needs older version)
-		if txnID <= checkpointTxn && txnID < minReaderTxn {
-			dm.walPages.Delete(pageID)
-		}
-		return true // Continue iteration
-	})
-}
-
-// ReplayWAL replays WAL transactions from the given transaction ID
-func (dm *PageManager) ReplayWAL(fromTxnID uint64, applyFn func(PageID, *Page) error) error {
-	return dm.wal.Replay(fromTxnID, applyFn)
-}
-
-// RecoverFromWAL replays uncommitted WAL entries into cache after startup.
-// This recovers transactions that were committed to WAL but not yet checkpointed to disk.
-func (dm *PageManager) RecoverFromWAL(cache *PageCache) error {
-	meta := dm.GetMeta()
-	checkpointTxn := meta.CheckpointTxnID
-
-	return dm.wal.Replay(checkpointTxn, func(pageID PageID, page *Page) error {
-		// Create empty node and deserialize page data into it
-		node := &Node{}
-		if err := node.deserialize(page); err != nil {
-			return err
-		}
-
-		header := page.header()
-
-		// Load into cache as hot version (ready for next reader)
-		cache.Put(pageID, header.TxnID, node)
-
-		// Rebuild WAL latch to prevent stale disk reads
-		dm.walPages.Store(pageID, header.TxnID)
-
-		return nil
-	})
 }
 
 // GetMeta returns the current metadata
@@ -282,13 +180,6 @@ func (dm *PageManager) Close() error {
 	metaPageID := PageID(dm.meta.TxnID % 2)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
-	}
-
-	// close WAL
-	if dm.wal != nil {
-		if err := dm.wal.Close(); err != nil {
-			return err
-		}
 	}
 
 	return dm.file.Close()
@@ -389,14 +280,8 @@ func (dm *PageManager) loadExistingDB() error {
 }
 
 // readPageAt reads a Page from a specific offset
+// Note: Caller should check db.wal.pages before calling this to avoid reading stale data
 func (dm *PageManager) readPageAt(id PageID) (*Page, error) {
-	// Check if Page has WAL-only data (latch prevents reading stale disk data)
-	if _, hasWALData := dm.walPages.Load(id); hasWALData {
-		// Page exists in WAL but not yet checkpointed to disk
-		// Caller must use cache or VersionMap to get the correct version
-		return nil, fmt.Errorf("Page %d in WAL, not yet on disk", id)
-	}
-
 	return dm.readPageAtUnsafe(id)
 }
 

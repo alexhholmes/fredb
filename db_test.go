@@ -14,8 +14,9 @@ var slow = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a temporary test database
 func setupTestDB(t *testing.T) *DB {
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
 	_ = os.Remove(tmpfile)
+	_ = os.Remove(tmpfile + ".wal") // Also remove WAL file
 
 	db, err := Open(tmpfile)
 	if err != nil {
@@ -25,6 +26,7 @@ func setupTestDB(t *testing.T) *DB {
 	t.Cleanup(func() {
 		_ = db.Close()
 		_ = os.Remove(tmpfile)
+		_ = os.Remove(tmpfile + ".wal") // Cleanup WAL file
 	})
 
 	return db
@@ -34,7 +36,10 @@ func TestDBBasicOperations(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_db_basic.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
 	if err != nil {

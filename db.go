@@ -36,6 +36,7 @@ const (
 type DB struct {
 	mu     sync.RWMutex
 	store  *BTree
+	wal    *WAL // Write-ahead log for durability
 	closed bool // Database closed flag
 
 	// Transaction state
@@ -56,18 +57,23 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	pager, err := NewDiskPageManager(path, opts)
+	// Open WAL (DB owns WAL lifecycle)
+	walPath := path + ".wal"
+	wal, err := NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
 	if err != nil {
+		return nil, err
+	}
+
+	pager, err := NewPageManager(path)
+	if err != nil {
+		wal.Close()
 		return nil, err
 	}
 
 	btree, err := NewBTree(pager)
 	if err != nil {
-		return nil, err
-	}
-
-	// Recover uncommitted WAL entries into cache
-	if err := pager.RecoverFromWAL(btree.cache); err != nil {
+		wal.Close()
+		pager.Close()
 		return nil, err
 	}
 
@@ -76,9 +82,15 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	d := &DB{
 		store:     btree,
+		wal:       wal,
 		nextTxnID: meta.TxnID, // Resume from last committed TxnID
 		releaseC:  make(chan uint64),
 		stopC:     make(chan struct{}),
+	}
+
+	// Recover uncommitted WAL entries into cache
+	if err := d.recoverFromWAL(btree.cache); err != nil {
+		return nil, err
 	}
 
 	// Start background releaser goroutine
@@ -90,6 +102,31 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	go d.backgroundCheckpointer()
 
 	return d, nil
+}
+
+// recoverFromWAL replays uncommitted WAL entries into cache after startup.
+// This recovers transactions that were committed to WAL but not yet checkpointed to disk.
+func (d *DB) recoverFromWAL(cache *PageCache) error {
+	meta := d.store.pager.GetMeta()
+	checkpointTxn := meta.CheckpointTxnID
+
+	return d.wal.Replay(checkpointTxn, func(pageID PageID, page *Page) error {
+		// Create empty node and deserialize page data into it
+		node := &Node{}
+		if err := node.deserialize(page); err != nil {
+			return err
+		}
+
+		header := page.header()
+
+		// Load into cache as hot version (ready for next reader)
+		cache.Put(pageID, header.TxnID, node)
+
+		// Rebuild WAL latch to prevent stale disk reads
+		d.wal.pages.Store(pageID, header.TxnID)
+
+		return nil
+	})
 }
 
 func (d *DB) Get(key []byte) ([]byte, error) {
@@ -203,7 +240,7 @@ func (d *DB) Close() error {
 	}
 
 	// Force sync WAL before checkpoint to ensure all data is durable
-	if err := d.store.pager.ForceSyncWAL(); err != nil {
+	if err := d.wal.ForceSync(); err != nil {
 		return err
 	}
 
@@ -217,6 +254,12 @@ func (d *DB) Close() error {
 
 	// Mark database as closed
 	d.closed = true
+
+	// Close WAL
+	if err := d.wal.Close(); err != nil {
+		d.store.close()
+		return err
+	}
 
 	return d.store.close()
 }
@@ -308,7 +351,7 @@ func (d *DB) checkpoint() error {
 
 	// Replay WAL from last checkpoint to current
 	// IMPORTANT: Idempotent replay - skip pages already at correct version
-	err := dm.ReplayWAL(checkpointTxn, func(pageID PageID, newPage *Page) error {
+	err := d.wal.Replay(checkpointTxn, func(pageID PageID, newPage *Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the WAL latch check for this read
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
@@ -326,7 +369,7 @@ func (d *DB) checkpoint() error {
 			// This handles crash between file.Sync() and PutMeta()
 			if oldTxnID >= newTxnID {
 				// Already has this version or newer, skip write
-				dm.walPages.Delete(pageID) // Clear latch even if skipping
+				d.wal.pages.Delete(pageID) // Clear latch even if skipping
 				return nil
 			}
 
@@ -360,7 +403,7 @@ func (d *DB) checkpoint() error {
 
 		// Remove WAL latch immediately after writing to disk
 		// This allows readers to access the Page from disk instead of being blocked
-		dm.walPages.Delete(pageID)
+		d.wal.pages.Delete(pageID)
 
 		return nil
 	})
@@ -393,7 +436,7 @@ func (d *DB) checkpoint() error {
 	}
 
 	// Truncate WAL up to checkpoint
-	if err := dm.TruncateWAL(currentTxn); err != nil {
+	if err := d.wal.Truncate(currentTxn); err != nil {
 		return err
 	}
 
@@ -402,7 +445,7 @@ func (d *DB) checkpoint() error {
 	_ = d.store.cache.evictCheckpointed(minReaderTxn)
 
 	// Cleanup WAL Page latches for checkpointed pages visible to all readers
-	dm.CleanupLatchOnWAL(minReaderTxn)
+	d.wal.CleanupLatch(checkpointTxn, minReaderTxn)
 
 	return nil
 }
@@ -465,7 +508,8 @@ func (d *DB) releasePages(minTxn uint64) {
 	dm.mu.Unlock()
 
 	// Cleanup WAL Page latches for checkpointed pages visible to all readers
-	dm.CleanupLatchOnWAL(minTxn)
+	meta := dm.GetMeta()
+	d.wal.CleanupLatch(meta.CheckpointTxnID, minTxn)
 
 	// Cleanup relocated Page versions that are no longer needed
 	d.store.cache.cleanupRelocatedVersions(minTxn)

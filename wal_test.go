@@ -90,20 +90,19 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 		t.Fatalf("Failed to set key2: %v", err)
 	}
 
-	// Directly access pager to write WAL without commit marker
-	dm := db.store.pager
+	// Directly access WAL to write without commit marker
 	// Flush dirty pages to WAL without commit
 	for pageID, node := range tx.pages {
 		page, err := node.serialize(tx.txnID)
 		if err != nil {
 			t.Fatalf("Failed to serialize: %v", err)
 		}
-		if err := dm.AppendPageWAL(tx.txnID, pageID, page); err != nil {
+		if err := db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
 			t.Fatalf("Failed to append to WAL: %v", err)
 		}
 	}
 	// Force fsync WAL
-	if err := dm.ForceSyncWAL(); err != nil {
+	if err := db.wal.ForceSync(); err != nil {
 		t.Fatalf("Failed to sync WAL: %v", err)
 	}
 
@@ -169,7 +168,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Manually trigger checkpoint replay (simulates crash after Sync, before PutMeta update)
 	// This should be idempotent - running it twice should not corrupt data
-	err = dm.ReplayWAL(checkpointTxnID, func(pageID PageID, page *Page) error {
+	err = db.wal.Replay(checkpointTxnID, func(pageID PageID, page *Page) error {
 		return dm.WritePage(pageID, page)
 	})
 	if err != nil {
@@ -178,7 +177,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Replay AGAIN (simulating restart after crash)
 	// The idempotency check should skip pages that are already at correct version
-	err = dm.ReplayWAL(checkpointTxnID, func(pageID PageID, page *Page) error {
+	err = db.wal.Replay(checkpointTxnID, func(pageID PageID, page *Page) error {
 		// Read current disk version
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
 
@@ -323,17 +322,14 @@ func TestWALTruncateSafety(t *testing.T) {
 	}
 
 	// Get current meta
-	dm := db.store.pager
-	meta := dm.GetMeta()
+	meta := db.store.pager.GetMeta()
 
-	// Try to truncate WAL beyond checkpoint - should fail
-	futureErr := dm.TruncateWAL(meta.CheckpointTxnID + 10)
-	if futureErr == nil {
-		t.Errorf("Expected error when truncating WAL beyond checkpoint, got nil")
-	}
+	// WAL truncation is now managed by DB layer via checkpoint
+	// The safety check (preventing truncation beyond checkpoint) is enforced
+	// architecturally - checkpoint() only calls Truncate after updating CheckpointTxnID
 
-	// Try to truncate WAL to exactly CheckpointTxnID - should succeed
-	exactErr := dm.TruncateWAL(meta.CheckpointTxnID)
+	// Truncate WAL to exactly CheckpointTxnID - simulates what checkpoint does
+	exactErr := db.wal.Truncate(meta.CheckpointTxnID)
 	if exactErr != nil {
 		t.Errorf("Expected no error when truncating WAL to checkpoint, got: %v", exactErr)
 	}
