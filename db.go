@@ -50,7 +50,7 @@ type DB interface {
 
 type db struct {
 	mu     sync.RWMutex
-	Store  *BTree
+	Store  *btree
 	WAL    *wal.WAL // Write-ahead log for durability
 	closed bool     // Database closed flag
 
@@ -85,7 +85,7 @@ func Open(path string, options ...DBOption) (DB, error) {
 		return nil, err
 	}
 
-	btree, err := NewBTree(pager)
+	btree, err := newBTree(pager)
 	if err != nil {
 		wal.Close()
 		pager.Close()

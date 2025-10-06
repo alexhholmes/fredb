@@ -706,7 +706,7 @@ func TestCloseFlush(t *testing.T) {
 	// Test close() flushes Dirty pages
 	// - Insert data
 	// - Mark nodes Dirty
-	// - close BTree
+	// - close btree
 	// - Verify WritePage called for all Dirty nodes
 	t.Skip("Not implemented")
 }

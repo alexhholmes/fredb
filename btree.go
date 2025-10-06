@@ -10,18 +10,20 @@ import (
 	"fredb/internal/storage"
 )
 
-// BTree is the main structure
-type BTree struct {
+// btree is the main structure for the B-tree implementation.
+// It is a private structure within the public fredb package due to its
+// complexity, interaction with internal packages, and circular dependencies.
+type btree struct {
 	Pager *storage.PageManager
 	root  *base.Node
 	cache *cache.PageCache // LRU cache for non-root nodes
 }
 
-// NewBTree creates a new BTree with the given PageManager
-func NewBTree(pager *storage.PageManager) (*BTree, error) {
+// newBTree creates a new btree with the given PageManager
+func newBTree(pager *storage.PageManager) (*btree, error) {
 	meta := pager.GetMeta()
 
-	bt := &BTree{
+	bt := &btree{
 		Pager: pager,
 		cache: cache.NewPageCache(cache.DefaultCacheSize, pager),
 	}
@@ -79,7 +81,7 @@ func NewBTree(pager *storage.PageManager) (*BTree, error) {
 
 // newCursor creates a new cursor for this B-tree
 // Cursor starts in invalid state - call Seek() to position it
-func (bt *BTree) newCursor(tx *Tx) *Cursor {
+func (bt *btree) newCursor(tx *Tx) *Cursor {
 	return &Cursor{
 		btree: bt,
 		tx:    tx,
@@ -88,7 +90,7 @@ func (bt *BTree) newCursor(tx *Tx) *Cursor {
 }
 
 // close flushes any Dirty pages and closes the B-tree
-func (bt *BTree) close() error {
+func (bt *btree) close() error {
 	// Flush root if Dirty
 	if bt.root != nil && bt.root.Dirty {
 		meta := bt.Pager.GetMeta()
@@ -119,7 +121,7 @@ func (bt *BTree) close() error {
 
 // searchNode recursively searches for a key in the tree
 // B+ tree: only leaf nodes contain actual data
-func (bt *BTree) searchNode(tx *Tx, node *base.Node, key []byte) ([]byte, error) {
+func (bt *btree) searchNode(tx *Tx, node *base.Node, key []byte) ([]byte, error) {
 	// Find position in current Node
 	i := 0
 	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
@@ -148,7 +150,7 @@ func (bt *BTree) searchNode(tx *Tx, node *base.Node, key []byte) ([]byte, error)
 }
 
 // loadNode loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (bt *BTree) loadNode(tx *Tx, pageID base.PageID) (*base.Node, error) {
+func (bt *btree) loadNode(tx *Tx, pageID base.PageID) (*base.Node, error) {
 	// MVCC requires a transaction for snapshot isolation
 	if tx == nil {
 		return nil, fmt.Errorf("loadNode requires a transaction (cannot be nil)")
@@ -237,7 +239,7 @@ func removeChildAt(slice []base.PageID, index int) []base.PageID {
 }
 
 // findPredecessor finds the predecessor key/value in the subtree rooted at Node
-func (bt *BTree) findPredecessor(tx *Tx, current *base.Node) ([]byte, []byte, error) {
+func (bt *btree) findPredecessor(tx *Tx, current *base.Node) ([]byte, []byte, error) {
 	// Keep going right until we reach a leaf
 	for !current.IsLeaf {
 		lastChildIdx := len(current.Children) - 1
@@ -257,7 +259,7 @@ func (bt *BTree) findPredecessor(tx *Tx, current *base.Node) ([]byte, []byte, er
 }
 
 // findSuccessor finds the successor key/value in the subtree rooted at Node
-func (bt *BTree) findSuccessor(tx *Tx, current *base.Node) ([]byte, []byte, error) {
+func (bt *btree) findSuccessor(tx *Tx, current *base.Node) ([]byte, []byte, error) {
 	// Keep going left until we reach a leaf
 	for !current.IsLeaf {
 		child, err := bt.loadNode(tx, current.Children[0])
@@ -276,7 +278,7 @@ func (bt *BTree) findSuccessor(tx *Tx, current *base.Node) ([]byte, []byte, erro
 
 // insertNonFull inserts into a non-full Node with COW.
 // It performs COW on nodes before modifying them.
-func (bt *BTree) insertNonFull(tx *Tx, n *base.Node, key, value []byte) (*base.Node, error) {
+func (bt *btree) insertNonFull(tx *Tx, n *base.Node, key, value []byte) (*base.Node, error) {
 	if n.IsLeaf {
 		// COW before modifying leaf
 		node, err := tx.ensureWritable(n)
@@ -506,7 +508,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *base.Node, key, value []byte) (*base.N
 
 // deleteFromLeaf is the transaction-aware version of deleteFromLeaf.
 // It performs COW on the leaf before deleting.
-func (bt *BTree) deleteFromLeaf(tx *Tx, node *base.Node, idx int) (*base.Node, error) {
+func (bt *btree) deleteFromLeaf(tx *Tx, node *base.Node, idx int) (*base.Node, error) {
 	// COW before modifying leaf
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -524,7 +526,7 @@ func (bt *BTree) deleteFromLeaf(tx *Tx, node *base.Node, idx int) (*base.Node, e
 
 // mergeNodes merges two nodes with COW semantics.
 // Transaction-aware merge operation.
-func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, error) {
+func (bt *btree) mergeNodes(tx *Tx, leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, error) {
 	// COW left Node (will receive merged content)
 	leftNode, err := tx.ensureWritable(leftNode)
 	if err != nil {
@@ -582,7 +584,7 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *base.Node, pare
 }
 
 // borrowFromLeft borrows a key from left sibling through parent (COW).
-func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
+func (bt *btree) borrowFromLeft(tx *Tx, node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -649,7 +651,7 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *base.Node, pa
 }
 
 // borrowFromRight borrows a key from right sibling through parent (COW).
-func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
+func (bt *btree) borrowFromRight(tx *Tx, node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -716,7 +718,7 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *base.Node, 
 }
 
 // fixUnderflow fixes underflow in child at childIdx with COW semantics.
-func (bt *BTree) fixUnderflow(tx *Tx, parent *base.Node, childIdx int, child *base.Node) (*base.Node, *base.Node, error) {
+func (bt *btree) fixUnderflow(tx *Tx, parent *base.Node, childIdx int, child *base.Node) (*base.Node, *base.Node, error) {
 	// Try to borrow from left sibling
 	if childIdx > 0 {
 		leftSibling, err := bt.loadNode(tx, parent.Children[childIdx-1])
@@ -776,7 +778,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *base.Node, childIdx int, child *ba
 }
 
 // deleteFromNonLeaf deletes a key from a non-leaf Node with COW semantics.
-func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *base.Node, key []byte, idx int) (*base.Node, error) {
+func (bt *btree) deleteFromNonLeaf(tx *Tx, node *base.Node, key []byte, idx int) (*base.Node, error) {
 	// Try to replace with predecessor from left subtree
 	leftChild, err := bt.loadNode(tx, node.Children[idx])
 	if err != nil {
@@ -869,7 +871,7 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *base.Node, key []byte, idx int)
 
 // deleteFromNode recursively deletes a key from the subtree rooted at Node with COW.
 // B+ tree: only delete from leaves, branch Keys are routing only
-func (bt *BTree) deleteFromNode(tx *Tx, node *base.Node, key []byte) (*base.Node, error) {
+func (bt *btree) deleteFromNode(tx *Tx, node *base.Node, key []byte) (*base.Node, error) {
 	// B+ tree: if this is a leaf, active if key exists and delete
 	if node.IsLeaf {
 		idx := node.FindKey(key)
@@ -925,7 +927,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *base.Node, key []byte) (*base.Node
 
 // splitChild performs COW on the child being split and allocates the new sibling.
 // Returns the COWed child and new sibling, along with the middle key/value.
-func (bt *BTree) splitChild(tx *Tx, child *base.Node) (*base.Node, *base.Node, []byte, []byte, error) {
+func (bt *btree) splitChild(tx *Tx, child *base.Node) (*base.Node, *base.Node, []byte, []byte, error) {
 	// COW the child being split
 	child, err := tx.ensureWritable(child)
 	if err != nil {

@@ -36,7 +36,7 @@ type pathElem struct {
 
 // Cursor provides ordered iteration over B-tree Keys
 type Cursor struct {
-	btree *BTree
+	btree *btree
 	tx    *Tx        // Transaction this cursor belongs to
 	stack []pathElem // Navigation path from root to current leaf
 	key   []byte     // Cached current key
