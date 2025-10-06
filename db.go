@@ -87,6 +87,125 @@ func Open(path string, options ...DBOption) (*db, error) {
 	return d, nil
 }
 
+func (d *db) Set(key, value []byte) error {
+	return d.Update(func(tx *Tx) error {
+		return tx.Set(key, value)
+	})
+}
+
+func (d *db) Delete(key []byte) error {
+	return d.Update(func(tx *Tx) error {
+		return tx.Delete(key)
+	})
+}
+
+func (d *db) Begin(writable bool) (*Tx, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Check if database is closed
+	if d.closed {
+		return nil, ErrDatabaseClosed
+	}
+
+	// Enforce single writer rule
+	if writable && d.writerTx != nil {
+		return nil, ErrTxInProgress
+	}
+
+	// Assign monotonic transaction ID
+	d.nextTxnID++
+	txnID := d.nextTxnID
+
+	// Create transaction
+	// Read transactions keep this snapshot, write transactions replace it on first modification
+	tx := &Tx{
+		db:       d,
+		txnID:    txnID,
+		writable: writable,
+		meta:     nil,          // Reserved for future BTree metadata tracking
+		root:     d.store.root, // Capture snapshot for MVCC isolation
+		pending:  make([]PageID, 0),
+		freed:    make([]PageID, 0),
+		done:     false,
+	}
+
+	// Initialize TX-local cache for write transactions
+	if writable {
+		tx.pages = make(map[PageID]*Node)
+	}
+
+	// Track active transaction
+	if writable {
+		d.writerTx = tx
+	} else {
+		d.readerTxs = append(d.readerTxs, tx)
+	}
+
+	return tx, nil
+}
+
+// View executes a function within a read-only transaction.
+// If the function returns an error, the transaction is rolled back.
+// If the function returns nil, the transaction is rolled back (read-only).
+func (d *db) View(fn func(*Tx) error) error {
+	tx, err := d.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	return fn(tx)
+}
+
+// Update executes a function within a read-write transaction.
+// If the function returns an error, the transaction is rolled back.
+// If the function returns nil, the transaction is committed.
+func (d *db) Update(fn func(*Tx) error) error {
+	tx, err := d.Begin(true)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (d *db) Close() error {
+	// Stop background goroutines
+	select {
+	case <-d.stopC:
+		// Already closed
+	default:
+		close(d.stopC)
+		d.wg.Wait()
+	}
+
+	// Force sync WAL before checkpoint to ensure all data is durable
+	if dm, ok := d.store.pager.(*DiskPageManager); ok {
+		if err := dm.ForceSyncWAL(); err != nil {
+			return err
+		}
+	}
+
+	// Final checkpoint to flush WAL
+	if err := d.checkpoint(); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Mark database as closed
+	d.closed = true
+
+	return d.store.Close()
+}
+
 // backgroundReleaser periodically releases pending pages when safe
 func (d *db) backgroundReleaser() {
 	defer d.wg.Done()
@@ -269,12 +388,7 @@ func (d *db) checkpoint() error {
 func (d *db) minReaderTxn() uint64 {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.minReaderTxnUnsafe()
-}
 
-// minReaderTxnUnsafe returns minimum transaction ID without acquiring lock.
-// Caller must hold d.mu (read or write lock).
-func (d *db) minReaderTxnUnsafe() uint64 {
 	// Start with minimum possible value
 	min := d.nextTxnID
 
@@ -294,7 +408,7 @@ func (d *db) minReaderTxnUnsafe() uint64 {
 }
 
 // minReaderTxnForCheckpoint returns minimum transaction ID for checkpoint operations.
-// Unlike minReaderTxnUnsafe, this uses lastCommittedTxn as the floor when no readers exist.
+// Unlike minReaderTxn, this uses lastCommittedTxn as the floor when no readers exist.
 // This prevents checkpoint from allocating pages that were just freed.
 func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	// Start with last committed transaction as minimum
@@ -345,123 +459,4 @@ func (d *db) Get(key []byte) ([]byte, error) {
 		return nil
 	})
 	return result, err
-}
-
-func (d *db) Set(key, value []byte) error {
-	return d.Update(func(tx *Tx) error {
-		return tx.Set(key, value)
-	})
-}
-
-func (d *db) Delete(key []byte) error {
-	return d.Update(func(tx *Tx) error {
-		return tx.Delete(key)
-	})
-}
-
-func (d *db) Begin(writable bool) (*Tx, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Check if database is closed
-	if d.closed {
-		return nil, ErrDatabaseClosed
-	}
-
-	// Enforce single writer rule
-	if writable && d.writerTx != nil {
-		return nil, ErrTxInProgress
-	}
-
-	// Assign monotonic transaction ID
-	d.nextTxnID++
-	txnID := d.nextTxnID
-
-	// Create transaction
-	// Read transactions keep this snapshot, write transactions replace it on first modification
-	tx := &Tx{
-		db:       d,
-		txnID:    txnID,
-		writable: writable,
-		meta:     nil,          // Reserved for future BTree metadata tracking
-		root:     d.store.root, // Capture snapshot for MVCC isolation
-		pending:  make([]PageID, 0),
-		freed:    make([]PageID, 0),
-		done:     false,
-	}
-
-	// Initialize TX-local cache for write transactions
-	if writable {
-		tx.pages = make(map[PageID]*Node)
-	}
-
-	// Track active transaction
-	if writable {
-		d.writerTx = tx
-	} else {
-		d.readerTxs = append(d.readerTxs, tx)
-	}
-
-	return tx, nil
-}
-
-// View executes a function within a read-only transaction.
-// If the function returns an error, the transaction is rolled back.
-// If the function returns nil, the transaction is rolled back (read-only).
-func (d *db) View(fn func(*Tx) error) error {
-	tx, err := d.Begin(false)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	return fn(tx)
-}
-
-// Update executes a function within a read-write transaction.
-// If the function returns an error, the transaction is rolled back.
-// If the function returns nil, the transaction is committed.
-func (d *db) Update(fn func(*Tx) error) error {
-	tx, err := d.Begin(true)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	if err := fn(tx); err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-func (d *db) Close() error {
-	// Stop background goroutines
-	select {
-	case <-d.stopC:
-		// Already closed
-	default:
-		close(d.stopC)
-		d.wg.Wait()
-	}
-
-	// Force sync WAL before checkpoint to ensure all data is durable
-	if dm, ok := d.store.pager.(*DiskPageManager); ok {
-		if err := dm.ForceSyncWAL(); err != nil {
-			return err
-		}
-	}
-
-	// Final checkpoint to flush WAL
-	if err := d.checkpoint(); err != nil {
-		return err
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Mark database as closed
-	d.closed = true
-
-	return d.store.Close()
 }
