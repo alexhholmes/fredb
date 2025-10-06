@@ -26,7 +26,7 @@ func init() {
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
 type pathElem struct {
-	node       *Node
+	node       *node
 	childIndex int
 }
 
@@ -77,7 +77,7 @@ func (it *Cursor) Seek(key []byte) error {
 
 	// Get root from transaction for snapshot isolation
 	// Use tx.root if set (modified in this tx), otherwise use btree.root
-	var node *Node
+	var node *node
 	if it.tx != nil && it.tx.root != nil {
 		node = it.tx.root
 	} else {

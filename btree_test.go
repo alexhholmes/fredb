@@ -99,7 +99,7 @@ func TestBTreeUpdate(t *testing.T) {
 	}
 }
 
-// Node Splitting Tests
+// node Splitting Tests
 
 func TestBTreeSplitting(t *testing.T) {
 	t.Parallel()
@@ -618,7 +618,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 			t.Errorf("Empty tree root should be leaf")
 		}
 
-		// Close database after each iteration
+		// close database after each iteration
 		db.Close()
 	}
 }
@@ -701,10 +701,10 @@ func TestPageCaching(t *testing.T) {
 }
 
 func TestCloseFlush(t *testing.T) {
-	// Test Close() flushes dirty pages
+	// Test close() flushes dirty pages
 	// - Insert data
 	// - Mark nodes dirty
-	// - Close BTree
+	// - close BTree
 	// - Verify WritePage called for all dirty nodes
 	t.Skip("Not implemented")
 }

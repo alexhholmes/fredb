@@ -132,7 +132,7 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 
 	// Initialize TX-local cache for write transactions
 	if writable {
-		tx.pages = make(map[PageID]*Node)
+		tx.pages = make(map[PageID]*node)
 	}
 
 	// Track active transaction
@@ -203,7 +203,7 @@ func (d *db) Close() error {
 	// Mark database as closed
 	d.closed = true
 
-	return d.store.Close()
+	return d.store.close()
 }
 
 // backgroundReleaser periodically releases pending pages when safe

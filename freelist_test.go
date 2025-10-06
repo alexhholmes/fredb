@@ -133,7 +133,7 @@ func TestFreeListPendingSerialization(t *testing.T) {
 	fl.FreePending(101, []PageID{2000, 2001})
 	fl.FreePending(105, []PageID{3000})
 
-	// Serialize
+	// serialize
 	pagesNeeded := fl.PagesNeeded()
 	pages := make([]*Page, pagesNeeded)
 	for i := 0; i < pagesNeeded; i++ {
@@ -141,7 +141,7 @@ func TestFreeListPendingSerialization(t *testing.T) {
 	}
 	fl.Serialize(pages)
 
-	// Deserialize into new freelist
+	// deserialize into new freelist
 	fl2 := NewFreeList()
 	fl2.Deserialize(pages)
 

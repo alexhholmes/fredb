@@ -5,8 +5,8 @@ import (
 )
 
 // Helper to create a test node
-func makeTestNode(pageID PageID) *Node {
-	return &Node{
+func makeTestNode(pageID PageID) *node {
+	return &node{
 		pageID:   pageID,
 		isLeaf:   true,
 		keys:     make([][]byte, 0),

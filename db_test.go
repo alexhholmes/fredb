@@ -129,13 +129,13 @@ func TestDBClose(t *testing.T) {
 		t.Errorf("Failed to set key: %v", err)
 	}
 
-	// Close the DB
+	// close the DB
 	err = db.Close()
 	if err != nil {
 		t.Errorf("Failed to close DB: %v", err)
 	}
 
-	// Multiple Close calls should not panic
+	// Multiple close calls should not panic
 	err = db.Close()
 	if err != nil {
 		t.Logf("Second close returned error (expected): %v", err)

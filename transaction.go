@@ -25,8 +25,8 @@ type Tx struct {
 
 	db      *db              // Database this transaction belongs to (concrete type for internal access)
 	meta    *MetaPage        // Snapshot of metadata at transaction start
-	root    *Node            // Root node at transaction start
-	pages   map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	root    *node            // Root node at transaction start
+	pages   map[PageID]*node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	pending []PageID         // Pages allocated in this transaction (for COW)
 	freed   []PageID         // Pages freed in this transaction (for freelist)
 
@@ -98,7 +98,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot := &Node{
+		newRoot := &node{
 			pageID:   newRootID,
 			dirty:    true,
 			isLeaf:   false,
@@ -118,7 +118,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Insert with recursive COW - retry until success or non-overflow error
 	// This handles cascading splits when parent nodes also overflow
 	maxRetries := 20 // Prevent infinite loops
-	var newRoot *Node
+	var newRoot *node
 	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -139,7 +139,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot = &Node{
+		newRoot = &node{
 			pageID:   newRootID,
 			dirty:    true,
 			isLeaf:   false,
@@ -218,7 +218,7 @@ func (tx *Tx) Delete(key []byte) error {
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
 	// Pass transaction to cursor for snapshot isolation
-	return tx.db.store.NewCursor(tx)
+	return tx.db.store.newCursor(tx)
 }
 
 // Commit writes all changes and makes them visible to future transactions.
@@ -247,8 +247,8 @@ func (tx *Tx) Commit() error {
 
 	// Write all TX-local pages to WAL (not disk!)
 	for pageID, node := range tx.pages {
-		// Serialize node to a page with this transaction's ID
-		page, err := node.Serialize(tx.txnID)
+		// serialize node to a page with this transaction's ID
+		page, err := node.serialize(tx.txnID)
 		if err != nil {
 			// Restore old root on failure
 			tx.db.store.root = oldRoot
@@ -388,7 +388,7 @@ func (tx *Tx) check() error {
 }
 
 // Loads a node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(pageID PageID) (*Node, error) {
+func (tx *Tx) loadNode(pageID PageID) (*node, error) {
 	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
 		if node, exists := tx.pages[pageID]; exists {
@@ -397,7 +397,7 @@ func (tx *Tx) loadNode(pageID PageID) (*Node, error) {
 	}
 
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.store.cache.GetOrLoad(pageID, tx.txnID, func() (*Node, uint64, error) {
+	node, found := tx.db.store.cache.GetOrLoad(pageID, tx.txnID, func() (*node, uint64, error) {
 		// Load from disk (called by at most one thread per PageID)
 		page, err := tx.db.store.pager.ReadPage(pageID)
 		if err != nil {
@@ -405,7 +405,7 @@ func (tx *Tx) loadNode(pageID PageID) (*Node, error) {
 		}
 
 		// Create node and deserialize
-		node := &Node{
+		node := &node{
 			pageID: pageID,
 			dirty:  false,
 		}
@@ -413,7 +413,7 @@ func (tx *Tx) loadNode(pageID PageID) (*Node, error) {
 		// Try to deserialize - if page is empty (new page), header.NumKeys will be 0
 		header := page.Header()
 		if header.NumKeys > 0 {
-			if err := node.Deserialize(page); err != nil {
+			if err := node.deserialize(page); err != nil {
 				return nil, 0, err
 			}
 		} else {
@@ -459,7 +459,7 @@ func (tx *Tx) loadNode(pageID PageID) (*Node, error) {
 // EnsureWritable ensures a node is safe to modify in this transaction.
 // Performs COW only if the node doesn't already belong to this transaction.
 // Returns a writable node (either the original if already owned, or a clone).
-func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
+func (tx *Tx) ensureWritable(node *node) (*node, error) {
 	// 1. Check TX-local cache first - if already COW'd in this transaction
 	if cloned, exists := tx.pages[node.pageID]; exists {
 		return cloned, nil
@@ -469,12 +469,12 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	// If its pageID is in tx.pending, it was allocated in this transaction
 	for _, pid := range tx.pending {
 		if pid == node.pageID {
-			// Node already owned by this transaction, no COW needed
+			// node already owned by this transaction, no COW needed
 			return node, nil
 		}
 	}
 
-	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
+	// 3. node doesn't belong to this transaction, perform Copy-On-Write
 	cloned := node.clone()
 
 	// Allocate new page for cloned node

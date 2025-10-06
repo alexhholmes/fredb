@@ -35,7 +35,7 @@ type loadState struct {
 	mu        sync.Mutex
 	loading   bool          // Is someone currently loading?
 	done      chan struct{} // Closed when load completes
-	node      *Node         // Loaded node
+	node      *node         // Loaded node
 	diskTxnID uint64        // TxnID read from disk
 	err       error         // Load error if any
 }
@@ -44,7 +44,7 @@ type loadState struct {
 type VersionedEntry struct {
 	pageID     PageID
 	txnID      uint64        // Transaction that committed this version
-	node       *Node         // Parsed BTree node
+	node       *node         // Parsed BTree node
 	pinCount   int           // Ref count (0 = evictable)
 	lruElement *list.Element // Position in LRU list
 }
@@ -77,7 +77,7 @@ func NewPageCache(maxSize int, pager PageManager) *PageCache {
 // Get retrieves a node version visible to the transaction (MVCC snapshot isolation).
 // Returns the latest version where version.txnID <= txnID.
 // Returns (node, true) on cache hit, (nil, false) on miss.
-func (c *PageCache) Get(pageID PageID, txnID uint64) (*Node, bool) {
+func (c *PageCache) Get(pageID PageID, txnID uint64) (*node, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -109,7 +109,7 @@ func (c *PageCache) Get(pageID PageID, txnID uint64) (*Node, bool) {
 
 // Put adds a new version of a page to the cache.
 // The version is tagged with the committing transaction's ID for MVCC.
-func (c *PageCache) Put(pageID PageID, txnID uint64, node *Node) {
+func (c *PageCache) Put(pageID PageID, txnID uint64, node *node) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -169,8 +169,8 @@ func (c *PageCache) FlushDirty(pager *PageManager) error {
 				continue
 			}
 
-			// Serialize node with the transaction ID that committed this version
-			page, serErr := entry.node.Serialize(entry.txnID)
+			// serialize node with the transaction ID that committed this version
+			page, serErr := entry.node.serialize(entry.txnID)
 			if serErr != nil {
 				if err == nil {
 					err = serErr
@@ -252,7 +252,7 @@ func (c *PageCache) Invalidate(pageID PageID) {
 // Coordinates concurrent loads to prevent multiple threads loading the same page.
 // Returns (node, true) if version is visible, (nil, false) otherwise.
 func (c *PageCache) GetOrLoad(pageID PageID, txnID uint64,
-	loadFunc func() (*Node, uint64, error)) (*Node, bool) {
+	loadFunc func() (*node, uint64, error)) (*node, bool) {
 
 	// Fast path: active cache first
 	if node, hit := c.Get(pageID, txnID); hit {
@@ -353,7 +353,7 @@ func (c *PageCache) getGeneration(pageID PageID) uint64 {
 
 // loadRelocatedVersion attempts to load an older relocated version visible to txnID.
 // Returns (node, true) if found, (nil, false) otherwise.
-func (c *PageCache) loadRelocatedVersion(pageID PageID, txnID uint64) (*Node, bool) {
+func (c *PageCache) loadRelocatedVersion(pageID PageID, txnID uint64) (*node, bool) {
 	relocatedPageID, relocatedTxnID := c.versionMap.GetLatestVisible(pageID, txnID)
 	if relocatedPageID == 0 {
 		return nil, false
@@ -365,7 +365,7 @@ func (c *PageCache) loadRelocatedVersion(pageID PageID, txnID uint64) (*Node, bo
 		return nil, false
 	}
 
-	relocatedNode := &Node{
+	relocatedNode := &node{
 		pageID: pageID, // Use original pageID, not relocated
 		dirty:  false,
 	}
@@ -374,7 +374,7 @@ func (c *PageCache) loadRelocatedVersion(pageID PageID, txnID uint64) (*Node, bo
 		return nil, false
 	}
 
-	if err := relocatedNode.Deserialize(page); err != nil {
+	if err := relocatedNode.deserialize(page); err != nil {
 		return nil, false
 	}
 
@@ -486,8 +486,8 @@ func (c *PageCache) evictToWaterMark() {
 
 		// Flush dirty pages before evicting
 		if entry.node.dirty {
-			// Serialize and write to disk
-			page, err := entry.node.Serialize(entry.txnID)
+			// serialize and write to disk
+			page, err := entry.node.serialize(entry.txnID)
 			if err == nil {
 				if err := c.pager.WritePage(entry.pageID, page); err == nil {
 					entry.node.dirty = false
@@ -504,8 +504,8 @@ func (c *PageCache) evictToWaterMark() {
 		// Before evicting checkpointed version, check if we need to relocate it
 		// Relocate if there are multiple versions of this page (readers might need old version)
 		if len(c.entries[entry.pageID]) > 1 {
-			// Serialize the version
-			page, err := entry.node.Serialize(entry.txnID)
+			// serialize the version
+			page, err := entry.node.serialize(entry.txnID)
 			if err != nil {
 				// Can't serialize, skip
 				c.lruList.MoveToFront(elem)

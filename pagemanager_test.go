@@ -37,7 +37,7 @@ func TestDiskPageManagerBasic(t *testing.T) {
 		t.Errorf("Expected value1, got %s", val)
 	}
 
-	// Close (flushes to disk)
+	// close (flushes to disk)
 	if err := db.Close(); err != nil {
 		t.Fatalf("Failed to close db: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestDiskPageManagerDelete(t *testing.T) {
 		t.Fatalf("Failed to delete: %v", err)
 	}
 
-	// Close
+	// close
 	db.Close()
 
 	// Reopen and verify
@@ -233,7 +233,7 @@ func TestDBFileFormat(t *testing.T) {
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
 
-	// Close() increments TxnID from 0 to 1, so writes to page 1 (1 % 2 = 1)
+	// close() increments TxnID from 0 to 1, so writes to page 1 (1 % 2 = 1)
 	// Page 1 should have the latest meta with RootPageID set
 	t.Logf("Meta page 0 TxnID: %d, RootPageID: %d", meta0.TxnID, meta0.RootPageID)
 	t.Logf("Meta page 1 TxnID: %d, RootPageID: %d", meta1.TxnID, meta1.RootPageID)
@@ -261,9 +261,9 @@ func TestDBFileFormat(t *testing.T) {
 		t.Errorf("Invalid page size: got %d, expected %d", meta.PageSize, PageSize)
 	}
 
-	// Validate RootPageID is persisted after Close
+	// Validate RootPageID is persisted after close
 	if meta.RootPageID == 0 {
-		t.Errorf("RootPageID is zero after Close - should be persisted to meta")
+		t.Errorf("RootPageID is zero after close - should be persisted to meta")
 	}
 
 	// Validate freelist location
@@ -671,11 +671,11 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	db.Set([]byte("key1"), []byte("value1"))
 	db.Close()
 
-	// Reopen and do a second commit (Set without Close to avoid extra TxnID)
+	// Reopen and do a second commit (Set without close to avoid extra TxnID)
 	db2, _ := Open(tmpfile)
 	db2.Set([]byte("key2"), []byte("value2"))
 
-	// Check TxnIDs after second Set (before Close)
+	// Check TxnIDs after second Set (before close)
 	file, err := os.Open(tmpfile)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)

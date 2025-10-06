@@ -222,13 +222,13 @@ func (dm *DiskPageManager) Close() error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
-	// Serialize freelist to disk
+	// serialize freelist to disk
 	pagesNeeded := dm.freelist.PagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
 	if uint64(pagesNeeded) > dm.meta.FreelistPages {
 		// Mark old freelist pages as pending (not immediately reusable)
-		// Using current TxnID ensures they're only released after this Close() completes
+		// Using current TxnID ensures they're only released after this close() completes
 		oldPages := make([]PageID, dm.meta.FreelistPages)
 		for i := uint64(0); i < dm.meta.FreelistPages; i++ {
 			oldPages[i] = PageID(dm.meta.FreelistID) + PageID(i)
@@ -269,7 +269,7 @@ func (dm *DiskPageManager) Close() error {
 		return err
 	}
 
-	// Close WAL
+	// close WAL
 	if dm.wal != nil {
 		if err := dm.wal.Close(); err != nil {
 			return err
@@ -426,7 +426,7 @@ func (dm *DiskPageManager) writePageAtUnsafe(id PageID, page *Page) error {
 	return nil
 }
 
-// Close flushes all changes and closes the database file
+// close flushes all changes and closes the database file
 
 var _ PageManager = (*InMemoryPageManager)(nil)
 
