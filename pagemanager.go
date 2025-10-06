@@ -13,8 +13,8 @@ type PageManager interface {
 	AllocatePage() (PageID, error)
 	FreePage(id PageID) error
 	FreePending(txnID uint64, pageIDs []PageID) error
-	GetMeta() *MetaPage
-	PutMeta(meta *MetaPage) error
+	GetMeta() MetaPage
+	PutMeta(meta MetaPage) error
 	Close() error
 }
 
@@ -215,18 +215,15 @@ func (dm *DiskPageManager) RecoverFromWAL(cache *PageCache) error {
 }
 
 // GetMeta returns the current metadata
-func (dm *DiskPageManager) GetMeta() *MetaPage {
+func (dm *DiskPageManager) GetMeta() MetaPage {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-
-	// Return a copy to prevent external modifications
-	metaCopy := dm.meta
-	return &metaCopy
+	return dm.meta
 }
 
 // PutMeta updates the metadata and persists it to disk
 // Writes to the inactive meta Page and fsyncs for durability
-func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
+func (dm *DiskPageManager) PutMeta(meta MetaPage) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -236,7 +233,7 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	// Write to inactive meta Page (alternates based on TxnID)
 	// TxnID % 2 determines which Page: 0 or 1
 	metaPage := &Page{}
-	metaPage.writeMeta(meta)
+	metaPage.writeMeta(&meta)
 	metaPageID := PageID(meta.TxnID % 2)
 
 	// Write meta Page to disk (unsafe - already holding lock)
@@ -245,7 +242,7 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	}
 
 	// Only update in-memory meta after successful disk write
-	dm.meta = *meta
+	dm.meta = meta
 
 	return nil
 }
@@ -361,7 +358,7 @@ func (dm *DiskPageManager) loadExistingDB() error {
 		return err
 	}
 
-	// validate and pick best meta Page
+	// validate and pick the best meta Page
 	meta0 := page0.readMeta()
 	meta1 := page1.readMeta()
 
@@ -535,19 +532,19 @@ func (m *InMemoryPageManager) FreePage(id PageID) error {
 }
 
 // FreePending is a no-op for in-memory storage (no pending management needed)
-func (m *InMemoryPageManager) FreePending(txnID uint64, pageIDs []PageID) error {
+func (m *InMemoryPageManager) FreePending(_ uint64, _ []PageID) error {
 	// No-op: in-memory doesn't need pending management
 	return nil
 }
 
 // GetMeta returns the current metadata
-func (m *InMemoryPageManager) GetMeta() *MetaPage {
-	return &m.meta
+func (m *InMemoryPageManager) GetMeta() MetaPage {
+	return m.meta
 }
 
 // PutMeta updates the metadata
-func (m *InMemoryPageManager) PutMeta(meta *MetaPage) error {
-	m.meta = *meta
+func (m *InMemoryPageManager) PutMeta(meta MetaPage) error {
+	m.meta = meta
 	m.meta.Checksum = m.meta.calculateChecksum()
 	return nil
 }

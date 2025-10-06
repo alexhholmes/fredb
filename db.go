@@ -141,7 +141,6 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 		db:       d,
 		txnID:    txnID,
 		writable: writable,
-		meta:     nil,          // Reserved for future BTree metadata tracking
 		root:     d.store.root, // Capture snapshot for MVCC isolation
 		pending:  make([]PageID, 0),
 		freed:    make([]PageID, 0),
@@ -384,9 +383,9 @@ func (d *db) checkpoint() error {
 
 	// Update meta with new checkpoint marker
 	// IMPORTANT: Make a copy of meta to avoid overwriting concurrent updates
-	freshMeta := *dm.GetMeta() // Dereference to copy
+	freshMeta := dm.GetMeta() // Dereference to copy
 	freshMeta.CheckpointTxnID = currentTxn
-	if err := dm.PutMeta(&freshMeta); err != nil {
+	if err := dm.PutMeta(freshMeta); err != nil {
 		return err
 	}
 

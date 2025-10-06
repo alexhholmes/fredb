@@ -103,7 +103,7 @@ func (c *PageCache) get(pageID PageID, txnID uint64) (*Node, bool) {
 	}
 
 	c.hits.Add(1)
-	c.lruList.MoveToFront(found.lruElement) // Mark as MRU
+	c.lruList.MoveToFront(found.lruElement)
 	return found.node, true
 }
 

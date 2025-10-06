@@ -20,17 +20,14 @@ var (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	txnID    uint64 // Unique transaction ID
-	writable bool   // Is this a read-write transaction?
-
-	db      *db              // Database this transaction belongs to (concrete type for internal access)
-	meta    *MetaPage        // Snapshot of metadata at transaction start
-	root    *Node            // Root Node at transaction start
-	pages   map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending []PageID         // Pages allocated in this transaction (for COW)
-	freed   []PageID         // Pages freed in this transaction (for freelist)
-
-	done bool // Has Commit() or Rollback() been called?
+	txnID    uint64           // Unique transaction ID
+	writable bool             // Is this a read-write transaction?
+	db       *db              // Database this transaction belongs to (concrete type for internal access)
+	root     *Node            // Root Node at transaction start
+	pages    map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending  []PageID         // Pages allocated in this transaction (for COW)
+	freed    []PageID         // Pages freed in this transaction (for freelist)
+	done     bool             // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key.
@@ -123,7 +120,7 @@ func (tx *Tx) Set(key, value []byte) error {
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		newRoot, err = tx.db.store.insertNonFull(tx, root, key, value)
-		if err != ErrPageOverflow {
+		if !errors.Is(err, ErrPageOverflow) {
 			break // Success or non-overflow error
 		}
 
@@ -299,18 +296,17 @@ func (tx *Tx) Commit() error {
 
 	// Write meta Page to disk for persistence
 	// get current meta from pager
-	currentMeta := tx.db.store.pager.GetMeta()
+	meta := tx.db.store.pager.GetMeta()
 
 	// Build new meta Page with updated root and incremented TxnID
-	newMeta := *currentMeta
 	if tx.root != nil {
-		newMeta.RootPageID = tx.root.pageID
+		meta.RootPageID = tx.root.pageID
 	}
-	newMeta.TxnID = tx.txnID
-	newMeta.Checksum = newMeta.calculateChecksum()
+	meta.TxnID = tx.txnID
+	meta.Checksum = meta.calculateChecksum()
 
 	// Update pager's in-memory meta
-	if err := tx.db.store.pager.PutMeta(&newMeta); err != nil {
+	if err := tx.db.store.pager.PutMeta(meta); err != nil {
 		return err
 	}
 
