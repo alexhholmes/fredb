@@ -235,63 +235,8 @@ func (p *Page) ReadMeta() *MetaPage {
 
 // CalculateChecksum computes CRC32 checksum of all fields except Checksum itself
 func (m *MetaPage) CalculateChecksum() uint32 {
-	// Create byte slice of all fields except Checksum
 	// MetaPage is 60 bytes, Checksum is last 4 bytes, so we hash first 56 bytes
-	data := make([]byte, 56)
-	offset := 0
-
-	// Magic (4 bytes)
-	data[offset] = byte(m.Magic)
-	data[offset+1] = byte(m.Magic >> 8)
-	data[offset+2] = byte(m.Magic >> 16)
-	data[offset+3] = byte(m.Magic >> 24)
-	offset += 4
-
-	// Version (2 bytes)
-	data[offset] = byte(m.Version)
-	data[offset+1] = byte(m.Version >> 8)
-	offset += 2
-
-	// PageSize (2 bytes)
-	data[offset] = byte(m.PageSize)
-	data[offset+1] = byte(m.PageSize >> 8)
-	offset += 2
-
-	// RootPageID (8 bytes)
-	for i := 0; i < 8; i++ {
-		data[offset+i] = byte(m.RootPageID >> (i * 8))
-	}
-	offset += 8
-
-	// FreelistID (8 bytes)
-	for i := 0; i < 8; i++ {
-		data[offset+i] = byte(m.FreelistID >> (i * 8))
-	}
-	offset += 8
-
-	// FreelistPages (8 bytes)
-	for i := 0; i < 8; i++ {
-		data[offset+i] = byte(m.FreelistPages >> (i * 8))
-	}
-	offset += 8
-
-	// TxnID (8 bytes)
-	for i := 0; i < 8; i++ {
-		data[offset+i] = byte(m.TxnID >> (i * 8))
-	}
-	offset += 8
-
-	// CheckpointTxnID (8 bytes)
-	for i := 0; i < 8; i++ {
-		data[offset+i] = byte(m.CheckpointTxnID >> (i * 8))
-	}
-	offset += 8
-
-	// NumPages (8 bytes)
-	for i := 0; i < 8; i++ {
-		data[offset+i] = byte(m.NumPages >> (i * 8))
-	}
-
+	data := unsafe.Slice((*byte)(unsafe.Pointer(m)), 56)
 	return crc32.ChecksumIEEE(data)
 }
 
