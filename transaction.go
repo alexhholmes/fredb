@@ -12,18 +12,25 @@ var (
 )
 
 // Tx represents a transaction on the database.
+//
+// CONCURRENCY: Transactions are NOT thread-safe and must only be used by a single
+// goroutine at a time. Calling Set/Get/Delete/Commit/Rollback concurrently from
+// multiple goroutines will cause panics and data corruption.
+//
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	db       *db              // Database this transaction belongs to (concrete type for internal access)
-	txnID    uint64           // Unique transaction ID
-	writable bool             // Is this a read-write transaction?
-	meta     *MetaPage        // Snapshot of metadata at transaction start
-	root     *Node            // Root node at transaction start
-	pages    map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  []PageID         // Pages allocated in this transaction (for COW)
-	freed    []PageID         // Pages freed in this transaction (for freelist)
-	done     bool             // Has Commit() or Rollback() been called?
+	txnID    uint64 // Unique transaction ID
+	writable bool   // Is this a read-write transaction?
+
+	db      *db              // Database this transaction belongs to (concrete type for internal access)
+	meta    *MetaPage        // Snapshot of metadata at transaction start
+	root    *Node            // Root node at transaction start
+	pages   map[PageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending []PageID         // Pages allocated in this transaction (for COW)
+	freed   []PageID         // Pages freed in this transaction (for freelist)
+
+	done bool // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key.
@@ -321,9 +328,8 @@ func (tx *Tx) Commit() error {
 // Safe to call multiple times (idempotent).
 func (tx *Tx) Rollback() error {
 	if tx.done {
-		return nil // Idempotent
+		return nil // Already committed or rolled back
 	}
-
 	tx.done = true
 
 	// Remove from DB tracking
@@ -381,75 +387,76 @@ func (tx *Tx) check() error {
 	return nil
 }
 
-// addFreed adds a page to the freed list, checking for duplicates first.
-// This prevents the same page from being freed multiple times in a transaction.
-func (tx *Tx) addFreed(pageID PageID) {
-	if pageID == 0 {
-		return
-	}
-	// Check if already freed to prevent duplicates
-	for _, pid := range tx.freed {
-		if pid == pageID {
-			return // Already freed
+// Loads a node using hybrid cache: tx.pages → versioned global cache → disk
+func (tx *Tx) loadNode(pageID PageID) (*Node, error) {
+	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
+	if tx.writable && tx.pages != nil {
+		if node, exists := tx.pages[pageID]; exists {
+			return node, nil
 		}
 	}
-	tx.freed = append(tx.freed, pageID)
-}
 
-// allocatePage allocates a new page for this transaction
-// The allocated page is tracked in tx.pending for COW semantics
-func (tx *Tx) allocatePage() (PageID, *Page, error) {
-	// Retry allocation if we get a page that's in tx.freed
-	// This can happen when background releaser moves pages from pending to free
-	const maxRetries = 10
-retryLoop:
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Allocate from pager (uses freelist or grows file)
-		// DiskPageManager.AllocatePage() is thread-safe via mutex
-		pageID, err := tx.db.store.pager.AllocatePage()
-		if err != nil {
-			return 0, nil, err
-		}
-
-		// Check for duplicate in tx.pending (should never happen)
-		for _, pid := range tx.pending {
-			if pid == pageID {
-				return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
-					pageID, tx.txnID, tx.pending, tx.freed)
-			}
-		}
-
-		// Check if page is in tx.freed (race with background releaser)
-		// If so, skip and retry WITHOUT returning to freelist
-		// Returning it would cause the freelist to give it back immediately, creating a loop
-		// Instead, just skip - the freelist will eventually exhaust and grow the file
-		for _, pid := range tx.freed {
-			if pid == pageID {
-				continue retryLoop // Skip this page, try allocating again
-			}
-		}
-
-		// Track in pending pages (for COW)
-		tx.pending = append(tx.pending, pageID)
-
-		// Invalidate any stale cache entries for this reused PageID
-		// When a page is freed and reallocated, old versions must be removed
-		tx.db.store.cache.Invalidate(pageID)
-
-		// Read the freshly allocated page
+	// 2. GetOrLoad atomically checks cache or coordinates disk load
+	node, found := tx.db.store.cache.GetOrLoad(pageID, tx.txnID, func() (*Node, uint64, error) {
+		// Load from disk (called by at most one thread per PageID)
 		page, err := tx.db.store.pager.ReadPage(pageID)
 		if err != nil {
-			return 0, nil, err
+			return nil, 0, err
 		}
 
-		return pageID, page, nil
+		// Create node and deserialize
+		node := &Node{
+			pageID: pageID,
+			dirty:  false,
+		}
+
+		// Try to deserialize - if page is empty (new page), header.NumKeys will be 0
+		header := page.Header()
+		if header.NumKeys > 0 {
+			if err := node.Deserialize(page); err != nil {
+				return nil, 0, err
+			}
+		} else {
+			// New/empty page - initialize as empty leaf
+			node.pageID = pageID
+			node.isLeaf = true
+			node.numKeys = 0
+			node.keys = make([][]byte, 0)
+			node.values = make([][]byte, 0)
+			node.children = make([]PageID, 0)
+		}
+
+		// Cycle detection: check if deserialized node references itself
+		if !node.isLeaf {
+			for _, childID := range node.children {
+				if childID == pageID {
+					return nil, 0, ErrCorruption // Self-reference detected
+				}
+			}
+		}
+
+		// Return node and its TxnID from disk header
+		return node, header.TxnID, nil
+	})
+
+	if !found {
+		// Version not visible or load failed
+		return nil, ErrKeyNotFound
 	}
 
-	return 0, nil, fmt.Errorf("FATAL: failed to allocate page after %d retries (txnID=%d, pending=%v, freed=%v)",
-		maxRetries, tx.txnID, tx.pending, tx.freed)
+	// Cycle detection on cached node (fast path)
+	if !node.isLeaf {
+		for _, childID := range node.children {
+			if childID == pageID {
+				return nil, ErrCorruption // Self-reference detected
+			}
+		}
+	}
+
+	return node, nil
 }
 
-// ensureWritable ensures a node is safe to modify in this transaction.
+// EnsureWritable ensures a node is safe to modify in this transaction.
 // Performs COW only if the node doesn't already belong to this transaction.
 // Returns a writable node (either the original if already owned, or a clone).
 func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
@@ -493,4 +500,72 @@ func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	tx.pages[pageID] = cloned
 
 	return cloned, nil
+}
+
+// Allocates a new page for this transaction.
+// The allocated page is tracked in tx.pending for COW semantics
+func (tx *Tx) allocatePage() (PageID, *Page, error) {
+	// Retry allocation if we get a page that's in tx.freed
+	// This can happen when background releaser moves pages from pending to free
+	const maxRetries = 10
+retryLoop:
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Allocate from pager (uses freelist or grows file)
+		// DiskPageManager.allocatePage() is thread-safe via mutex
+		pageID, err := tx.db.store.pager.AllocatePage()
+		if err != nil {
+			return 0, nil, err
+		}
+
+		// Check for duplicate in tx.pending (should never happen)
+		for _, pid := range tx.pending {
+			if pid == pageID {
+				return 0, nil, fmt.Errorf("FATAL: freelist returned pageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+					pageID, tx.txnID, tx.pending, tx.freed)
+			}
+		}
+
+		// Check if page is in tx.freed (race with background releaser)
+		// If so, skip and retry WITHOUT returning to freelist
+		// Returning it would cause the freelist to give it back immediately, creating a loop
+		// Instead, just skip - the freelist will eventually exhaust and grow the file
+		for _, pid := range tx.freed {
+			if pid == pageID {
+				continue retryLoop // Skip this page, try allocating again
+			}
+		}
+
+		// Track in pending pages (for COW)
+		tx.pending = append(tx.pending, pageID)
+
+		// Invalidate any stale cache entries for this reused PageID
+		// When a page is freed and reallocated, old versions must be removed
+		tx.db.store.cache.Invalidate(pageID)
+
+		// Read the freshly allocated page
+		page, err := tx.db.store.pager.ReadPage(pageID)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		return pageID, page, nil
+	}
+
+	return 0, nil, fmt.Errorf("FATAL: failed to allocate page after %d retries (txnID=%d, pending=%v, freed=%v)",
+		maxRetries, tx.txnID, tx.pending, tx.freed)
+}
+
+// AddFreed adds a page to the freed list, checking for duplicates first.
+// This prevents the same page from being freed multiple times in a transaction.
+func (tx *Tx) addFreed(pageID PageID) {
+	if pageID == 0 {
+		return
+	}
+	// Check if already freed to prevent duplicates
+	for _, pid := range tx.freed {
+		if pid == pageID {
+			return // Already freed
+		}
+	}
+	tx.freed = append(tx.freed, pageID)
 }
