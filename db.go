@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/storage"
 )
@@ -16,12 +17,12 @@ var (
 	ErrCorruption         = errors.New("data corruption detected")
 	ErrKeyTooLarge        = errors.New("key too large")
 	ErrValueTooLarge      = errors.New("value too large")
-	ErrPageOverflow       = storage.ErrPageOverflow
-	ErrInvalidOffset      = storage.ErrInvalidOffset
-	ErrInvalidMagicNumber = storage.ErrInvalidMagicNumber
-	ErrInvalidVersion     = storage.ErrInvalidVersion
-	ErrInvalidPageSize    = storage.ErrInvalidPageSize
-	ErrInvalidChecksum    = storage.ErrInvalidChecksum
+	ErrPageOverflow       = base.ErrPageOverflow
+	ErrInvalidOffset      = base.ErrInvalidOffset
+	ErrInvalidMagicNumber = base.ErrInvalidMagicNumber
+	ErrInvalidVersion     = base.ErrInvalidVersion
+	ErrInvalidPageSize    = base.ErrInvalidPageSize
+	ErrInvalidChecksum    = base.ErrInvalidChecksum
 )
 
 const (
@@ -123,9 +124,9 @@ func (d *db) recoverFromWAL(cache *cache.PageCache) error {
 	meta := d.Store.Pager.GetMeta()
 	checkpointTxn := meta.CheckpointTxnID
 
-	return d.WAL.Replay(checkpointTxn, func(pageID storage.PageID, page *storage.Page) error {
+	return d.WAL.Replay(checkpointTxn, func(pageID base.PageID, page *base.Page) error {
 		// Create empty node and Deserialize pages data into it
-		node := &storage.Node{}
+		node := &base.Node{}
 		if err := node.Deserialize(page); err != nil {
 			return err
 		}
@@ -192,14 +193,14 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 		txnID:    txnID,
 		writable: writable,
 		root:     d.Store.root, // Capture snapshot for MVCC isolation
-		pending:  make([]storage.PageID, 0),
-		freed:    make([]storage.PageID, 0),
+		pending:  make([]base.PageID, 0),
+		freed:    make([]base.PageID, 0),
 		done:     false,
 	}
 
 	// Initialize TX-local cache for write transactions
 	if writable {
-		tx.pages = make(map[storage.PageID]*storage.Node)
+		tx.pages = make(map[base.PageID]*base.Node)
 	}
 
 	// Track active transaction
@@ -358,8 +359,8 @@ func (d *db) checkpoint() error {
 
 	// Replay WAL from last checkpoint to current
 	// IMPORTANT: Idempotent replay - skip pages already at correct version
-	err := d.WAL.Replay(checkpointTxn, func(pageID storage.PageID,
-		newPage *storage.Page) error {
+	err := d.WAL.Replay(checkpointTxn, func(pageID base.PageID,
+		newPage *base.Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the WAL latch check for this read
 		oldPage, readErr := dm.ReadPageAtUnsafe(pageID)

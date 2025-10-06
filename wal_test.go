@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fredb/internal/storage"
+	"fredb/internal/base"
 )
 
 // TestWALRecoveryBasic tests that uncommitted WAL entries are recovered after restart
@@ -173,7 +173,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Manually trigger checkpoint replay (simulates crash after Sync, before PutMeta update)
 	// This should be idempotent - running it twice should not corrupt data
-	err = concreteDB.WAL.Replay(checkpointTxnID, func(pageID storage.PageID, page *storage.Page) error {
+	err = concreteDB.WAL.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
 		return dm.WritePage(pageID, page)
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Replay AGAIN (simulating restart after crash)
 	// The idempotency check should skip pages that are already at correct version
-	err = concreteDB.WAL.Replay(checkpointTxnID, func(pageID storage.PageID, page *storage.Page) error {
+	err = concreteDB.WAL.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
 		// Read current disk version
 		oldPage, readErr := dm.ReadPageAtUnsafe(pageID)
 

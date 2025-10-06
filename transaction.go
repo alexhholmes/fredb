@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"fredb/internal/storage"
+	"fredb/internal/base"
 )
 
 var (
@@ -22,14 +22,14 @@ var (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	txnID    uint64                           // Unique transaction ID
-	writable bool                             // Is this a read-write transaction?
-	db       *db                              // Database this transaction belongs to (concrete type for internal access)
-	root     *storage.Node                    // Root Node at transaction start
-	pages    map[storage.PageID]*storage.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  []storage.PageID                 // Pages allocated in this transaction (for COW)
-	freed    []storage.PageID                 // Pages freed in this transaction (for freelist)
-	done     bool                             // Has Commit() or Rollback() been called?
+	txnID    uint64                     // Unique transaction ID
+	writable bool                       // Is this a read-write transaction?
+	db       *db                        // Database this transaction belongs to (concrete type for internal access)
+	root     *base.Node                 // Root Node at transaction start
+	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending  []base.PageID              // Pages allocated in this transaction (for COW)
+	freed    []base.PageID              // Pages freed in this transaction (for freelist)
+	done     bool                       // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key.
@@ -69,7 +69,7 @@ func (tx *Tx) Set(key, value []byte) error {
 
 	// Also active practical limit based on Page size
 	// At minimum, a leaf Page must hold at least one key-value pair
-	maxSize := storage.PageSize - storage.PageHeaderSize - storage.LeafElementSize
+	maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
 	if len(key)+len(value) > maxSize {
 		return ErrPageOverflow
 	}
@@ -97,14 +97,14 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot := &storage.Node{
+		newRoot := &base.Node{
 			PageID:   newRootID,
 			Dirty:    true,
 			IsLeaf:   false,
 			NumKeys:  1,
 			Keys:     [][]byte{midKey},
 			Values:   [][]byte{midVal},
-			Children: []storage.PageID{leftChild.PageID, rightChild.PageID},
+			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
 		}
 
 		// Store the new root in TX-local cache
@@ -117,7 +117,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Insert with recursive COW - retry until success or non-overflow error
 	// This handles cascading splits when parent nodes also overflow
 	maxRetries := 20 // Prevent infinite loops
-	var newRoot *storage.Node
+	var newRoot *base.Node
 	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -138,14 +138,14 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot = &storage.Node{
+		newRoot = &base.Node{
 			PageID:   newRootID,
 			Dirty:    true,
 			IsLeaf:   false,
 			NumKeys:  1,
 			Keys:     [][]byte{midKey},
 			Values:   [][]byte{midVal},
-			Children: []storage.PageID{leftChild.PageID, rightChild.PageID},
+			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
 		}
 
 		tx.pages[newRootID] = newRoot
@@ -376,7 +376,7 @@ func (tx *Tx) check() error {
 }
 
 // Loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(id storage.PageID) (*storage.Node, error) {
+func (tx *Tx) loadNode(id base.PageID) (*base.Node, error) {
 	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
 		if node, exists := tx.pages[id]; exists {
@@ -385,7 +385,7 @@ func (tx *Tx) loadNode(id storage.PageID) (*storage.Node, error) {
 	}
 
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.Store.cache.GetOrLoad(id, tx.txnID, func() (*storage.Node, uint64, error) {
+	node, found := tx.db.Store.cache.GetOrLoad(id, tx.txnID, func() (*base.Node, uint64, error) {
 		// Load from disk (called by at most one thread per id)
 		page, err := tx.db.Store.Pager.ReadPage(id)
 		if err != nil {
@@ -393,7 +393,7 @@ func (tx *Tx) loadNode(id storage.PageID) (*storage.Node, error) {
 		}
 
 		// Create Node and Deserialize
-		node := &storage.Node{
+		node := &base.Node{
 			PageID: id,
 			Dirty:  false,
 		}
@@ -411,7 +411,7 @@ func (tx *Tx) loadNode(id storage.PageID) (*storage.Node, error) {
 			node.NumKeys = 0
 			node.Keys = make([][]byte, 0)
 			node.Values = make([][]byte, 0)
-			node.Children = make([]storage.PageID, 0)
+			node.Children = make([]base.PageID, 0)
 		}
 
 		// Cycle detection: check if deserialized Node references itself
@@ -447,7 +447,7 @@ func (tx *Tx) loadNode(id storage.PageID) (*storage.Node, error) {
 // EnsureWritable ensures a Node is safe to modify in this transaction.
 // Performs COW only if the Node doesn't already belong to this transaction.
 // Returns a writable Node (either the original if already owned, or a Clone).
-func (tx *Tx) ensureWritable(node *storage.Node) (*storage.Node, error) {
+func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// 1. Check TX-local cache first - if already COW'd in this transaction
 	if cloned, exists := tx.pages[node.PageID]; exists {
 		return cloned, nil
@@ -492,7 +492,7 @@ func (tx *Tx) ensureWritable(node *storage.Node) (*storage.Node, error) {
 
 // Allocates a new Page for this transaction.
 // The allocated Page is tracked in tx.pending for COW semantics
-func (tx *Tx) allocatePage() (storage.PageID, *storage.Page, error) {
+func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
 	// Retry allocation if we get a Page that's in tx.freed
 	// This can happen when background releaser moves pages from pending to free
 	const maxRetries = 10
@@ -545,7 +545,7 @@ retryLoop:
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.
 // This prevents the same Page from being freed multiple times in a transaction.
-func (tx *Tx) addFreed(pageID storage.PageID) {
+func (tx *Tx) addFreed(pageID base.PageID) {
 	if pageID == 0 {
 		return
 	}

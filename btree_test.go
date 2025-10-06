@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"fredb/internal/storage"
+	"fredb/internal/base"
 )
 
 // Basic Operations Tests
@@ -111,7 +111,7 @@ func TestBTreeSplitting(t *testing.T) {
 
 	// Insert MaxKeysPerNode + 1 Keys to force a split
 	keys := make(map[string]string)
-	for i := 0; i <= storage.MaxKeysPerNode; i++ {
+	for i := 0; i <= base.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		keys[key] = value
@@ -152,7 +152,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Insert enough Keys to cause multiple splits (3x MaxKeysPerNode should cause multiple levels)
-	numKeys := storage.MaxKeysPerNode * 3
+	numKeys := base.MaxKeysPerNode * 3
 	keys := make(map[string]string)
 
 	for i := 0; i < numKeys; i++ {
@@ -486,7 +486,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Insert enough Keys to create a multi-level tree
-	numKeys := storage.MaxKeysPerNode * 2 // Enough to cause splits
+	numKeys := base.MaxKeysPerNode * 2 // Enough to cause splits
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -543,7 +543,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 		db := setupTestDB(t)
 
 		// Insert Keys
-		numKeys := storage.MaxKeysPerNode * 2
+		numKeys := base.MaxKeysPerNode * 2
 		keys := make([]string, numKeys)
 		for i := 0; i < numKeys; i++ {
 			key := fmt.Sprintf("key%06d", i)
@@ -632,7 +632,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Insert Keys
-	numKeys := storage.MaxKeysPerNode * 2
+	numKeys := base.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1204,7 +1204,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Insert enough Keys to create multi-level tree
-	numKeys := storage.MaxKeysPerNode * 2
+	numKeys := base.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1216,7 +1216,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 
 	// Delete until we have a Node with exactly MinKeysPerNode=64 Keys
 	// This should NOT trigger underflow
-	deleteCount := numKeys - storage.MinKeysPerNode
+	deleteCount := numKeys - base.MinKeysPerNode
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
@@ -1246,7 +1246,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	numKeys := storage.MaxKeysPerNode * 2
+	numKeys := base.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1256,7 +1256,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 		}
 	}
 
-	deleteCount := numKeys - storage.MinKeysPerNode - 1
+	deleteCount := numKeys - base.MinKeysPerNode - 1
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
@@ -1289,7 +1289,7 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Insert MaxKeysPerNode Keys (0 to 63 = 64 Keys)
-	for i := 0; i < storage.MaxKeysPerNode; i++ {
+	for i := 0; i < base.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
@@ -1302,13 +1302,13 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	if !db.Store.root.IsLeaf {
 		t.Error("Root should still be leaf with MaxKeysPerNode Keys")
 	}
-	if db.Store.root.NumKeys != storage.MaxKeysPerNode {
-		t.Errorf("Expected %d Keys, got %d", storage.MaxKeysPerNode, db.Store.root.NumKeys)
+	if db.Store.root.NumKeys != base.MaxKeysPerNode {
+		t.Errorf("Expected %d Keys, got %d", base.MaxKeysPerNode, db.Store.root.NumKeys)
 	}
 
 	// Insert one more key (65th key) to trigger split
-	splitKey := fmt.Sprintf("key%06d", storage.MaxKeysPerNode)
-	splitValue := fmt.Sprintf("value%06d", storage.MaxKeysPerNode)
+	splitKey := fmt.Sprintf("key%06d", base.MaxKeysPerNode)
+	splitValue := fmt.Sprintf("value%06d", base.MaxKeysPerNode)
 	err := db.Set([]byte(splitKey), []byte(splitValue))
 	if err != nil {
 		t.Fatalf("Failed to trigger split: %v", err)
@@ -1323,7 +1323,7 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	}
 
 	// Verify all Keys retrievable
-	for i := 0; i <= storage.MaxKeysPerNode; i++ {
+	for i := 0; i <= base.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
 		if err != nil {
@@ -1337,7 +1337,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	numKeys := storage.MaxKeysPerNode * 2
+	numKeys := base.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -1380,7 +1380,7 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 
 	db := setupTestDB(t)
 
-	numKeys := storage.MaxKeysPerNode * 3
+	numKeys := base.MaxKeysPerNode * 3
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/storage"
 )
@@ -12,7 +13,7 @@ import (
 // BTree is the main structure
 type BTree struct {
 	Pager *storage.PageManager
-	root  *storage.Node
+	root  *base.Node
 	cache *cache.PageCache // LRU cache for non-root nodes
 }
 
@@ -33,7 +34,7 @@ func NewBTree(pagemanager *storage.PageManager) (*BTree, error) {
 			return nil, err
 		}
 
-		root := &storage.Node{
+		root := &base.Node{
 			PageID: meta.RootPageID,
 			Dirty:  false,
 		}
@@ -55,14 +56,14 @@ func NewBTree(pagemanager *storage.PageManager) (*BTree, error) {
 	}
 
 	// Create root Node
-	root := &storage.Node{
+	root := &base.Node{
 		PageID:   rootPageID,
 		Dirty:    true,
 		IsLeaf:   true,
 		NumKeys:  0,
 		Keys:     make([][]byte, 0),
 		Values:   make([][]byte, 0),
-		Children: make([]storage.PageID, 0),
+		Children: make([]base.PageID, 0),
 	}
 
 	bt.root = root
@@ -118,7 +119,7 @@ func (bt *BTree) close() error {
 
 // searchNode recursively searches for a key in the tree
 // B+ tree: only leaf nodes contain actual data
-func (bt *BTree) searchNode(tx *Tx, node *storage.Node, key []byte) ([]byte, error) {
+func (bt *BTree) searchNode(tx *Tx, node *base.Node, key []byte) ([]byte, error) {
 	// Find position in current Node
 	i := 0
 	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
@@ -147,7 +148,7 @@ func (bt *BTree) searchNode(tx *Tx, node *storage.Node, key []byte) ([]byte, err
 }
 
 // loadNode loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (bt *BTree) loadNode(tx *Tx, pageID storage.PageID) (*storage.Node, error) {
+func (bt *BTree) loadNode(tx *Tx, pageID base.PageID) (*base.Node, error) {
 	// MVCC requires a transaction for snapshot isolation
 	if tx == nil {
 		return nil, fmt.Errorf("loadNode requires a transaction (cannot be nil)")
@@ -161,7 +162,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID storage.PageID) (*storage.Node, error) 
 	}
 
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := bt.cache.GetOrLoad(pageID, tx.txnID, func() (*storage.Node, uint64, error) {
+	node, found := bt.cache.GetOrLoad(pageID, tx.txnID, func() (*base.Node, uint64, error) {
 		// Load from disk (called by at most one thread per PageID)
 		page, err := bt.Pager.ReadPage(pageID)
 		if err != nil {
@@ -169,7 +170,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID storage.PageID) (*storage.Node, error) 
 		}
 
 		// Create Node and Deserialize
-		node := &storage.Node{
+		node := &base.Node{
 			PageID: pageID,
 			Dirty:  false,
 		}
@@ -187,7 +188,7 @@ func (bt *BTree) loadNode(tx *Tx, pageID storage.PageID) (*storage.Node, error) 
 			node.NumKeys = 0
 			node.Keys = make([][]byte, 0)
 			node.Values = make([][]byte, 0)
-			node.Children = make([]storage.PageID, 0)
+			node.Children = make([]base.PageID, 0)
 		}
 
 		// Cycle detection: active if deserialized Node references itself
@@ -231,12 +232,12 @@ func removeAt(slice [][]byte, index int) [][]byte {
 }
 
 // removeChildAt removes child at index from slice
-func removeChildAt(slice []storage.PageID, index int) []storage.PageID {
+func removeChildAt(slice []base.PageID, index int) []base.PageID {
 	return append(slice[:index], slice[index+1:]...)
 }
 
 // findPredecessor finds the predecessor key/value in the subtree rooted at Node
-func (bt *BTree) findPredecessor(tx *Tx, current *storage.Node) ([]byte, []byte, error) {
+func (bt *BTree) findPredecessor(tx *Tx, current *base.Node) ([]byte, []byte, error) {
 	// Keep going right until we reach a leaf
 	for !current.IsLeaf {
 		lastChildIdx := len(current.Children) - 1
@@ -256,7 +257,7 @@ func (bt *BTree) findPredecessor(tx *Tx, current *storage.Node) ([]byte, []byte,
 }
 
 // findSuccessor finds the successor key/value in the subtree rooted at Node
-func (bt *BTree) findSuccessor(tx *Tx, current *storage.Node) ([]byte, []byte, error) {
+func (bt *BTree) findSuccessor(tx *Tx, current *base.Node) ([]byte, []byte, error) {
 	// Keep going left until we reach a leaf
 	for !current.IsLeaf {
 		child, err := bt.loadNode(tx, current.Children[0])
@@ -275,7 +276,7 @@ func (bt *BTree) findSuccessor(tx *Tx, current *storage.Node) ([]byte, []byte, e
 
 // insertNonFull inserts into a non-full Node with COW.
 // It performs COW on nodes before modifying them.
-func (bt *BTree) insertNonFull(tx *Tx, n *storage.Node, key, value []byte) (*storage.Node, error) {
+func (bt *BTree) insertNonFull(tx *Tx, n *base.Node, key, value []byte) (*base.Node, error) {
 	if n.IsLeaf {
 		// COW before modifying leaf
 		node, err := tx.ensureWritable(n)
@@ -373,7 +374,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *storage.Node, key, value []byte) (*sto
 		}
 
 		// Build new Children array atomically to avoid slice sharing issues
-		newChildren := make([]storage.PageID, len(n.Children)+1)
+		newChildren := make([]base.PageID, len(n.Children)+1)
 		copy(newChildren[:i], n.Children[:i])     // Before split point
 		newChildren[i] = leftChild.PageID         // Left child
 		newChildren[i+1] = rightChild.PageID      // Right child
@@ -437,7 +438,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *storage.Node, key, value []byte) (*sto
 		}
 
 		// Build new Children array
-		newChildren := make([]storage.PageID, len(n.Children)+1)
+		newChildren := make([]base.PageID, len(n.Children)+1)
 		copy(newChildren[:i], n.Children[:i])
 		newChildren[i] = leftChild.PageID
 		newChildren[i+1] = rightChild.PageID
@@ -459,7 +460,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *storage.Node, key, value []byte) (*sto
 		}
 
 		// Retry insert into correct child
-		var insertedChild *storage.Node
+		var insertedChild *base.Node
 		if bytes.Compare(key, midKey) >= 0 {
 			i++
 			insertedChild, err = bt.insertNonFull(tx, rightChild, key, value)
@@ -505,7 +506,7 @@ func (bt *BTree) insertNonFull(tx *Tx, n *storage.Node, key, value []byte) (*sto
 
 // deleteFromLeaf is the transaction-aware version of deleteFromLeaf.
 // It performs COW on the leaf before deleting.
-func (bt *BTree) deleteFromLeaf(tx *Tx, node *storage.Node, idx int) (*storage.Node, error) {
+func (bt *BTree) deleteFromLeaf(tx *Tx, node *base.Node, idx int) (*base.Node, error) {
 	// COW before modifying leaf
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -523,7 +524,7 @@ func (bt *BTree) deleteFromLeaf(tx *Tx, node *storage.Node, idx int) (*storage.N
 
 // mergeNodes merges two nodes with COW semantics.
 // Transaction-aware merge operation.
-func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *storage.Node, parentKeyIdx int) (*storage.Node, *storage.Node, error) {
+func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, error) {
 	// COW left Node (will receive merged content)
 	leftNode, err := tx.ensureWritable(leftNode)
 	if err != nil {
@@ -581,7 +582,7 @@ func (bt *BTree) mergeNodes(tx *Tx, leftNode, rightNode, parent *storage.Node, p
 }
 
 // borrowFromLeft borrows a key from left sibling through parent (COW).
-func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *storage.Node, parentKeyIdx int) (*storage.Node, *storage.Node, *storage.Node, error) {
+func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -624,7 +625,7 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *storage.Node,
 		// Branch nodes don't have Values
 
 		// Move the last child pointer too
-		node.Children = append([]storage.PageID{leftSibling.Children[len(leftSibling.Children)-1]}, node.Children...)
+		node.Children = append([]base.PageID{leftSibling.Children[len(leftSibling.Children)-1]}, node.Children...)
 		leftSibling.Children = leftSibling.Children[:len(leftSibling.Children)-1]
 
 		// Remove the last key from left sibling
@@ -648,7 +649,7 @@ func (bt *BTree) borrowFromLeft(tx *Tx, node, leftSibling, parent *storage.Node,
 }
 
 // borrowFromRight borrows a key from right sibling through parent (COW).
-func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *storage.Node, parentKeyIdx int) (*storage.Node, *storage.Node, *storage.Node, error) {
+func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -715,7 +716,7 @@ func (bt *BTree) borrowFromRight(tx *Tx, node, rightSibling, parent *storage.Nod
 }
 
 // fixUnderflow fixes underflow in child at childIdx with COW semantics.
-func (bt *BTree) fixUnderflow(tx *Tx, parent *storage.Node, childIdx int, child *storage.Node) (*storage.Node, *storage.Node, error) {
+func (bt *BTree) fixUnderflow(tx *Tx, parent *base.Node, childIdx int, child *base.Node) (*base.Node, *base.Node, error) {
 	// Try to borrow from left sibling
 	if childIdx > 0 {
 		leftSibling, err := bt.loadNode(tx, parent.Children[childIdx-1])
@@ -723,7 +724,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *storage.Node, childIdx int, child 
 			return nil, nil, err
 		}
 
-		if leftSibling.NumKeys > storage.MinKeysPerNode {
+		if leftSibling.NumKeys > base.MinKeysPerNode {
 			child, leftSibling, parent, err = bt.borrowFromLeft(tx, child, leftSibling, parent, childIdx-1)
 			if err != nil {
 				return nil, nil, err
@@ -739,7 +740,7 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *storage.Node, childIdx int, child 
 			return nil, nil, err
 		}
 
-		if rightSibling.NumKeys > storage.MinKeysPerNode {
+		if rightSibling.NumKeys > base.MinKeysPerNode {
 			child, rightSibling, parent, err = bt.borrowFromRight(tx, child, rightSibling, parent, childIdx)
 			if err != nil {
 				return nil, nil, err
@@ -775,14 +776,14 @@ func (bt *BTree) fixUnderflow(tx *Tx, parent *storage.Node, childIdx int, child 
 }
 
 // deleteFromNonLeaf deletes a key from a non-leaf Node with COW semantics.
-func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *storage.Node, key []byte, idx int) (*storage.Node, error) {
+func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *base.Node, key []byte, idx int) (*base.Node, error) {
 	// Try to replace with predecessor from left subtree
 	leftChild, err := bt.loadNode(tx, node.Children[idx])
 	if err != nil {
 		return nil, err
 	}
 
-	if leftChild.NumKeys > storage.MinKeysPerNode {
+	if leftChild.NumKeys > base.MinKeysPerNode {
 		// get predecessor
 		predKey, predVal, err := bt.findPredecessor(tx, leftChild)
 		if err != nil {
@@ -818,7 +819,7 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *storage.Node, key []byte, idx i
 		return nil, err
 	}
 
-	if rightChild.NumKeys > storage.MinKeysPerNode {
+	if rightChild.NumKeys > base.MinKeysPerNode {
 		// get successor
 		succKey, succVal, err := bt.findSuccessor(tx, rightChild)
 		if err != nil {
@@ -868,7 +869,7 @@ func (bt *BTree) deleteFromNonLeaf(tx *Tx, node *storage.Node, key []byte, idx i
 
 // deleteFromNode recursively deletes a key from the subtree rooted at Node with COW.
 // B+ tree: only delete from leaves, branch Keys are routing only
-func (bt *BTree) deleteFromNode(tx *Tx, node *storage.Node, key []byte) (*storage.Node, error) {
+func (bt *BTree) deleteFromNode(tx *Tx, node *base.Node, key []byte) (*base.Node, error) {
 	// B+ tree: if this is a leaf, active if key exists and delete
 	if node.IsLeaf {
 		idx := node.FindKey(key)
@@ -893,7 +894,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *storage.Node, key []byte) (*storag
 	}
 
 	// Check if child will underflow
-	shouldCheckUnderflow := (child.NumKeys == storage.MinKeysPerNode)
+	shouldCheckUnderflow := (child.NumKeys == base.MinKeysPerNode)
 
 	// Delete from child
 	child, err = bt.deleteFromNode(tx, child, key)
@@ -924,7 +925,7 @@ func (bt *BTree) deleteFromNode(tx *Tx, node *storage.Node, key []byte) (*storag
 
 // splitChild performs COW on the child being split and allocates the new sibling.
 // Returns the COWed child and new sibling, along with the middle key/value.
-func (bt *BTree) splitChild(tx *Tx, child *storage.Node) (*storage.Node, *storage.Node, []byte, []byte, error) {
+func (bt *BTree) splitChild(tx *Tx, child *base.Node) (*base.Node, *base.Node, []byte, []byte, error) {
 	// COW the child being split
 	child, err := tx.ensureWritable(child)
 	if err != nil {
@@ -937,7 +938,7 @@ func (bt *BTree) splitChild(tx *Tx, child *storage.Node) (*storage.Node, *storag
 		return nil, nil, nil, nil, err
 	}
 
-	mid := storage.MaxKeysPerNode / 2
+	mid := base.MaxKeysPerNode / 2
 
 	// For size-based splits with few Keys, ensure mid doesn't exceed key count
 	// This handles large key/value overflow cases where NumKeys < MaxKeysPerNode
@@ -969,14 +970,14 @@ func (bt *BTree) splitChild(tx *Tx, child *storage.Node) (*storage.Node, *storag
 		rightKeyCount = len(child.Keys) - mid - 1
 	}
 
-	newNode := &storage.Node{
+	newNode := &base.Node{
 		PageID:   newNodeID,
 		Dirty:    true,
 		IsLeaf:   child.IsLeaf,
 		NumKeys:  uint16(rightKeyCount),
 		Keys:     make([][]byte, 0),
 		Values:   make([][]byte, 0),
-		Children: make([]storage.PageID, 0),
+		Children: make([]base.PageID, 0),
 	}
 
 	// Copy right half of Keys to new Node
@@ -1022,7 +1023,7 @@ func (bt *BTree) splitChild(tx *Tx, child *storage.Node) (*storage.Node, *storag
 
 	// Keep left portion in child - Children (branch only)
 	if !child.IsLeaf {
-		leftChildren := make([]storage.PageID, mid+1)
+		leftChildren := make([]base.PageID, mid+1)
 		copy(leftChildren, child.Children[:mid+1])
 		child.Children = leftChildren
 	}
