@@ -96,17 +96,41 @@ db, _ := Open("data.db", WithWALSyncOff())
 ## Architecture
 
 ```
-┌─────────┐
-│   DB    │  Public API + concurrency
-└────┬────┘
-     │
-┌────▼────┐
-│  BTree  │  B-tree logic + node cache
-└────┬────┘
-     │
-┌────▼────────┐
-│ PageManager │  Disk I/O + free list
-└─────────────┘
+  ┌──────────────┐
+  │      DB      │  Public API (Get/Set/Delete/View/Update)
+  └──────┬───────┘
+         │ owns
+         ├────────────────┬──────────────┐
+         ▼                ▼              ▼
+  ┌──────────┐     ┌──────────┐   ┌───────────┐
+  │    Tx    │     │  BTree   │   │   WAL     │
+  │          │────►│          │   │           │
+  │ MVCC +   │     │ Root +   │   │ Durability│
+  │ Isolation│     │ Cache ref│   │ + Recovery│
+  └────┬─────┘     └────┬─────┘   └───────────┘
+       │ creates        │ uses           ▲
+       ▼                ▼                │ writes to
+  ┌──────────┐     ┌──────────┐          │
+  │  Cursor  │     │PageCache │──────────┘
+  │          │     │          │
+  │ Iterator │     │ LRU +    │
+  │          │     │ Versions │
+  └──────────┘     └────┬─────┘
+                        │ uses
+                        ▼
+                  ┌──────────┐
+                  │ PageMngr │
+                  │          │
+                  │ Disk I/O │
+                  │ FreeList │
+                  │VersionMap│
+                  └──────────┘
+
+  FOUNDATION LAYER:
+  ┌─────────────────────────────────────────────────────────┐
+  │                    internal/base                        │
+  │         Node • Page • PageID • MetaPage                 │
+  └─────────────────────────────────────────────────────────┘
 ```
 
 ## Disk Format
