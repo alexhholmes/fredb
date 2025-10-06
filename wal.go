@@ -55,6 +55,10 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 
 // AppendPage writes a Page record to the WAL
 // Format: [WALRecordPage:1][TxnID:8][PageID:8][PageSize:4][Page.data:PageSize]
+//
+// KNOWN LIMITATION: Uses two separate write() calls (header + data).
+// If crash occurs between writes, WAL will have partial record, causing
+// recovery to fail. Future fix: buffer entire record for atomic write or add checksums.
 func (w *WAL) AppendPage(txnID uint64, pageID PageID, page *Page) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -245,6 +249,8 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(PageID, *Page) error) error 
 }
 
 // Truncate removes all WAL records up to and including the given TxnID
+// SAFETY: Only call this after meta.CheckpointTxnID has been updated to upToTxnID
+// to ensure we don't lose uncheckpointed data.
 func (w *WAL) Truncate(upToTxnID uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

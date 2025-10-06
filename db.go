@@ -85,7 +85,7 @@ func Open(path string, options ...DBOption) (*db, error) {
 	d.wg.Add(1)
 	go d.backgroundReleaser()
 
-	// Start background checkpointer goroutine
+	// Start background checkpoint goroutine
 	d.wg.Add(1)
 	go d.backgroundCheckpointer()
 

@@ -152,7 +152,14 @@ func (dm *DiskPageManager) ForceSyncWAL() error {
 }
 
 // TruncateWAL truncates the WAL up to the given transaction ID
+// SAFETY: Verifies that upToTxnID has been checkpointed before truncating
 func (dm *DiskPageManager) TruncateWAL(upToTxnID uint64) error {
+	// Safety check: verify this txnID has been checkpointed
+	meta := dm.GetMeta()
+	if meta.CheckpointTxnID < upToTxnID {
+		return fmt.Errorf("cannot truncate WAL to txn %d: only checkpointed up to %d",
+			upToTxnID, meta.CheckpointTxnID)
+	}
 	return dm.wal.Truncate(upToTxnID)
 }
 
