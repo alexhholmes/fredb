@@ -66,6 +66,11 @@ func Open(path string, options ...DBOption) (*db, error) {
 		return nil, err
 	}
 
+	// Recover uncommitted WAL entries into cache
+	if err := pager.RecoverFromWAL(btree.cache); err != nil {
+		return nil, err
+	}
+
 	// Initialize nextTxnID from disk to ensure monotonic IDs across sessions
 	meta := pager.GetMeta()
 
@@ -295,16 +300,28 @@ func (d *db) checkpoint() error {
 	}()
 
 	// Replay WAL from last checkpoint to current
-	// IMPORTANT: Before overwriting each Page, check if old disk version needs preservation
+	// IMPORTANT: Idempotent replay - skip pages already at correct version
 	err := dm.ReplayWAL(checkpointTxn, func(pageID PageID, newPage *Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the WAL latch check for this read
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
 
+		// Get new page version for idempotency check
+		newHeader := newPage.header()
+		newTxnID := newHeader.TxnID
+
 		if readErr == nil && oldPage != nil {
 			// Parse old version's TxnID
 			oldHeader := oldPage.header()
 			oldTxnID := oldHeader.TxnID
+
+			// IDEMPOTENCY: Skip if already applied (prevents double-apply corruption)
+			// This handles crash between file.Sync() and PutMeta()
+			if oldTxnID >= newTxnID {
+				// Already has this version or newer, skip write
+				dm.walPages.Delete(pageID) // Clear latch even if skipping
+				return nil
+			}
 
 			// If any active reader might need this old version, relocate it
 			// Preserve if oldTxnID < minReaderTxn (old version still potentially visible to readers)

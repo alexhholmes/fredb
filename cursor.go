@@ -1,6 +1,8 @@
 package fredb
 
-import "bytes"
+import (
+	"bytes"
+)
 
 // Special marker values for Seek operations
 var (

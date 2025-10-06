@@ -74,7 +74,7 @@ func NewDiskPageManager(path string, opts DBOptions) (*DiskPageManager, error) {
 			file.Close()
 			return nil, err
 		}
-		// TODO: Replay WAL after loading (Phase 6)
+		// WAL recovery happens in db.Open() after BTree+cache exist
 	}
 
 	return dm, nil
@@ -180,6 +180,31 @@ func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
 // ReplayWAL replays WAL transactions from the given transaction ID
 func (dm *DiskPageManager) ReplayWAL(fromTxnID uint64, applyFn func(PageID, *Page) error) error {
 	return dm.wal.Replay(fromTxnID, applyFn)
+}
+
+// RecoverFromWAL replays uncommitted WAL entries into cache after startup.
+// This recovers transactions that were committed to WAL but not yet checkpointed to disk.
+func (dm *DiskPageManager) RecoverFromWAL(cache *PageCache) error {
+	meta := dm.GetMeta()
+	checkpointTxn := meta.CheckpointTxnID
+
+	return dm.wal.Replay(checkpointTxn, func(pageID PageID, page *Page) error {
+		// Create empty node and deserialize page data into it
+		node := &Node{}
+		if err := node.deserialize(page); err != nil {
+			return err
+		}
+
+		header := page.header()
+
+		// Load into cache as hot version (ready for next reader)
+		cache.Put(pageID, header.TxnID, node)
+
+		// Rebuild WAL latch to prevent stale disk reads
+		dm.walPages.Store(pageID, header.TxnID)
+
+		return nil
+	})
 }
 
 // GetMeta returns the current metadata

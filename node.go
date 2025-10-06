@@ -1,6 +1,8 @@
 package fredb
 
-import "bytes"
+import (
+	"bytes"
+)
 
 const (
 	// MaxKeysPerNode must be small enough that a full Node can serialize to PageSize
