@@ -822,10 +822,10 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		}
 	}
 
-	// Heuristic active for page leaks: file size should be reasonable
+	// Heuristic active for Page leaks: file size should be reasonable
 	// With 100 initial keys + ~500-750 committed transactions × 5-6 keys each
 	// = ~100 + 3000-4500 = ~4000 keys total
-	// At ~4KB per page with branching, expect < 10MB
+	// At ~4KB per Page with branching, expect < 10MB
 	info, err := os.Stat(tmpfile)
 	if err != nil {
 		t.Errorf("Failed to stat db file: %v", err)
@@ -833,13 +833,13 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		sizeMB := float64(info.Size()) / (1024 * 1024)
 		t.Logf("Database file size: %.2f MB", sizeMB)
 		if sizeMB > 10.0 {
-			t.Errorf("File size suspiciously large (%.2f MB), possible page leak", sizeMB)
+			t.Errorf("File size suspiciously large (%.2f MB), possible Page leak", sizeMB)
 		}
 	}
 }
 
 // TestDBLargeKeysPerPage tests inserting large key-value pairs
-// where only 2 pairs fit per page (stress test for page splits)
+// where only 2 pairs fit per Page (stress test for Page splits)
 func TestDBLargeKeysPerPage(t *testing.T) {
 	t.Parallel()
 
@@ -852,14 +852,14 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Calculate key/value size for 2 pairs per page
+	// Calculate key/value size for 2 pairs per Page
 	// PageSize = 4096, pageHeaderSize = 40, leafElementSize = 16
 	// Available = 4096 - 40 = 4056
 	// For 2 pairs: 2 * 16 = 32 bytes metadata
 	// Data space = 4056 - 32 = 4024 bytes
 	// Per pair = 2012 bytes total
 	// Limit keys to 500 bytes (within MaxKeySize = 1024)
-	// Use 500+1500 = 2000 bytes per pair for ~2 pairs per page
+	// Use 500+1500 = 2000 bytes per pair for ~2 pairs per Page
 	keySize := 500
 	valueSize := 1500
 

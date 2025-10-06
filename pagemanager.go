@@ -8,8 +8,8 @@ import (
 
 // PageManager handles disk I/O
 type PageManager interface {
-	ReadPage(id pageID) (*page, error)
-	WritePage(id pageID, page *page) error
+	ReadPage(id pageID) (*Page, error)
+	WritePage(id pageID, page *Page) error
 	AllocatePage() (pageID, error)
 	FreePage(id pageID) error
 	FreePending(txnID uint64, pageIDs []pageID) error
@@ -80,12 +80,12 @@ func NewDiskPageManager(path string, opts DBOptions) (*DiskPageManager, error) {
 	return dm, nil
 }
 
-// ReadPage reads a page from disk
-func (dm *DiskPageManager) ReadPage(id pageID) (*page, error) {
+// ReadPage reads a Page from disk
+func (dm *DiskPageManager) ReadPage(id pageID) (*Page, error) {
 	return dm.readPageAt(id)
 }
 
-// AllocatePage allocates a new page (from freelist or grows file)
+// AllocatePage allocates a new Page (from freelist or grows file)
 func (dm *DiskPageManager) AllocatePage() (pageID, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -102,8 +102,8 @@ func (dm *DiskPageManager) AllocatePage() (pageID, error) {
 	id = pageID(dm.meta.NumPages)
 	dm.meta.NumPages++
 
-	// Initialize empty page
-	emptyPage := &page{}
+	// Initialize empty Page
+	emptyPage := &Page{}
 	if err := dm.writePageAtUnsafe(id, emptyPage); err != nil {
 		return 0, err
 	}
@@ -111,7 +111,7 @@ func (dm *DiskPageManager) AllocatePage() (pageID, error) {
 	return id, nil
 }
 
-// FreePage adds a page to the freelist
+// FreePage adds a Page to the freelist
 func (dm *DiskPageManager) FreePage(id pageID) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -129,9 +129,9 @@ func (dm *DiskPageManager) FreePending(txnID uint64, pageIDs []pageID) error {
 	return nil
 }
 
-// AppendPageWAL writes a page to the WAL
-func (dm *DiskPageManager) AppendPageWAL(txnID uint64, pageID pageID, page *page) error {
-	// Mark page as having WAL-only data (latch to prevent stale disk reads)
+// AppendPageWAL writes a Page to the WAL
+func (dm *DiskPageManager) AppendPageWAL(txnID uint64, pageID pageID, page *Page) error {
+	// Mark Page as having WAL-only data (latch to prevent stale disk reads)
 	dm.walPages.Store(pageID, txnID)
 	return dm.wal.AppendPage(txnID, pageID, page)
 }
@@ -156,7 +156,7 @@ func (dm *DiskPageManager) TruncateWAL(upToTxnID uint64) error {
 	return dm.wal.Truncate(upToTxnID)
 }
 
-// CleanupLatchOnWAL removes WAL page latches for pages that have been checkpointed
+// CleanupLatchOnWAL removes WAL Page latches for pages that have been checkpointed
 // AND are visible to all active readers (txnID < minReaderTxn).
 // This allows readers to load these pages from disk instead of requiring cache/VersionMap.
 func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
@@ -168,7 +168,7 @@ func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
 		txnID := value.(uint64)
 
 		// Only remove latch if BOTH conditions true:
-		// 1. page is checkpointed (written to disk)
+		// 1. Page is checkpointed (written to disk)
 		// 2. All active readers can see this version (no reader needs older version)
 		if txnID <= checkpointTxn && txnID < minReaderTxn {
 			dm.walPages.Delete(pageID)
@@ -178,7 +178,7 @@ func (dm *DiskPageManager) CleanupLatchOnWAL(minReaderTxn uint64) {
 }
 
 // ReplayWAL replays WAL transactions from the given transaction ID
-func (dm *DiskPageManager) ReplayWAL(fromTxnID uint64, applyFn func(pageID, *page) error) error {
+func (dm *DiskPageManager) ReplayWAL(fromTxnID uint64, applyFn func(pageID, *Page) error) error {
 	return dm.wal.Replay(fromTxnID, applyFn)
 }
 
@@ -193,7 +193,7 @@ func (dm *DiskPageManager) GetMeta() *MetaPage {
 }
 
 // PutMeta updates the metadata and persists it to disk
-// Writes to the inactive meta page and fsyncs for durability
+// Writes to the inactive meta Page and fsyncs for durability
 func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
@@ -201,13 +201,13 @@ func (dm *DiskPageManager) PutMeta(meta *MetaPage) error {
 	// Update checksum
 	meta.Checksum = meta.calculateChecksum()
 
-	// Write to inactive meta page (alternates based on TxnID)
-	// TxnID % 2 determines which page: 0 or 1
-	metaPage := &page{}
+	// Write to inactive meta Page (alternates based on TxnID)
+	// TxnID % 2 determines which Page: 0 or 1
+	metaPage := &Page{}
 	metaPage.writeMeta(meta)
 	metaPageID := pageID(meta.TxnID % 2)
 
-	// Write meta page to disk (unsafe - already holding lock)
+	// Write meta Page to disk (unsafe - already holding lock)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
@@ -245,9 +245,9 @@ func (dm *DiskPageManager) Close() error {
 	}
 
 	// Write freelist
-	freelistPages := make([]*page, pagesNeeded)
+	freelistPages := make([]*Page, pagesNeeded)
 	for i := 0; i < pagesNeeded; i++ {
-		freelistPages[i] = &page{}
+		freelistPages[i] = &Page{}
 	}
 	dm.freelist.Serialize(freelistPages)
 
@@ -261,8 +261,8 @@ func (dm *DiskPageManager) Close() error {
 	dm.meta.TxnID++
 	dm.meta.Checksum = dm.meta.calculateChecksum()
 
-	// Write meta to alternating page
-	metaPage := &page{}
+	// Write meta to alternating Page
+	metaPage := &Page{}
 	metaPage.writeMeta(&dm.meta)
 	metaPageID := pageID(dm.meta.TxnID % 2)
 	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
@@ -281,14 +281,14 @@ func (dm *DiskPageManager) Close() error {
 
 // initializeNewDB creates a new database with dual meta pages and empty freelist
 func (dm *DiskPageManager) initializeNewDB() error {
-	// Initialize meta page
+	// Initialize meta Page
 	dm.meta = MetaPage{
 		Magic:           MagicNumber,
 		Version:         FormatVersion,
 		PageSize:        PageSize,
 		RootPageID:      0, // Will be set by BTree
-		FreelistID:      2, // page 2
-		FreelistPages:   1, // One freelist page
+		FreelistID:      2, // Page 2
+		FreelistPages:   1, // One freelist Page
 		TxnID:           0, // First transaction
 		CheckpointTxnID: 0, // No checkpoint yet
 		NumPages:        3, // Pages 0-1 (meta), 2 (freelist) reserved
@@ -296,7 +296,7 @@ func (dm *DiskPageManager) initializeNewDB() error {
 	dm.meta.Checksum = dm.meta.calculateChecksum()
 
 	// Write meta to both pages 0 and 1
-	metaPage := &page{}
+	metaPage := &Page{}
 	metaPage.writeMeta(&dm.meta)
 
 	if err := dm.WritePage(0, metaPage); err != nil {
@@ -306,8 +306,8 @@ func (dm *DiskPageManager) initializeNewDB() error {
 		return err
 	}
 
-	// Write empty freelist to page 2
-	freelistPages := []*page{&page{}}
+	// Write empty freelist to Page 2
+	freelistPages := []*Page{&Page{}}
 	dm.freelist.Serialize(freelistPages)
 	if err := dm.WritePage(2, freelistPages[0]); err != nil {
 		return err
@@ -329,7 +329,7 @@ func (dm *DiskPageManager) loadExistingDB() error {
 		return err
 	}
 
-	// validate and pick best meta page
+	// validate and pick best meta Page
 	meta0 := page0.readMeta()
 	meta1 := page1.readMeta()
 
@@ -356,7 +356,7 @@ func (dm *DiskPageManager) loadExistingDB() error {
 	}
 
 	// Load freelist
-	freelistPages := make([]*page, dm.meta.FreelistPages)
+	freelistPages := make([]*Page, dm.meta.FreelistPages)
 	for i := uint64(0); i < dm.meta.FreelistPages; i++ {
 		page, err := dm.readPageAt(dm.meta.FreelistID + pageID(i))
 		if err != nil {
@@ -373,26 +373,26 @@ func (dm *DiskPageManager) loadExistingDB() error {
 	return nil
 }
 
-// readPageAt reads a page from a specific offset
-func (dm *DiskPageManager) readPageAt(id pageID) (*page, error) {
-	// Check if page has WAL-only data (latch prevents reading stale disk data)
+// readPageAt reads a Page from a specific offset
+func (dm *DiskPageManager) readPageAt(id pageID) (*Page, error) {
+	// Check if Page has WAL-only data (latch prevents reading stale disk data)
 	if _, hasWALData := dm.walPages.Load(id); hasWALData {
-		// page exists in WAL but not yet checkpointed to disk
+		// Page exists in WAL but not yet checkpointed to disk
 		// Caller must use cache or VersionMap to get the correct version
-		return nil, fmt.Errorf("page %d in WAL, not yet on disk", id)
+		return nil, fmt.Errorf("Page %d in WAL, not yet on disk", id)
 	}
 
 	return dm.readPageAtUnsafe(id)
 }
 
-// readPageAtUnsafe reads a page from disk without WAL latch check
+// readPageAtUnsafe reads a Page from disk without WAL latch check
 // Used during checkpoint to read old disk versions before overwriting
-func (dm *DiskPageManager) readPageAtUnsafe(id pageID) (*page, error) {
+func (dm *DiskPageManager) readPageAtUnsafe(id pageID) (*Page, error) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
 	offset := int64(id) * PageSize
-	page := &page{}
+	page := &Page{}
 	n, err := dm.file.ReadAt(page.data[:], offset)
 	if err != nil {
 		return nil, err
@@ -404,16 +404,16 @@ func (dm *DiskPageManager) readPageAtUnsafe(id pageID) (*page, error) {
 	return page, nil
 }
 
-// WritePage writes a page to a specific offset (with locking)
-func (dm *DiskPageManager) WritePage(id pageID, page *page) error {
+// WritePage writes a Page to a specific offset (with locking)
+func (dm *DiskPageManager) WritePage(id pageID, page *Page) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
 	return dm.writePageAtUnsafe(id, page)
 }
 
-// writePageAtUnsafe writes a page without acquiring the lock (caller must hold lock)
-func (dm *DiskPageManager) writePageAtUnsafe(id pageID, page *page) error {
+// writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)
+func (dm *DiskPageManager) writePageAtUnsafe(id pageID, page *Page) error {
 	offset := int64(id) * PageSize
 	n, err := dm.file.WriteAt(page.data[:], offset)
 	if err != nil {
@@ -432,12 +432,12 @@ var _ PageManager = (*InMemoryPageManager)(nil)
 
 // InMemoryPageManager implements PageManager with in-memory storage
 type InMemoryPageManager struct {
-	pages      map[pageID]*page
+	pages      map[pageID]*Page
 	nextPageID pageID
 	meta       MetaPage
 }
 
-// NewInMemoryPageManager creates a new in-memory page manager
+// NewInMemoryPageManager creates a new in-memory Page manager
 func NewInMemoryPageManager() *InMemoryPageManager {
 	meta := MetaPage{
 		Magic:           MagicNumber,
@@ -453,17 +453,17 @@ func NewInMemoryPageManager() *InMemoryPageManager {
 	meta.Checksum = meta.calculateChecksum()
 
 	return &InMemoryPageManager{
-		pages:      make(map[pageID]*page),
+		pages:      make(map[pageID]*Page),
 		nextPageID: 1, // Start at 1, 0 reserved for nil
 		meta:       meta,
 	}
 }
 
-// ReadPage reads a page from memory
-func (m *InMemoryPageManager) ReadPage(id pageID) (*page, error) {
+// ReadPage reads a Page from memory
+func (m *InMemoryPageManager) ReadPage(id pageID) (*Page, error) {
 	page, exists := m.pages[id]
 	if !exists {
-		return nil, fmt.Errorf("page %d not found", id)
+		return nil, fmt.Errorf("Page %d not found", id)
 	}
 
 	// Return a copy to simulate disk read
@@ -472,10 +472,10 @@ func (m *InMemoryPageManager) ReadPage(id pageID) (*page, error) {
 	return pageCopy, nil
 }
 
-// WritePage writes a page to memory
-func (m *InMemoryPageManager) WritePage(id pageID, page *page) error {
+// WritePage writes a Page to memory
+func (m *InMemoryPageManager) WritePage(id pageID, page *Page) error {
 	if page == nil {
-		return fmt.Errorf("cannot write nil page")
+		return fmt.Errorf("cannot write nil Page")
 	}
 
 	// Store a copy to simulate disk write
@@ -485,18 +485,18 @@ func (m *InMemoryPageManager) WritePage(id pageID, page *page) error {
 	return nil
 }
 
-// AllocatePage allocates a new page
+// AllocatePage allocates a new Page
 func (m *InMemoryPageManager) AllocatePage() (pageID, error) {
 	id := m.nextPageID
 	m.nextPageID++
 	m.meta.NumPages++
 
-	// Initialize empty page
-	m.pages[id] = &page{}
+	// Initialize empty Page
+	m.pages[id] = &Page{}
 	return id, nil
 }
 
-// FreePage marks a page as free (just removes from map)
+// FreePage marks a Page as free (just removes from map)
 func (m *InMemoryPageManager) FreePage(id pageID) error {
 	delete(m.pages, id)
 	return nil
@@ -520,7 +520,7 @@ func (m *InMemoryPageManager) PutMeta(meta *MetaPage) error {
 	return nil
 }
 
-// Close closes the in-memory page manager (no-op for memory)
+// Close closes the in-memory Page manager (no-op for memory)
 func (m *InMemoryPageManager) Close() error {
 	return nil
 }

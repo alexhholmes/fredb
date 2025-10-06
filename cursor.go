@@ -26,7 +26,7 @@ func init() {
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
 type pathElem struct {
-	node       *node
+	node       *Node
 	childIndex int
 }
 
@@ -77,7 +77,7 @@ func (it *Cursor) Seek(key []byte) error {
 
 	// Get root from transaction for snapshot isolation
 	// Use tx.root if set (modified in this tx), otherwise use btree.root
-	var node *node
+	var node *Node
 	if it.tx != nil && it.tx.root != nil {
 		node = it.tx.root
 	} else {
@@ -90,7 +90,7 @@ func (it *Cursor) Seek(key []byte) error {
 			i++
 		}
 
-		// Push current node and child index to stack
+		// Push current Node and child index to stack
 		it.stack = append(it.stack, pathElem{node: node, childIndex: i})
 
 		// Descend to child
@@ -110,7 +110,7 @@ func (it *Cursor) Seek(key []byte) error {
 	// Push leaf to stack (childIndex is key position in leaf)
 	it.stack = append(it.stack, pathElem{node: node, childIndex: i})
 
-	// If positioned within node, we're valid
+	// If positioned within Node, we're valid
 	if i < int(node.numKeys) {
 		it.key = node.keys[i]
 		it.value = node.values[i]
@@ -133,7 +133,7 @@ func (it *Cursor) Seek(key []byte) error {
 		return it.prevLeaf()
 	}
 
-	// Key not in this node - advance to next leaf
+	// Key not in this Node - advance to next leaf
 	return it.nextLeaf()
 }
 

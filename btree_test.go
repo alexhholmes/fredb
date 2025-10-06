@@ -99,12 +99,12 @@ func TestBTreeUpdate(t *testing.T) {
 	}
 }
 
-// node Splitting Tests
+// Node Splitting Tests
 
 func TestBTreeSplitting(t *testing.T) {
 	t.Parallel()
 
-	// Test node splitting when exceeding MaxKeysPerNode
+	// Test Node splitting when exceeding MaxKeysPerNode
 	db := setupTestDB(t)
 
 	// Insert MaxKeysPerNode + 1 keys to force a split
@@ -693,10 +693,10 @@ func TestBTreeLargeValues(t *testing.T) {
 // PageManager Integration Tests
 
 func TestPageCaching(t *testing.T) {
-	// Test page cache behavior
+	// Test Page cache behavior
 	// - Verify cache hit/miss behavior
 	// - Test cache population on reads
-	// - Verify dirty page tracking
+	// - Verify dirty Page tracking
 	t.Skip("Not implemented")
 }
 
@@ -711,7 +711,7 @@ func TestCloseFlush(t *testing.T) {
 
 func TestLoadNode(t *testing.T) {
 	// Test loadNode caching behavior
-	// - Load same node multiple times
+	// - Load same Node multiple times
 	// - Verify cache returns same instance
 	// - Verify no duplicate reads from PageManager
 	t.Skip("Not implemented")
@@ -1091,7 +1091,7 @@ func TestPageOverflowLargeValue(t *testing.T) {
 	db := setupTestDB(t)
 
 	key := []byte("small_key")
-	// Value that's too large to fit in a page
+	// Value that's too large to fit in a Page
 	// Max size = PageSize - pageHeaderSize - leafElementSize = 4096 - 32 - 12 = 4052
 	largeValue := make([]byte, 4060)
 	for i := range largeValue {
@@ -1110,7 +1110,7 @@ func TestPageOverflowCombinedSize(t *testing.T) {
 	db := setupTestDB(t)
 
 	// Key + value that combined exceed PageSize
-	// Key within MaxKeySize = 1024, but combined size > page limit
+	// Key within MaxKeySize = 1024, but combined size > Page limit
 	key := make([]byte, 1000)
 	value := make([]byte, 3100) // Total 4100 > 4048
 	for i := range key {
@@ -1151,7 +1151,7 @@ func TestPageOverflowBoundary(t *testing.T) {
 
 	err := db.Set(key, value)
 	if err != nil {
-		t.Errorf("Should fit in page, got error: %v", err)
+		t.Errorf("Should fit in Page, got error: %v", err)
 	}
 
 	// Verify we can retrieve it
@@ -1212,7 +1212,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	// Delete until we have a node with exactly MinKeysPerNode=64 keys
+	// Delete until we have a Node with exactly MinKeysPerNode=64 keys
 	// This should NOT trigger underflow
 	deleteCount := numKeys - MinKeysPerNode
 	for i := 0; i < deleteCount; i++ {
@@ -1346,7 +1346,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 	}
 
 	if db.store.root.isLeaf {
-		t.Fatal("Root should be branch node")
+		t.Fatal("Root should be branch Node")
 	}
 
 	initialRootKeys := db.store.root.numKeys

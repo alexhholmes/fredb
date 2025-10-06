@@ -23,7 +23,7 @@ const (
 
 type pageID uint64
 
-// page is raw disk page (4096 bytes)
+// Page is raw disk Page (4096 bytes)
 //
 // LEAF PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
@@ -64,23 +64,23 @@ type pageID uint64
 // │   branchElement[0..N-1].ChildID stores children[1..N]               │
 // │   children[0] is at FIXED location: last 8 bytes (PageSize-8)       │
 // └─────────────────────────────────────────────────────────────────────┘
-type page struct {
+type Page struct {
 	data [PageSize]byte
 }
 
-// pageHeader represents the fixed-size header at the start of each page
+// pageHeader represents the fixed-size header at the start of each Page
 // Layout: [pageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][_NextLeaf: 8][_PrevLeaf: 8]
 type pageHeader struct {
 	PageID    pageID // 8 bytes
 	Flags     uint16 // 2 bytes (leaf/branch)
 	NumKeys   uint16 // 2 bytes
 	Padding   uint32 // 4 bytes (alignment)
-	TxnID     uint64 // 8 bytes - transaction that committed this page version
+	TxnID     uint64 // 8 bytes - transaction that committed this Page version
 	_NextLeaf pageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
 	_PrevLeaf pageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
 }
 
-// leafElement represents metadata for a key-value pair in a leaf page
+// leafElement represents metadata for a key-value pair in a leaf Page
 // Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][Reserved: 4]
 type leafElement struct {
 	KeyOffset   uint16 // 2 bytes: offset from data area start
@@ -90,7 +90,7 @@ type leafElement struct {
 	Reserved    uint32 // 4 bytes
 }
 
-// branchElement represents metadata for a routing key and child pointer in a branch page
+// branchElement represents metadata for a routing key and child pointer in a branch Page
 // B+ tree: branch nodes only store keys for routing, no values
 // Layout: [KeyOffset: 2][KeySize: 2][Reserved: 4][ChildID: 8]
 type branchElement struct {
@@ -100,13 +100,13 @@ type branchElement struct {
 	ChildID   pageID // 8 bytes
 }
 
-// header returns the page header decoded from page data
-func (p *page) header() *pageHeader {
+// header returns the Page header decoded from Page data
+func (p *Page) header() *pageHeader {
 	return (*pageHeader)(unsafe.Pointer(&p.data[0]))
 }
 
 // leafElements returns the array of leaf elements starting after the header
-func (p *page) leafElements() []leafElement {
+func (p *Page) leafElements() []leafElement {
 	h := p.header()
 	if h.NumKeys == 0 {
 		return nil
@@ -116,7 +116,7 @@ func (p *page) leafElements() []leafElement {
 }
 
 // branchElements returns the array of branch elements starting after the header
-func (p *page) branchElements() []branchElement {
+func (p *Page) branchElements() []branchElement {
 	h := p.header()
 	if h.NumKeys == 0 {
 		return nil
@@ -126,7 +126,7 @@ func (p *page) branchElements() []branchElement {
 }
 
 // dataAreaStart returns the offset where variable-length data begins
-func (p *page) dataAreaStart() int {
+func (p *Page) dataAreaStart() int {
 	h := p.header()
 	if h.Flags&LeafPageFlag != 0 {
 		return pageHeaderSize + int(h.NumKeys)*leafElementSize
@@ -134,25 +134,25 @@ func (p *page) dataAreaStart() int {
 	return pageHeaderSize + int(h.NumKeys)*branchElementSize
 }
 
-// writeHeader writes the page header to the page data
-func (p *page) writeHeader(h *pageHeader) {
+// writeHeader writes the Page header to the Page data
+func (p *Page) writeHeader(h *pageHeader) {
 	*p.header() = *h
 }
 
 // writeLeafElement writes a leaf element at the specified index
-func (p *page) writeLeafElement(idx int, e *leafElement) {
+func (p *Page) writeLeafElement(idx int, e *leafElement) {
 	ptr := unsafe.Pointer(&p.data[pageHeaderSize+idx*leafElementSize])
 	*(*leafElement)(ptr) = *e
 }
 
 // writeBranchElement writes a branch element at the specified index
-func (p *page) writeBranchElement(idx int, e *branchElement) {
+func (p *Page) writeBranchElement(idx int, e *branchElement) {
 	ptr := unsafe.Pointer(&p.data[pageHeaderSize+idx*branchElementSize])
 	*(*branchElement)(ptr) = *e
 }
 
 // getKey retrieves a key from the data area given an absolute offset and size
-func (p *page) getKey(offset, size uint16) ([]byte, error) {
+func (p *Page) getKey(offset, size uint16) ([]byte, error) {
 	start := int(offset)
 	end := start + int(size)
 
@@ -167,7 +167,7 @@ func (p *page) getKey(offset, size uint16) ([]byte, error) {
 }
 
 // getValue retrieves a value from the data area given an absolute offset and size
-func (p *page) getValue(offset, size uint16) ([]byte, error) {
+func (p *Page) getValue(offset, size uint16) ([]byte, error) {
 	start := int(offset)
 	end := start + int(size)
 
@@ -181,14 +181,14 @@ func (p *page) getValue(offset, size uint16) ([]byte, error) {
 	return p.data[start:end], nil
 }
 
-// writeBranchFirstChild writes the first child pageID to a fixed location at the end of the page
-func (p *page) writeBranchFirstChild(childID pageID) {
+// writeBranchFirstChild writes the first child pageID to a fixed location at the end of the Page
+func (p *Page) writeBranchFirstChild(childID pageID) {
 	offset := PageSize - 8
 	*(*pageID)(unsafe.Pointer(&p.data[offset])) = childID
 }
 
-// readBranchFirstChild reads the first child pageID from a fixed location at the end of the page
-func (p *page) readBranchFirstChild() pageID {
+// readBranchFirstChild reads the first child pageID from a fixed location at the end of the Page
+func (p *Page) readBranchFirstChild() pageID {
 	offset := PageSize - 8
 	return *(*pageID)(unsafe.Pointer(&p.data[offset]))
 }
@@ -199,7 +199,7 @@ func (p *page) readBranchFirstChild() pageID {
 type MetaPage struct {
 	Magic           uint32 // 4 bytes: 0x66726462 ("frdb")
 	Version         uint16 // 2 bytes: format version (1)
-	PageSize        uint16 // 2 bytes: page size (4096)
+	PageSize        uint16 // 2 bytes: Page size (4096)
 	RootPageID      pageID // 8 bytes: root of B-tree
 	FreelistID      pageID // 8 bytes: start of freelist
 	FreelistPages   uint64 // 8 bytes: number of contiguous freelist pages
@@ -209,15 +209,15 @@ type MetaPage struct {
 	Checksum        uint32 // 4 bytes: CRC32 of above fields
 }
 
-// writeMeta writes metadata to the page starting at pageHeaderSize
-func (p *page) writeMeta(m *MetaPage) {
+// writeMeta writes metadata to the Page starting at pageHeaderSize
+func (p *Page) writeMeta(m *MetaPage) {
 	offset := pageHeaderSize
 	ptr := unsafe.Pointer(&p.data[offset])
 	*(*MetaPage)(ptr) = *m
 }
 
-// readMeta reads metadata from the page starting at pageHeaderSize
-func (p *page) readMeta() *MetaPage {
+// readMeta reads metadata from the Page starting at pageHeaderSize
+func (p *Page) readMeta() *MetaPage {
 	offset := pageHeaderSize
 	ptr := unsafe.Pointer(&p.data[offset])
 	return (*MetaPage)(ptr)

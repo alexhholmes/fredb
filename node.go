@@ -3,17 +3,17 @@ package fredb
 import "bytes"
 
 const (
-	// MaxKeysPerNode must be small enough that a full node can serialize to PageSize
+	// MaxKeysPerNode must be small enough that a full Node can serialize to PageSize
 	MaxKeysPerNode = 64
 	MinKeysPerNode = MaxKeysPerNode / 4 // Minimum keys for non-root nodes
 )
 
-// node represents a B-tree node with decoded page data
-type node struct {
+// Node represents a B-tree Node with decoded Page data
+type Node struct {
 	pageID pageID
 	dirty  bool
 
-	// Decoded node data
+	// Decoded Node data
 	isLeaf   bool
 	numKeys  uint16
 	keys     [][]byte
@@ -21,15 +21,15 @@ type node struct {
 	children []pageID
 }
 
-// isFull checks if a node is full
-func (n *node) isFull() bool {
+// isFull checks if a Node is full
+func (n *Node) isFull() bool {
 	// Use key count active for both leaf and branch nodes
 	// Overflow is detected during serialize with try-rollback
 	return int(n.numKeys) >= MaxKeysPerNode
 }
 
-// serializedSize calculates the size of the serialized node
-func (n *node) serializedSize() int {
+// serializedSize calculates the size of the serialized Node
+func (n *Node) serializedSize() int {
 	size := pageHeaderSize
 
 	if n.isLeaf {
@@ -49,15 +49,15 @@ func (n *node) serializedSize() int {
 	return size
 }
 
-// serialize encodes the node data into a fresh page
-func (n *node) serialize(txnID uint64) (*page, error) {
+// serialize encodes the Node data into a fresh Page
+func (n *Node) serialize(txnID uint64) (*Page, error) {
 	// Check size
 	if n.serializedSize() > PageSize {
 		return nil, ErrPageOverflow
 	}
 
-	// Create fresh page
-	page := &page{}
+	// Create fresh Page
+	page := &Page{}
 
 	// Write header
 	header := &pageHeader{
@@ -75,7 +75,7 @@ func (n *node) serialize(txnID uint64) (*page, error) {
 	page.writeHeader(header)
 
 	if n.isLeaf {
-		// serialize leaf node - pack from end backward
+		// serialize leaf Node - pack from end backward
 		dataOffset := uint16(PageSize)
 		// Process in reverse order to pack from end
 		for i := int(n.numKeys) - 1; i >= 0; i-- {
@@ -101,7 +101,7 @@ func (n *node) serialize(txnID uint64) (*page, error) {
 			page.writeLeafElement(i, elem)
 		}
 	} else {
-		// serialize branch node (B+ tree: only keys, no values)
+		// serialize branch Node (B+ tree: only keys, no values)
 		// Write children[0] at fixed location (last 8 bytes)
 		if len(n.children) > 0 {
 			page.writeBranchFirstChild(n.children[0])
@@ -130,15 +130,15 @@ func (n *node) serialize(txnID uint64) (*page, error) {
 	return page, nil
 }
 
-// deserialize decodes the page data into node fields
-func (n *node) deserialize(p *page) error {
+// deserialize decodes the Page data into Node fields
+func (n *Node) deserialize(p *Page) error {
 	header := p.header()
 	n.pageID = header.PageID
 	n.numKeys = header.NumKeys
 	n.isLeaf = (header.Flags & LeafPageFlag) != 0
 
 	if n.isLeaf {
-		// deserialize leaf node
+		// deserialize leaf Node
 		n.keys = make([][]byte, n.numKeys)
 		n.values = make([][]byte, n.numKeys)
 		n.children = nil
@@ -164,7 +164,7 @@ func (n *node) deserialize(p *page) error {
 			copy(n.values[i], valueData)
 		}
 	} else {
-		// deserialize branch node (B+ tree: only keys, no values)
+		// deserialize branch Node (B+ tree: only keys, no values)
 		n.keys = make([][]byte, n.numKeys)
 		n.values = nil // Branch nodes don't have values
 		n.children = make([]pageID, n.numKeys+1)
@@ -192,8 +192,8 @@ func (n *node) deserialize(p *page) error {
 	return nil
 }
 
-// findKey returns the index of key in node, or -1 if not found
-func (n *node) findKey(key []byte) int {
+// findKey returns the index of key in Node, or -1 if not found
+func (n *Node) findKey(key []byte) int {
 	for i := 0; i < int(n.numKeys); i++ {
 		cmp := bytes.Compare(key, n.keys[i])
 		if cmp == 0 {
@@ -206,15 +206,15 @@ func (n *node) findKey(key []byte) int {
 	return -1
 }
 
-// isUnderflow checks if node has too few keys (doesn't apply to root)
-func (n *node) isUnderflow() bool {
+// isUnderflow checks if Node has too few keys (doesn't apply to root)
+func (n *Node) isUnderflow() bool {
 	return int(n.numKeys) < MinKeysPerNode
 }
 
-// clone creates a deep copy of this node for copy-on-write
+// clone creates a deep copy of this Node for copy-on-write
 // The clone is marked dirty and does not have a pageID allocated yet
-func (n *node) clone() *node {
-	cloned := &node{
+func (n *Node) clone() *Node {
+	cloned := &Node{
 		pageID:  0,
 		dirty:   true,
 		isLeaf:  n.isLeaf,

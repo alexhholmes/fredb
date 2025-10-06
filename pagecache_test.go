@@ -4,9 +4,9 @@ import (
 	"testing"
 )
 
-// Helper to create a test node
-func makeTestNode(pageID pageID) *node {
-	return &node{
+// Helper to create a test Node
+func makeTestNode(pageID pageID) *Node {
+	return &Node{
 		pageID:   pageID,
 		isLeaf:   true,
 		keys:     make([][]byte, 0),
@@ -23,20 +23,20 @@ func TestPageCacheBasics(t *testing.T) {
 	// Test cache miss
 	_, hit := cache.Get(pageID(1), 0)
 	if hit {
-		t.Error("Expected cache miss for page 1")
+		t.Error("Expected cache miss for Page 1")
 	}
 
-	// Add node to cache with txnID=1
+	// Add Node to cache with txnID=1
 	node1 := makeTestNode(pageID(1))
 	cache.Put(pageID(1), 1, node1)
 
 	// Should now hit (for txnID >= 1)
 	retrieved, hit := cache.Get(pageID(1), 1)
 	if !hit {
-		t.Error("Expected cache hit for page 1")
+		t.Error("Expected cache hit for Page 1")
 	}
 	if retrieved.pageID != node1.pageID {
-		t.Error("Retrieved wrong node")
+		t.Error("Retrieved wrong Node")
 	}
 
 	// Check size
@@ -59,11 +59,11 @@ func TestPageCacheMVCC(t *testing.T) {
 
 	cache := NewPageCache(10, nil)
 
-	// Add version 1 of page 1
+	// Add version 1 of Page 1
 	node1 := makeTestNode(pageID(1))
 	cache.Put(pageID(1), 1, node1)
 
-	// Add version 2 of page 1
+	// Add version 2 of Page 1
 	node2 := makeTestNode(pageID(1))
 	node2.numKeys = 5 // Different data
 	cache.Put(pageID(1), 2, node2)
@@ -135,7 +135,7 @@ func TestPageCacheEviction(t *testing.T) {
 		t.Errorf("Expected size 19, got %d", cache.Size())
 	}
 
-	// Add 20th page - triggers eviction
+	// Add 20th Page - triggers eviction
 	cache.Put(pageID(20), 20, makeTestNode(pageID(20)))
 
 	// Should be at 16 now
@@ -153,12 +153,12 @@ func TestPageCacheEviction(t *testing.T) {
 	// Pages 1-4 (LRU) should be evicted
 	for i := 1; i <= 4; i++ {
 		if _, hit := cache.Get(pageID(i), uint64(i)); hit {
-			t.Errorf("page %d should have been evicted", i)
+			t.Errorf("Page %d should have been evicted", i)
 		}
 	}
 
-	// page 20 (newest) should still be there
+	// Page 20 (newest) should still be there
 	if _, hit := cache.Get(pageID(20), 20); !hit {
-		t.Error("page 20 should still be in cache")
+		t.Error("Page 20 should still be in cache")
 	}
 }

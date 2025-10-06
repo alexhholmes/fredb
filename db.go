@@ -9,11 +9,11 @@ import (
 
 var (
 	ErrKeyNotFound        = errors.New("key not found")
-	ErrPageOverflow       = errors.New("page overflow: serialized data exceeds page size")
+	ErrPageOverflow       = errors.New("Page overflow: serialized data exceeds Page size")
 	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
 	ErrInvalidMagicNumber = errors.New("invalid magic number")
 	ErrInvalidVersion     = errors.New("invalid format version")
-	ErrInvalidPageSize    = errors.New("invalid page size")
+	ErrInvalidPageSize    = errors.New("invalid Page size")
 	ErrInvalidChecksum    = errors.New("invalid checksum")
 	ErrDatabaseClosed     = errors.New("database is closed")
 	ErrCorruption         = errors.New("data corruption detected")
@@ -24,12 +24,12 @@ var (
 const (
 	// MaxKeySize is the maximum length of a key, in bytes.
 	// Set conservatively to ensure branch nodes can hold multiple keys.
-	// With 4KB pages, limiting keys to 1KB allows ~3 keys per branch node.
+	// With 4KB pages, limiting keys to 1KB allows ~3 keys per branch Node.
 	MaxKeySize = 1024
 
 	// MaxValueSize is the maximum length of a value, in bytes.
 	// Following bbolt's limit of (1 << 31) - 2, but in practice
-	// limited by page size since we don't support overflow pages yet.
+	// limited by Page size since we don't support overflow pages yet.
 	MaxValueSize = (1 << 31) - 2
 )
 
@@ -132,7 +132,7 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 
 	// Initialize TX-local cache for write transactions
 	if writable {
-		tx.pages = make(map[pageID]*node)
+		tx.pages = make(map[pageID]*Node)
 	}
 
 	// Track active transaction
@@ -295,8 +295,8 @@ func (d *db) checkpoint() error {
 	}()
 
 	// Replay WAL from last checkpoint to current
-	// IMPORTANT: Before overwriting each page, check if old disk version needs preservation
-	err := dm.ReplayWAL(checkpointTxn, func(pageID pageID, newPage *page) error {
+	// IMPORTANT: Before overwriting each Page, check if old disk version needs preservation
+	err := dm.ReplayWAL(checkpointTxn, func(pageID pageID, newPage *Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the WAL latch check for this read
 		oldPage, readErr := dm.readPageAtUnsafe(pageID)
@@ -309,13 +309,13 @@ func (d *db) checkpoint() error {
 			// If any active reader might need this old version, relocate it
 			// Preserve if oldTxnID < minReaderTxn (old version still potentially visible to readers)
 			if oldTxnID < minReaderTxn && oldHeader.NumKeys > 0 {
-				// Allocate free page for relocation
+				// Allocate free Page for relocation
 				relocPageID, allocErr := dm.AllocatePage()
 				if allocErr != nil {
 					return allocErr
 				}
 
-				// Write old disk version to relocated page
+				// Write old disk version to relocated Page
 				if writeErr := dm.WritePage(relocPageID, oldPage); writeErr != nil {
 					return writeErr
 				}
@@ -323,7 +323,7 @@ func (d *db) checkpoint() error {
 				// Add to VersionMap so readers can find it
 				d.store.cache.versionMap.Track(pageID, oldTxnID, relocPageID)
 
-				// NOTE: Do NOT call FreePending here! The relocated page will be freed
+				// NOTE: Do NOT call FreePending here! The relocated Page will be freed
 				// later by CleanupRelocatedVersions when no readers need it anymore.
 				// Calling FreePending here would cause a double-free bug.
 			}
@@ -335,7 +335,7 @@ func (d *db) checkpoint() error {
 		}
 
 		// Remove WAL latch immediately after writing to disk
-		// This allows readers to access the page from disk instead of being blocked
+		// This allows readers to access the Page from disk instead of being blocked
 		dm.walPages.Delete(pageID)
 
 		return nil
@@ -360,7 +360,7 @@ func (d *db) checkpoint() error {
 		return err
 	}
 
-	// Fsync meta page (PutMeta already writes, but need explicit fsync)
+	// Fsync meta Page (PutMeta already writes, but need explicit fsync)
 	dm.mu.Lock()
 	err = dm.file.Sync()
 	dm.mu.Unlock()
@@ -377,7 +377,7 @@ func (d *db) checkpoint() error {
 	// Only evict versions older than all active readers to preserve MVCC
 	_ = d.store.cache.EvictCheckpointed(minReaderTxn)
 
-	// Cleanup WAL page latches for checkpointed pages visible to all readers
+	// Cleanup WAL Page latches for checkpointed pages visible to all readers
 	dm.CleanupLatchOnWAL(minReaderTxn)
 
 	return nil
@@ -440,11 +440,11 @@ func (d *db) releasePages(minTxn uint64) {
 		dm.freelist.Release(minTxn)
 		dm.mu.Unlock()
 
-		// Cleanup WAL page latches for checkpointed pages visible to all readers
+		// Cleanup WAL Page latches for checkpointed pages visible to all readers
 		dm.CleanupLatchOnWAL(minTxn)
 	}
 
-	// Cleanup relocated page versions that are no longer needed
+	// Cleanup relocated Page versions that are no longer needed
 	d.store.cache.CleanupRelocatedVersions(minTxn)
 }
 

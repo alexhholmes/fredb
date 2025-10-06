@@ -45,7 +45,7 @@ func TestPageHeaderAlignment(t *testing.T) {
 func TestPageHeaderRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header
 	writeHdr := pageHeader{
@@ -80,7 +80,7 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 func TestPageHeaderByteLayout(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header with known values
 	hdr := pageHeader{
@@ -130,7 +130,7 @@ func TestLeafElementAlignment(t *testing.T) {
 func TestLeafElementByteLayout(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header first (need valid header for element writes)
 	header := pageHeader{
@@ -175,7 +175,7 @@ func TestLeafElementByteLayout(t *testing.T) {
 func TestLeafElementRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header first
 	header := pageHeader{
@@ -243,7 +243,7 @@ func TestBranchElementAlignment(t *testing.T) {
 func TestBranchElementByteLayout(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header first (need valid header for element writes)
 	header := pageHeader{
@@ -285,7 +285,7 @@ func TestBranchElementByteLayout(t *testing.T) {
 func TestBranchElementRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header first
 	header := pageHeader{
@@ -343,7 +343,7 @@ func TestBranchElementRoundTrip(t *testing.T) {
 func TestBranchFirstChildRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header
 	header := pageHeader{
@@ -402,7 +402,7 @@ func TestDataAreaStart(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var page page
+			var page Page
 			header := pageHeader{
 				PageID:  1,
 				Flags:   tt.flags,
@@ -421,7 +421,7 @@ func TestDataAreaStart(t *testing.T) {
 func TestGetKeyValue(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header for leaf with 1 key
 	header := pageHeader{
@@ -469,7 +469,7 @@ func TestGetKeyValue(t *testing.T) {
 func TestGetKeyValueBoundsChecking(t *testing.T) {
 	t.Parallel()
 
-	var page page
+	var page Page
 
 	// Write header for leaf with 1 key
 	header := pageHeader{
@@ -494,7 +494,7 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "key extends beyond page",
+			name:    "key extends beyond Page",
 			offset:  uint16(PageSize - 5),
 			size:    10,
 			wantErr: true,

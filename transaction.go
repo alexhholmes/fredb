@@ -25,8 +25,8 @@ type Tx struct {
 
 	db      *db              // Database this transaction belongs to (concrete type for internal access)
 	meta    *MetaPage        // Snapshot of metadata at transaction start
-	root    *node            // Root node at transaction start
-	pages   map[pageID]*node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	root    *Node            // Root Node at transaction start
+	pages   map[pageID]*Node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	pending []pageID         // Pages allocated in this transaction (for COW)
 	freed   []pageID         // Pages freed in this transaction (for freelist)
 
@@ -68,8 +68,8 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrValueTooLarge
 	}
 
-	// Also active practical limit based on page size
-	// At minimum, a leaf page must hold at least one key-value pair
+	// Also active practical limit based on Page size
+	// At minimum, a leaf Page must hold at least one key-value pair
 	maxSize := PageSize - pageHeaderSize - leafElementSize
 	if len(key)+len(value) > maxSize {
 		return ErrPageOverflow
@@ -98,7 +98,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot := &node{
+		newRoot := &Node{
 			pageID:   newRootID,
 			dirty:    true,
 			isLeaf:   false,
@@ -118,7 +118,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Insert with recursive COW - retry until success or non-overflow error
 	// This handles cascading splits when parent nodes also overflow
 	maxRetries := 20 // Prevent infinite loops
-	var newRoot *node
+	var newRoot *Node
 	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -139,7 +139,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot = &node{
+		newRoot = &Node{
 			pageID:   newRootID,
 			dirty:    true,
 			isLeaf:   false,
@@ -247,7 +247,7 @@ func (tx *Tx) Commit() error {
 
 	// Write all TX-local pages to WAL (not disk!)
 	for pageID, node := range tx.pages {
-		// serialize node to a page with this transaction's ID
+		// serialize Node to a Page with this transaction's ID
 		page, err := node.serialize(tx.txnID)
 		if err != nil {
 			// Restore old root on failure
@@ -297,11 +297,11 @@ func (tx *Tx) Commit() error {
 		}
 	}
 
-	// Write meta page to disk for persistence
+	// Write meta Page to disk for persistence
 	// Get current meta from pager
 	currentMeta := tx.db.store.pager.GetMeta()
 
-	// Build new meta page with updated root and incremented TxnID
+	// Build new meta Page with updated root and incremented TxnID
 	newMeta := *currentMeta
 	if tx.root != nil {
 		newMeta.RootPageID = tx.root.pageID
@@ -387,38 +387,38 @@ func (tx *Tx) check() error {
 	return nil
 }
 
-// Loads a node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(pageID pageID) (*node, error) {
+// Loads a Node using hybrid cache: tx.pages → versioned global cache → disk
+func (tx *Tx) loadNode(id pageID) (*Node, error) {
 	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
-		if node, exists := tx.pages[pageID]; exists {
+		if node, exists := tx.pages[id]; exists {
 			return node, nil
 		}
 	}
 
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.store.cache.GetOrLoad(pageID, tx.txnID, func() (*node, uint64, error) {
-		// Load from disk (called by at most one thread per pageID)
-		page, err := tx.db.store.pager.ReadPage(pageID)
+	node, found := tx.db.store.cache.GetOrLoad(id, tx.txnID, func() (*Node, uint64, error) {
+		// Load from disk (called by at most one thread per id)
+		page, err := tx.db.store.pager.ReadPage(id)
 		if err != nil {
 			return nil, 0, err
 		}
 
-		// Create node and deserialize
-		node := &node{
-			pageID: pageID,
+		// Create Node and deserialize
+		node := &Node{
+			pageID: id,
 			dirty:  false,
 		}
 
-		// Try to deserialize - if page is empty (new page), header.NumKeys will be 0
+		// Try to deserialize - if Page is empty (new Page), header.NumKeys will be 0
 		header := page.header()
 		if header.NumKeys > 0 {
 			if err := node.deserialize(page); err != nil {
 				return nil, 0, err
 			}
 		} else {
-			// New/empty page - initialize as empty leaf
-			node.pageID = pageID
+			// New/empty Page - initialize as empty leaf
+			node.pageID = id
 			node.isLeaf = true
 			node.numKeys = 0
 			node.keys = make([][]byte, 0)
@@ -426,16 +426,16 @@ func (tx *Tx) loadNode(pageID pageID) (*node, error) {
 			node.children = make([]pageID, 0)
 		}
 
-		// Cycle detection: check if deserialized node references itself
+		// Cycle detection: check if deserialized Node references itself
 		if !node.isLeaf {
 			for _, childID := range node.children {
-				if childID == pageID {
+				if childID == id {
 					return nil, 0, ErrCorruption // Self-reference detected
 				}
 			}
 		}
 
-		// Return node and its TxnID from disk header
+		// Return Node and its TxnID from disk header
 		return node, header.TxnID, nil
 	})
 
@@ -444,10 +444,10 @@ func (tx *Tx) loadNode(pageID pageID) (*node, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	// Cycle detection on cached node (fast path)
+	// Cycle detection on cached Node (fast path)
 	if !node.isLeaf {
 		for _, childID := range node.children {
-			if childID == pageID {
+			if childID == id {
 				return nil, ErrCorruption // Self-reference detected
 			}
 		}
@@ -456,41 +456,41 @@ func (tx *Tx) loadNode(pageID pageID) (*node, error) {
 	return node, nil
 }
 
-// EnsureWritable ensures a node is safe to modify in this transaction.
-// Performs COW only if the node doesn't already belong to this transaction.
-// Returns a writable node (either the original if already owned, or a clone).
-func (tx *Tx) ensureWritable(node *node) (*node, error) {
+// EnsureWritable ensures a Node is safe to modify in this transaction.
+// Performs COW only if the Node doesn't already belong to this transaction.
+// Returns a writable Node (either the original if already owned, or a clone).
+func (tx *Tx) ensureWritable(node *Node) (*Node, error) {
 	// 1. Check TX-local cache first - if already COW'd in this transaction
 	if cloned, exists := tx.pages[node.pageID]; exists {
 		return cloned, nil
 	}
 
-	// 2. Check if this node already belongs to this transaction (pending allocations)
+	// 2. Check if this Node already belongs to this transaction (pending allocations)
 	// If its pageID is in tx.pending, it was allocated in this transaction
 	for _, pid := range tx.pending {
 		if pid == node.pageID {
-			// node already owned by this transaction, no COW needed
+			// Node already owned by this transaction, no COW needed
 			return node, nil
 		}
 	}
 
-	// 3. node doesn't belong to this transaction, perform Copy-On-Write
+	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
 	cloned := node.clone()
 
-	// Allocate new page for cloned node
+	// Allocate new Page for cloned Node
 	pageID, _, err := tx.allocatePage()
 	if err != nil {
 		return nil, err
 	}
 
-	// Set up cloned node with new page
+	// Set up cloned Node with new Page
 	cloned.pageID = pageID
 	cloned.dirty = true
 
-	// Don't serialize here - let the caller modify the node first
+	// Don't serialize here - let the caller modify the Node first
 	// The caller will serialize after modifications
 
-	// Track old page as freed
+	// Track old Page as freed
 	// These pages will be added to freelist's pending list on commit
 	// and reclaimed when all readers that might reference them have finished
 	tx.addFreed(node.pageID)
@@ -502,10 +502,10 @@ func (tx *Tx) ensureWritable(node *node) (*node, error) {
 	return cloned, nil
 }
 
-// Allocates a new page for this transaction.
-// The allocated page is tracked in tx.pending for COW semantics
-func (tx *Tx) allocatePage() (pageID, *page, error) {
-	// Retry allocation if we get a page that's in tx.freed
+// Allocates a new Page for this transaction.
+// The allocated Page is tracked in tx.pending for COW semantics
+func (tx *Tx) allocatePage() (pageID, *Page, error) {
+	// Retry allocation if we get a Page that's in tx.freed
 	// This can happen when background releaser moves pages from pending to free
 	const maxRetries = 10
 retryLoop:
@@ -525,13 +525,13 @@ retryLoop:
 			}
 		}
 
-		// Check if page is in tx.freed (race with background releaser)
+		// Check if Page is in tx.freed (race with background releaser)
 		// If so, skip and retry WITHOUT returning to freelist
 		// Returning it would cause the freelist to give it back immediately, creating a loop
 		// Instead, just skip - the freelist will eventually exhaust and grow the file
 		for _, pid := range tx.freed {
 			if pid == pageID {
-				continue retryLoop // Skip this page, try allocating again
+				continue retryLoop // Skip this Page, try allocating again
 			}
 		}
 
@@ -539,10 +539,10 @@ retryLoop:
 		tx.pending = append(tx.pending, pageID)
 
 		// Invalidate any stale cache entries for this reused pageID
-		// When a page is freed and reallocated, old versions must be removed
+		// When a Page is freed and reallocated, old versions must be removed
 		tx.db.store.cache.Invalidate(pageID)
 
-		// Read the freshly allocated page
+		// Read the freshly allocated Page
 		page, err := tx.db.store.pager.ReadPage(pageID)
 		if err != nil {
 			return 0, nil, err
@@ -551,12 +551,12 @@ retryLoop:
 		return pageID, page, nil
 	}
 
-	return 0, nil, fmt.Errorf("FATAL: failed to allocate page after %d retries (txnID=%d, pending=%v, freed=%v)",
+	return 0, nil, fmt.Errorf("FATAL: failed to allocate Page after %d retries (txnID=%d, pending=%v, freed=%v)",
 		maxRetries, tx.txnID, tx.pending, tx.freed)
 }
 
-// AddFreed adds a page to the freed list, checking for duplicates first.
-// This prevents the same page from being freed multiple times in a transaction.
+// AddFreed adds a Page to the freed list, checking for duplicates first.
+// This prevents the same Page from being freed multiple times in a transaction.
 func (tx *Tx) addFreed(pageID pageID) {
 	if pageID == 0 {
 		return

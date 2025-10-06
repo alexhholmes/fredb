@@ -22,7 +22,7 @@ type WAL struct {
 
 // Record types
 const (
-	WALRecordPage   uint8 = 1 // page write
+	WALRecordPage   uint8 = 1 // Page write
 	WALRecordCommit uint8 = 2 // Commit marker
 )
 
@@ -53,9 +53,9 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 	}, nil
 }
 
-// AppendPage writes a page record to the WAL
-// Format: [WALRecordPage:1][TxnID:8][pageID:8][PageSize:4][page.data:PageSize]
-func (w *WAL) AppendPage(txnID uint64, pageID pageID, page *page) error {
+// AppendPage writes a Page record to the WAL
+// Format: [WALRecordPage:1][TxnID:8][pageID:8][PageSize:4][Page.data:PageSize]
+func (w *WAL) AppendPage(txnID uint64, pageID pageID, page *Page) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -71,7 +71,7 @@ func (w *WAL) AppendPage(txnID uint64, pageID pageID, page *page) error {
 		return err
 	}
 
-	// Write page data
+	// Write Page data
 	if _, err := w.file.Write(page.data[:]); err != nil {
 		return err
 	}
@@ -160,11 +160,11 @@ type WALRecord struct {
 	Type   uint8
 	TxnID  uint64
 	PageID pageID
-	Page   *page
+	Page   *Page
 }
 
 // Replay reads the WAL and applies all committed transactions after fromTxnID
-func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *page) error) error {
+func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *Page) error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -174,7 +174,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *page) error) error 
 	}
 
 	// Track uncommitted transactions
-	// Map: TxnID -> list of (pageID, page) to apply if commit marker found
+	// Map: TxnID -> list of (pageID, Page) to apply if commit marker found
 	uncommitted := make(map[uint64][]WALRecord)
 
 	header := make([]byte, WALRecordHeaderSize)
@@ -200,14 +200,14 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *page) error) error 
 
 		switch recordType {
 		case WALRecordPage:
-			// Read page data
+			// Read Page data
 			if dataLen != PageSize {
-				return fmt.Errorf("WAL replay: invalid page size: %d", dataLen)
+				return fmt.Errorf("WAL replay: invalid Page size: %d", dataLen)
 			}
 
-			page := &page{}
+			page := &Page{}
 			if _, err := w.file.Read(page.data[:]); err != nil {
-				return fmt.Errorf("WAL replay: failed to read page data: %w", err)
+				return fmt.Errorf("WAL replay: failed to read Page data: %w", err)
 			}
 
 			// Store in uncommitted map
@@ -223,7 +223,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(pageID, *page) error) error 
 			if txnID > fromTxnID {
 				for _, record := range uncommitted[txnID] {
 					if err := applyFn(record.PageID, record.Page); err != nil {
-						return fmt.Errorf("WAL replay: failed to apply page %d: %w", record.PageID, err)
+						return fmt.Errorf("WAL replay: failed to apply Page %d: %w", record.PageID, err)
 					}
 				}
 			}

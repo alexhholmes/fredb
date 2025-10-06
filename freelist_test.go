@@ -62,7 +62,7 @@ func TestFreeListPending(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		id := fl.Allocate()
 		if id == 0 {
-			t.Errorf("Expected to allocate page, got 0")
+			t.Errorf("Expected to allocate Page, got 0")
 		}
 	}
 
@@ -92,12 +92,12 @@ func TestFreeListReleaseOrder(t *testing.T) {
 	// Release pages from transactions < 31 (i.e., txnID 30)
 	released = fl.Release(31)
 	if released != 1 {
-		t.Errorf("Expected 1 page released (txn 30), got %d", released)
+		t.Errorf("Expected 1 Page released (txn 30), got %d", released)
 	}
 
 	// txn 50 still pending
 	if fl.PendingSize() != 1 {
-		t.Errorf("Expected 1 page still pending (txn 50), got %d", fl.PendingSize())
+		t.Errorf("Expected 1 Page still pending (txn 50), got %d", fl.PendingSize())
 	}
 }
 
@@ -135,9 +135,9 @@ func TestFreeListPendingSerialization(t *testing.T) {
 
 	// serialize
 	pagesNeeded := fl.PagesNeeded()
-	pages := make([]*page, pagesNeeded)
+	pages := make([]*Page, pagesNeeded)
 	for i := 0; i < pagesNeeded; i++ {
-		pages[i] = &page{}
+		pages[i] = &Page{}
 	}
 	fl.Serialize(pages)
 
@@ -173,7 +173,7 @@ func TestFreeListPendingSerialization(t *testing.T) {
 		}
 		for i, id := range pageIDs {
 			if pageIDs2[i] != id {
-				t.Errorf("Pending page ID mismatch for txnID %d at %d: got %d, want %d",
+				t.Errorf("Pending Page ID mismatch for txnID %d at %d: got %d, want %d",
 					txnID, i, pageIDs2[i], id)
 			}
 		}
@@ -285,15 +285,15 @@ func TestFreelistNoPageLeaks(t *testing.T) {
 	// Give background releaser time to process final releases
 	time.Sleep(100 * time.Millisecond)
 
-	// Check final page count
+	// Check final Page count
 	finalPages := db.store.pager.GetMeta().NumPages
 	pageGrowth := finalPages - initialPages
 
-	// With proper page reclamation, growth should be minimal
+	// With proper Page reclamation, growth should be minimal
 	// Allow for some growth due to B-tree structure, but not linear with operations
 	maxExpectedGrowth := uint64(400) // Generous allowance for tree overhead and MVCC
 	if pageGrowth > maxExpectedGrowth {
-		t.Errorf("Excessive page growth detected: grew by %d pages (from %d to %d), expected <= %d",
+		t.Errorf("Excessive Page growth detected: grew by %d pages (from %d to %d), expected <= %d",
 			pageGrowth, initialPages, finalPages, maxExpectedGrowth)
 	}
 
