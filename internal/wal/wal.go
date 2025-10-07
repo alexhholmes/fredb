@@ -59,7 +59,7 @@ const WALRecordHeaderSize = 1 + 8 + 8 + 4
 
 // NewWAL opens or creates a WAL file with the specified sync mode
 func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error) {
-	// Open WAL file with read/write, create if not exists
+	// Open wal file with read/write, create if not exists
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, err
@@ -167,7 +167,7 @@ func (w *WAL) Sync() error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown WAL sync mode: %d", w.syncMode)
+		return fmt.Errorf("unknown wal sync mode: %d", w.syncMode)
 	}
 }
 
@@ -203,7 +203,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Seek to beginning of WAL
+	// Seek to beginning of wal
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
@@ -218,13 +218,13 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 		// Read record header
 		n, err := w.file.Read(header)
 		if err == io.EOF {
-			break // End of WAL
+			break // End of wal
 		}
 		if err != nil {
-			return fmt.Errorf("WAL replay read error: %w", err)
+			return fmt.Errorf("wal replay read error: %w", err)
 		}
 		if n != WALRecordHeaderSize {
-			return fmt.Errorf("WAL replay: short header read: %d bytes", n)
+			return fmt.Errorf("wal replay: short header read: %d bytes", n)
 		}
 
 		// Parse header
@@ -237,15 +237,15 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 		case WALRecordPage:
 			// Read Page data
 			if dataLen != base.PageSize {
-				return fmt.Errorf("WAL replay: invalid Page size: %d", dataLen)
+				return fmt.Errorf("wal replay: invalid Page size: %d", dataLen)
 			}
 
 			page := &base.Page{}
 			if _, err := w.file.Read(page.Data[:]); err != nil {
-				return fmt.Errorf("WAL replay: failed to read Page data: %w", err)
+				return fmt.Errorf("wal replay: failed to read Page data: %w", err)
 			}
 
-			// Store in uncommitted map
+			// store in uncommitted map
 			uncommitted[txnID] = append(uncommitted[txnID], WALRecord{
 				Type:   WALRecordPage,
 				TxnID:  txnID,
@@ -258,7 +258,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 			if txnID > fromTxnID {
 				for _, record := range uncommitted[txnID] {
 					if err := applyFn(record.PageID, record.Page); err != nil {
-						return fmt.Errorf("WAL replay: failed to apply Page %d: %w", record.PageID, err)
+						return fmt.Errorf("wal replay: failed to apply Page %d: %w", record.PageID, err)
 					}
 				}
 			}
@@ -267,7 +267,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 			delete(uncommitted, txnID)
 
 		default:
-			return fmt.Errorf("WAL replay: unknown record type: %d", recordType)
+			return fmt.Errorf("wal replay: unknown record type: %d", recordType)
 		}
 	}
 
@@ -287,7 +287,7 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 	defer w.mu.Unlock()
 
 	// Find the offset where we should truncate
-	// Scan WAL and find the first commit record with TxnID > upToTxnID
+	// Scan wal and find the first commit record with TxnID > upToTxnID
 
 	// Seek to beginning
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
@@ -303,15 +303,15 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 		// Read record header
 		n, err := w.file.Read(header)
 		if err == io.EOF {
-			// Reached end - truncate entire WAL
+			// Reached end - truncate entire wal
 			truncateOffset = 0
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("WAL truncate read error: %w", err)
+			return fmt.Errorf("wal truncate read error: %w", err)
 		}
 		if n != WALRecordHeaderSize {
-			return fmt.Errorf("WAL truncate: short header read")
+			return fmt.Errorf("wal truncate: short header read")
 		}
 
 		recordType := header[0]

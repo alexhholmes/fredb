@@ -38,20 +38,10 @@ const (
 	MaxValueSize = (1 << 31) - 2
 )
 
-type DB interface {
-	Get(key []byte) ([]byte, error)
-	Set(key, value []byte) error
-	Delete(key []byte) error
-	View(fn func(*Tx) error) error
-	Update(fn func(*Tx) error) error
-	Begin(writable bool) (*Tx, error)
-	Close() error
-}
-
-type db struct {
+type DB struct {
 	mu     sync.RWMutex
-	Store  *btree
-	WAL    *wal.WAL // Write-ahead log for durability
+	store  *btree
+	wal    *wal.WAL // Write-ahead log for durability
 	closed bool     // Database closed flag
 
 	// Transaction state
@@ -65,14 +55,14 @@ type db struct {
 	wg       sync.WaitGroup // Clean shutdown
 }
 
-func Open(path string, options ...DBOption) (DB, error) {
+func Open(path string, options ...DBOption) (*DB, error) {
 	// Apply options
 	opts := defaultDBOptions()
 	for _, opt := range options {
 		opt(&opts)
 	}
 
-	// Open WAL (db owns WAL lifecycle)
+	// Open wal (DB owns wal lifecycle)
 	walPath := path + ".wal"
 	wal, err := wal.NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
 	if err != nil {
@@ -85,7 +75,7 @@ func Open(path string, options ...DBOption) (DB, error) {
 		return nil, err
 	}
 
-	btree, err := newBTree(pager)
+	bt, err := newBTree(pager)
 	if err != nil {
 		wal.Close()
 		pager.Close()
@@ -95,37 +85,37 @@ func Open(path string, options ...DBOption) (DB, error) {
 	// Initialize nextTxnID from disk to ensure monotonic IDs across sessions
 	meta := pager.GetMeta()
 
-	d := &db{
-		Store:     btree,
-		WAL:       wal,
+	db := &DB{
+		store:     bt,
+		wal:       wal,
 		nextTxnID: meta.TxnID, // Resume from last committed TxnID
 		releaseC:  make(chan uint64),
 		stopC:     make(chan struct{}),
 	}
 
-	// Recover uncommitted WAL entries into cache
-	if err := d.recoverFromWAL(btree.cache); err != nil {
+	// Recover uncommitted wal entries into cache
+	if err := db.recoverFromWAL(bt.cache); err != nil {
 		return nil, err
 	}
 
 	// Start background releaser goroutine
-	d.wg.Add(1)
-	go d.backgroundReleaser()
+	db.wg.Add(1)
+	go db.backgroundReleaser()
 
 	// Start background checkpoint goroutine
-	d.wg.Add(1)
-	go d.backgroundCheckpointer()
+	db.wg.Add(1)
+	go db.backgroundCheckpointer()
 
-	return d, nil
+	return db, nil
 }
 
-// recoverFromWAL replays uncommitted WAL entries into cache after startup.
-// This recovers transactions that were committed to WAL but not yet checkpointed to disk.
-func (d *db) recoverFromWAL(cache *cache.PageCache) error {
-	meta := d.Store.Pager.GetMeta()
+// recoverFromWAL replays uncommitted wal entries into cache after startup.
+// This recovers transactions that were committed to wal but not yet checkpointed to disk.
+func (d *DB) recoverFromWAL(cache *cache.PageCache) error {
+	meta := d.store.Pager.GetMeta()
 	checkpointTxn := meta.CheckpointTxnID
 
-	return d.WAL.Replay(checkpointTxn, func(pageID base.PageID, page *base.Page) error {
+	return d.wal.Replay(checkpointTxn, func(pageID base.PageID, page *base.Page) error {
 		// Create empty node and Deserialize pages data into it
 		node := &base.Node{}
 		if err := node.Deserialize(page); err != nil {
@@ -137,14 +127,14 @@ func (d *db) recoverFromWAL(cache *cache.PageCache) error {
 		// Load into cache as hot version (ready for next reader)
 		cache.Put(pageID, header.TxnID, node)
 
-		// Rebuild WAL latch to prevent stale disk reads
-		d.WAL.Pages.Store(pageID, header.TxnID)
+		// Rebuild wal latch to prevent stale disk reads
+		d.wal.Pages.Store(pageID, header.TxnID)
 
 		return nil
 	})
 }
 
-func (d *db) Get(key []byte) ([]byte, error) {
+func (d *DB) Get(key []byte) ([]byte, error) {
 	var result []byte
 	err := d.View(func(tx *Tx) error {
 		val, err := tx.Get(key)
@@ -157,19 +147,19 @@ func (d *db) Get(key []byte) ([]byte, error) {
 	return result, err
 }
 
-func (d *db) Set(key, value []byte) error {
+func (d *DB) Set(key, value []byte) error {
 	return d.Update(func(tx *Tx) error {
 		return tx.Set(key, value)
 	})
 }
 
-func (d *db) Delete(key []byte) error {
+func (d *DB) Delete(key []byte) error {
 	return d.Update(func(tx *Tx) error {
 		return tx.Delete(key)
 	})
 }
 
-func (d *db) Begin(writable bool) (*Tx, error) {
+func (d *DB) Begin(writable bool) (*Tx, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -193,7 +183,7 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 		db:       d,
 		txnID:    txnID,
 		writable: writable,
-		root:     d.Store.root, // Capture snapshot for MVCC isolation
+		root:     d.store.root, // Capture snapshot for MVCC isolation
 		pending:  make([]base.PageID, 0),
 		freed:    make([]base.PageID, 0),
 		done:     false,
@@ -217,7 +207,7 @@ func (d *db) Begin(writable bool) (*Tx, error) {
 // View executes a function within a read-only transaction.
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is rolled back (read-only).
-func (d *db) View(fn func(*Tx) error) error {
+func (d *DB) View(fn func(*Tx) error) error {
 	tx, err := d.Begin(false)
 	if err != nil {
 		return err
@@ -230,7 +220,7 @@ func (d *db) View(fn func(*Tx) error) error {
 // Update executes a function within a read-write transaction.
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is committed.
-func (d *db) Update(fn func(*Tx) error) error {
+func (d *DB) Update(fn func(*Tx) error) error {
 	tx, err := d.Begin(true)
 	if err != nil {
 		return err
@@ -244,7 +234,7 @@ func (d *db) Update(fn func(*Tx) error) error {
 	return tx.Commit()
 }
 
-func (d *db) Close() error {
+func (d *DB) Close() error {
 	// Stop background goroutines
 	select {
 	case <-d.stopC:
@@ -254,12 +244,12 @@ func (d *db) Close() error {
 		d.wg.Wait()
 	}
 
-	// Force sync WAL before checkpoint to ensure all data is durable
-	if err := d.WAL.ForceSync(); err != nil {
+	// Force sync wal before checkpoint to ensure all data is durable
+	if err := d.wal.ForceSync(); err != nil {
 		return err
 	}
 
-	// Final checkpoint to flush WAL
+	// Final checkpoint to flush wal
 	if err := d.checkpoint(); err != nil {
 		return err
 	}
@@ -270,17 +260,17 @@ func (d *db) Close() error {
 	// Mark database as closed
 	d.closed = true
 
-	// Close WAL
-	if err := d.WAL.Close(); err != nil {
-		d.Store.close()
+	// Close wal
+	if err := d.wal.Close(); err != nil {
+		d.store.close()
 		return err
 	}
 
-	return d.Store.close()
+	return d.store.close()
 }
 
 // backgroundReleaser periodically releases pending pages when safe
-func (d *db) backgroundReleaser() {
+func (d *DB) backgroundReleaser() {
 	defer d.wg.Done()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -306,8 +296,8 @@ func (d *db) backgroundReleaser() {
 	}
 }
 
-// backgroundCheckpointer periodically checkpoints the WAL to disk
-func (d *db) backgroundCheckpointer() {
+// backgroundCheckpointer periodically checkpoints the wal to disk
+func (d *DB) backgroundCheckpointer() {
 	defer d.wg.Done()
 
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -319,14 +309,21 @@ func (d *db) backgroundCheckpointer() {
 			// Ignore errors in background checkpoint
 			_ = d.checkpoint()
 
+		case <-d.releaseC:
+			// Also checkpoint on reader-triggered release
+			err := d.checkpoint()
+			if err != nil {
+				// TODO
+			}
+
 		case <-d.stopC:
 			return
 		}
 	}
 }
 
-// checkpoint writes WAL transactions to main file and truncates WAL
-func (d *db) checkpoint() error {
+// checkpoint writes wal transactions to main file and truncates wal
+func (d *DB) checkpoint() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -336,7 +333,7 @@ func (d *db) checkpoint() error {
 		return nil
 	}
 
-	dm := d.Store.Pager
+	dm := d.store.Pager
 
 	// get current transaction boundary
 	meta := dm.GetMeta()
@@ -353,17 +350,17 @@ func (d *db) checkpoint() error {
 	// This prevents checkpoint from allocating pages freed by the just-committed transaction
 	minReaderTxn := d.minReaderTxnForCheckpoint(currentTxn)
 
-	// Before replaying WAL, temporarily prevent allocation of recently freed pages
+	// Before replaying wal, temporarily prevent allocation of recently freed pages
 	// This ensures checkpoint won't allocate pages freed by transactions being checkpointed
 	dm.PreventAllocationUpTo(currentTxn)
 	defer dm.AllowAllAllocations()
 
-	// Replay WAL from last checkpoint to current
+	// Replay wal from last checkpoint to current
 	// IMPORTANT: Idempotent replay - skip pages already at correct version
-	err := d.WAL.Replay(checkpointTxn, func(pageID base.PageID,
+	err := d.wal.Replay(checkpointTxn, func(pageID base.PageID,
 		newPage *base.Page) error {
 		// Read current disk version BEFORE overwriting
-		// Note: We need to bypass the WAL latch check for this read
+		// Note: We need to bypass the wal latch check for this read
 		oldPage, readErr := dm.ReadPageAtUnsafe(pageID)
 
 		// Get new pages version for idempotency check
@@ -379,7 +376,7 @@ func (d *db) checkpoint() error {
 			// This handles crash between file.Sync() and PutMeta()
 			if oldTxnID >= newTxnID {
 				// Already has this version or newer, skip write
-				d.WAL.Pages.Delete(pageID) // Clear latch even if skipping
+				d.wal.Pages.Delete(pageID) // Clear latch even if skipping
 				return nil
 			}
 
@@ -398,7 +395,7 @@ func (d *db) checkpoint() error {
 				}
 
 				// Add to VersionMap so readers can find it
-				d.Store.Pager.TrackRelocation(pageID, oldTxnID, relocPageID)
+				d.store.Pager.TrackRelocation(pageID, oldTxnID, relocPageID)
 
 				// NOTE: Do NOT call FreePending here! The relocated Page will be freed
 				// later by CleanupRelocatedVersions when no readers need it anymore.
@@ -411,9 +408,9 @@ func (d *db) checkpoint() error {
 			return err
 		}
 
-		// Remove WAL latch immediately after writing to disk
+		// Remove wal latch immediately after writing to disk
 		// This allows readers to access the Page from disk instead of being blocked
-		d.WAL.Pages.Delete(pageID)
+		d.wal.Pages.Delete(pageID)
 
 		return nil
 	})
@@ -439,24 +436,24 @@ func (d *db) checkpoint() error {
 		return err
 	}
 
-	// Truncate WAL up to checkpoint
-	if err := d.WAL.Truncate(currentTxn); err != nil {
+	// Truncate wal up to checkpoint
+	if err := d.wal.Truncate(currentTxn); err != nil {
 		return err
 	}
 
 	// Evict checkpointed versions from cache
 	// Only evict versions older than all active readers to preserve MVCC
-	_ = d.Store.cache.EvictCheckpointed(minReaderTxn)
+	_ = d.store.cache.EvictCheckpointed(minReaderTxn)
 
-	// Cleanup WAL Page latches for checkpointed pages visible to all readers
-	d.WAL.CleanupLatch(checkpointTxn, minReaderTxn)
+	// Cleanup wal Page latches for checkpointed pages visible to all readers
+	d.wal.CleanupLatch(checkpointTxn, minReaderTxn)
 
 	return nil
 }
 
 // minReaderTxn returns the minimum transaction ID across all active transactions (readers + writer).
 // This determines which pending pages can be safely released to the freelist.
-func (d *db) minReaderTxn() uint64 {
+func (d *DB) minReaderTxn() uint64 {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -481,7 +478,7 @@ func (d *db) minReaderTxn() uint64 {
 // minReaderTxnForCheckpoint returns minimum transaction ID for checkpoint operations.
 // Unlike minReaderTxn, this uses lastCommittedTxn as the floor when no readers exist.
 // This prevents checkpoint from allocating pages that were just freed.
-func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
+func (d *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	// Start with last committed transaction as minimum
 	// This ensures pages freed by that transaction won't be reallocated during checkpoint
 	min := lastCommittedTxn
@@ -504,15 +501,15 @@ func (d *db) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 }
 
 // releasePages calls Release on the freelist with the given minimum transaction ID
-func (d *db) releasePages(minTxn uint64) {
+func (d *DB) releasePages(minTxn uint64) {
 	// Need to access the PageManager's freelist
-	dm := d.Store.Pager
+	dm := d.store.Pager
 	dm.ReleasePages(minTxn)
 
-	// Cleanup WAL Page latches for checkpointed pages visible to all readers
+	// Cleanup wal Page latches for checkpointed pages visible to all readers
 	meta := dm.GetMeta()
-	d.WAL.CleanupLatch(meta.CheckpointTxnID, minTxn)
+	d.wal.CleanupLatch(meta.CheckpointTxnID, minTxn)
 
 	// Cleanup relocated Page versions that are no longer needed
-	d.Store.cache.CleanupRelocatedVersions(minTxn)
+	d.store.cache.CleanupRelocatedVersions(minTxn)
 }

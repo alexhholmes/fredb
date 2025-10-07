@@ -292,7 +292,7 @@ func (c *PageCache) GetOrLoad(pageID base.PageID, txnID uint64,
 	// Load from disk WITHOUT holding any locks (I/O)
 	node, diskTxnID, err := loadFunc()
 
-	// Store result for waiting threads
+	// store result for waiting threads
 	state.mu.Lock()
 	state.node = node
 	state.diskTxnID = diskTxnID
@@ -397,7 +397,7 @@ func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
 				evicted++
 				c.evictions.Add(1)
 			} else {
-				// Keep version (either in WAL only or needed by reader)
+				// Keep version (either in wal only or needed by reader)
 				keep = append(keep, entry)
 			}
 		}

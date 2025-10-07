@@ -24,7 +24,7 @@ var (
 type Tx struct {
 	txnID    uint64                     // Unique transaction ID
 	writable bool                       // Is this a read-write transaction?
-	db       *db                        // Database this transaction belongs to (concrete type for internal access)
+	db       *DB                        // Database this transaction belongs to (concrete type for internal access)
 	root     *base.Node                 // Root Node at transaction start
 	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	pending  []base.PageID              // Pages allocated in this transaction (for COW)
@@ -46,7 +46,7 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 	}
 
 	// Search from transaction's root (pass tx for versioned cache access)
-	return tx.db.Store.searchNode(tx, tx.root, key)
+	return tx.db.store.searchNode(tx, tx.root, key)
 }
 
 // Set stores a key-value pair.
@@ -75,18 +75,18 @@ func (tx *Tx) Set(key, value []byte) error {
 	}
 
 	// Use COW-aware insertion with splits
-	// Keep changes in tx.root (transaction-local), not db.store.root
+	// Keep changes in tx.root (transaction-local), not DB.store.root
 
-	// Use tx.root if set, otherwise start from db.store.root
+	// Use tx.root if set, otherwise start from DB.store.root
 	root := tx.root
 	if root == nil {
-		root = tx.db.Store.root
+		root = tx.db.store.root
 	}
 
 	// Handle root split with COW
 	if root.IsFull() {
 		// Split root using COW
-		leftChild, rightChild, midKey, midVal, err := tx.db.Store.splitChild(tx, root)
+		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, root)
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
 		}
 
-		// Store the new root in TX-local cache
+		// store the new root in TX-local cache
 		// The split Children were already stored in splitChild()
 		tx.pages[newRootID] = newRoot
 
@@ -121,13 +121,13 @@ func (tx *Tx) Set(key, value []byte) error {
 	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		newRoot, err = tx.db.Store.insertNonFull(tx, root, key, value)
+		newRoot, err = tx.db.store.insertNonFull(tx, root, key, value)
 		if !errors.Is(err, ErrPageOverflow) {
 			break // Success or non-overflow error
 		}
 
 		// Root couldn't fit the new entry - split it
-		leftChild, rightChild, midKey, midVal, err := tx.db.Store.splitChild(tx, root)
+		leftChild, rightChild, midKey, midVal, err := tx.db.store.splitChild(tx, root)
 		if err != nil {
 			return err
 		}
@@ -156,7 +156,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		return err
 	}
 
-	// Update transaction-local root (NOT db.store.root)
+	// Update transaction-local root (NOT DB.store.root)
 	// Changes become visible only on Commit()
 	tx.root = newRoot
 
@@ -174,12 +174,12 @@ func (tx *Tx) Delete(key []byte) error {
 	}
 
 	// Full COW-aware deletion with merge/borrow support
-	// Keep changes in tx.root (transaction-local), not db.store.root
+	// Keep changes in tx.root (transaction-local), not DB.store.root
 
-	// Use tx.root if set, otherwise start from db.store.root
+	// Use tx.root if set, otherwise start from DB.store.root
 	root := tx.root
 	if root == nil {
-		root = tx.db.Store.root
+		root = tx.db.store.root
 	}
 
 	if root == nil || root.NumKeys == 0 {
@@ -187,7 +187,7 @@ func (tx *Tx) Delete(key []byte) error {
 	}
 
 	// Perform COW-aware recursive deletion
-	newRoot, err := tx.db.Store.deleteFromNode(tx, root, key)
+	newRoot, err := tx.db.store.deleteFromNode(tx, root, key)
 	if err != nil {
 		return err
 	}
@@ -199,14 +199,14 @@ func (tx *Tx) Delete(key []byte) error {
 			tx.addFreed(newRoot.PageID)
 
 			// Load the only child as new root
-			newRoot, err = tx.db.Store.loadNode(tx, newRoot.Children[0])
+			newRoot, err = tx.db.store.loadNode(tx, newRoot.Children[0])
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	// Update transaction-local root (NOT db.store.root)
+	// Update transaction-local root (NOT DB.store.root)
 	// Changes become visible only on Commit()
 	tx.root = newRoot
 
@@ -217,7 +217,7 @@ func (tx *Tx) Delete(key []byte) error {
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
 	// Pass transaction to cursor for snapshot isolation
-	return tx.db.Store.newCursor(tx)
+	return tx.db.store.newCursor(tx)
 }
 
 // Commit writes all changes and makes them visible to future transactions.
@@ -236,28 +236,28 @@ func (tx *Tx) Commit() error {
 	defer tx.db.mu.Unlock()
 
 	// Capture old root for rollback if commit fails
-	oldRoot := tx.db.Store.root
+	oldRoot := tx.db.store.root
 
-	// Apply transaction-local root to db.store.root
+	// Apply transaction-local root to DB.store.root
 	// This makes all COW changes visible to future transactions
 	if tx.root != nil {
-		tx.db.Store.root = tx.root
+		tx.db.store.root = tx.root
 	}
 
-	// Write all TX-local pages to WAL (not disk!)
+	// Write all TX-local pages to wal (not disk!)
 	for pageID, node := range tx.pages {
 		// Serialize Node to a Page with this transaction's ID
 		page, err := node.Serialize(tx.txnID)
 		if err != nil {
 			// Restore old root on failure
-			tx.db.Store.root = oldRoot
+			tx.db.store.root = oldRoot
 			return err
 		}
 
-		// Write to WAL instead of disk
-		if err := tx.db.WAL.AppendPage(tx.txnID, pageID, page); err != nil {
+		// Write to wal instead of disk
+		if err := tx.db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
 			// Restore old root on failure
-			tx.db.Store.root = oldRoot
+			tx.db.store.root = oldRoot
 			return err
 		}
 
@@ -266,18 +266,18 @@ func (tx *Tx) Commit() error {
 
 		// Flush to global versioned cache with this transaction's ID
 		// This makes the new version visible to future transactions
-		tx.db.Store.cache.Put(pageID, tx.txnID, node)
+		tx.db.store.cache.Put(pageID, tx.txnID, node)
 	}
 
-	// Append commit marker to WAL
-	if err := tx.db.WAL.AppendCommit(tx.txnID); err != nil {
-		tx.db.Store.root = oldRoot
+	// Append commit marker to wal
+	if err := tx.db.wal.AppendCommit(tx.txnID); err != nil {
+		tx.db.store.root = oldRoot
 		return err
 	}
 
-	// Conditionally fsync WAL based on sync mode (this is the commit point!)
-	if err := tx.db.WAL.Sync(); err != nil {
-		tx.db.Store.root = oldRoot
+	// Conditionally fsync wal based on sync mode (this is the commit point!)
+	if err := tx.db.wal.Sync(); err != nil {
+		tx.db.store.root = oldRoot
 		return err
 	}
 
@@ -285,13 +285,13 @@ func (tx *Tx) Commit() error {
 	// These pages were part of the previous version and can be reclaimed
 	// when all readers that might reference them have finished.
 	if len(tx.freed) > 0 {
-		dm := tx.db.Store.Pager
+		dm := tx.db.store.Pager
 		dm.FreePending(tx.txnID, tx.freed)
 	}
 
 	// Write meta Page to disk for persistence
 	// get current meta from storage
-	meta := tx.db.Store.Pager.GetMeta()
+	meta := tx.db.store.Pager.GetMeta()
 
 	// Build new meta Page with updated root and incremented TxnID
 	if tx.root != nil {
@@ -301,7 +301,7 @@ func (tx *Tx) Commit() error {
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Update storage's in-memory meta
-	if err := tx.db.Store.Pager.PutMeta(meta); err != nil {
+	if err := tx.db.store.Pager.PutMeta(meta); err != nil {
 		return err
 	}
 
@@ -323,7 +323,7 @@ func (tx *Tx) Rollback() error {
 	}
 	tx.done = true
 
-	// Remove from db tracking
+	// Remove from DB tracking
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
@@ -334,7 +334,7 @@ func (tx *Tx) Rollback() error {
 		// Return allocated but uncommitted pages to the freelist
 		// These pages were allocated during the transaction but never used
 		if len(tx.pending) > 0 {
-			dm := tx.db.Store.Pager
+			dm := tx.db.store.Pager
 			// Add directly to free list, not pending - these can be reused immediately
 			// since they were never part of any committed state
 			for _, pageID := range tx.pending {
@@ -385,9 +385,9 @@ func (tx *Tx) loadNode(id base.PageID) (*base.Node, error) {
 	}
 
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.Store.cache.GetOrLoad(id, tx.txnID, func() (*base.Node, uint64, error) {
+	node, found := tx.db.store.cache.GetOrLoad(id, tx.txnID, func() (*base.Node, uint64, error) {
 		// Load from disk (called by at most one thread per id)
-		page, err := tx.db.Store.Pager.ReadPage(id)
+		page, err := tx.db.store.Pager.ReadPage(id)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -483,7 +483,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// and reclaimed when all readers that might reference them have finished
 	tx.addFreed(node.PageID)
 
-	// Store in TX-LOCAL cache (NOT global cache yet)
+	// store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
 	tx.pages[pageID] = cloned
 
@@ -500,7 +500,7 @@ retryLoop:
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Allocate from storage (uses freelist or grows file)
 		// PageManager.allocatePage() is thread-safe via mutex
-		pageID, err := tx.db.Store.Pager.AllocatePage()
+		pageID, err := tx.db.store.Pager.AllocatePage()
 		if err != nil {
 			return 0, nil, err
 		}
@@ -528,10 +528,10 @@ retryLoop:
 
 		// invalidate any stale cache entries for this reused PageID
 		// When a Page is freed and reallocated, old versions must be removed
-		tx.db.Store.cache.Invalidate(pageID)
+		tx.db.store.cache.Invalidate(pageID)
 
 		// Read the freshly allocated Page
-		page, err := tx.db.Store.Pager.ReadPage(pageID)
+		page, err := tx.db.store.Pager.ReadPage(pageID)
 		if err != nil {
 			return 0, nil, err
 		}

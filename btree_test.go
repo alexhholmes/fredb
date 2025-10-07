@@ -123,12 +123,12 @@ func TestBTreeSplitting(t *testing.T) {
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Errorf("Root should not be a leaf after splitting")
 	}
 
 	// Check tree height increases (root should have Children)
-	if len(db.Store.root.Children) == 0 {
+	if len(db.store.root.Children) == 0 {
 		t.Errorf("Root should have Children after splitting")
 	}
 
@@ -167,13 +167,13 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	}
 
 	// Verify tree structure remains valid (root is not a leaf for large tree)
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Errorf("Root should not be a leaf after multiple splits")
 	}
 
 	// Verify root has multiple Children
-	if len(db.Store.root.Children) < 2 {
-		t.Errorf("Root should have multiple Children after multiple splits, got %d", len(db.Store.root.Children))
+	if len(db.store.root.Children) < 2 {
+		t.Errorf("Root should have multiple Children after multiple splits, got %d", len(db.store.root.Children))
 	}
 
 	// All Keys retrievable
@@ -241,11 +241,11 @@ func TestSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely right-heavy due to sequential insert)
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Logf("Tree has single leaf root after %d sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d sequential inserts",
-			db.Store.root.NumKeys, len(db.Store.root.Children), numKeys)
+			db.store.root.NumKeys, len(db.store.root.Children), numKeys)
 	}
 }
 
@@ -296,13 +296,13 @@ func TestRandomInsert(t *testing.T) {
 	}
 
 	// Check tree balance (random insertion typically produces more balanced trees)
-	if !db.Store.root.IsLeaf {
+	if !db.store.root.IsLeaf {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d random inserts",
-			db.Store.root.NumKeys, len(db.Store.root.Children), numKeys)
+			db.store.root.NumKeys, len(db.store.root.Children), numKeys)
 
 		// Check if root has reasonable number of Children (indicating some balance)
-		if len(db.Store.root.Children) > 1 && len(db.Store.root.Children) < 10 {
-			t.Logf("Tree appears relatively balanced with %d root Children", len(db.Store.root.Children))
+		if len(db.store.root.Children) > 1 && len(db.store.root.Children) < 10 {
+			t.Logf("Tree appears relatively balanced with %d root Children", len(db.store.root.Children))
 		}
 	}
 }
@@ -341,14 +341,14 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely left-heavy due to reverse sequential insert)
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Logf("Tree has single leaf root after %d reverse sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d reverse sequential inserts",
-			db.Store.root.NumKeys, len(db.Store.root.Children), numKeys)
+			db.store.root.NumKeys, len(db.store.root.Children), numKeys)
 
 		// With reverse insertion, we expect most activity on the left side of the tree
-		if len(db.Store.root.Children) > 0 {
+		if len(db.store.root.Children) > 0 {
 			t.Logf("First child likely contains lower Keys due to reverse insertion pattern")
 		}
 	}
@@ -497,8 +497,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := db.Store.root.IsLeaf
-	initialRootKeys := int(db.Store.root.NumKeys)
+	initialIsLeaf := db.store.root.IsLeaf
+	initialRootKeys := int(db.store.root.NumKeys)
 	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 	// Delete Keys sequentially and monitor tree structure
@@ -512,7 +512,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 			t.Logf("After %d deletions: root IsLeaf=%v, NumKeys=%d",
-				i+1, db.Store.root.IsLeaf, db.Store.root.NumKeys)
+				i+1, db.store.root.IsLeaf, db.store.root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -523,10 +523,10 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	if db.Store.root.NumKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d Keys", db.Store.root.NumKeys)
+	if db.store.root.NumKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
 	}
-	if !db.Store.root.IsLeaf {
+	if !db.store.root.IsLeaf {
 		t.Errorf("Empty tree root should be leaf")
 	}
 }
@@ -556,8 +556,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Check initial tree structure
-		initialIsLeaf := db.Store.root.IsLeaf
-		initialRootKeys := int(db.Store.root.NumKeys)
+		initialIsLeaf := db.store.root.IsLeaf
+		initialRootKeys := int(db.store.root.NumKeys)
 		t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 		// Create random deletion order
@@ -586,7 +586,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 			// Log tree structure changes at key points
 			if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 				t.Logf("After %d random deletions: root IsLeaf=%v, NumKeys=%d",
-					i+1, db.Store.root.IsLeaf, db.Store.root.NumKeys)
+					i+1, db.store.root.IsLeaf, db.store.root.NumKeys)
 			}
 
 			// Verify deleted key is gone
@@ -613,10 +613,10 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Final tree should be empty
-		if db.Store.root.NumKeys != 0 {
-			t.Errorf("Tree should be empty, but root has %d Keys", db.Store.root.NumKeys)
+		if db.store.root.NumKeys != 0 {
+			t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
 		}
-		if !db.Store.root.IsLeaf {
+		if !db.store.root.IsLeaf {
 			t.Errorf("Empty tree root should be leaf")
 		}
 
@@ -643,7 +643,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.Store.root.IsLeaf, db.Store.root.NumKeys)
+	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.store.root.IsLeaf, db.store.root.NumKeys)
 
 	// Delete Keys in reverse order
 	for i := numKeys - 1; i >= 0; i-- {
@@ -657,7 +657,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 		deletedCount := numKeys - i
 		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
 			t.Logf("After %d reverse deletions: root IsLeaf=%v, NumKeys=%d",
-				deletedCount, db.Store.root.IsLeaf, db.Store.root.NumKeys)
+				deletedCount, db.store.root.IsLeaf, db.store.root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -668,8 +668,8 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	if db.Store.root.NumKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d Keys", db.Store.root.NumKeys)
+	if db.store.root.NumKeys != 0 {
+		t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
 	}
 }
 
@@ -795,11 +795,11 @@ func TestSingleKey(t *testing.T) {
 	}
 
 	// Verify tree is still a leaf (single key shouldn't cause split)
-	if !db.Store.root.IsLeaf {
+	if !db.store.root.IsLeaf {
 		t.Errorf("Root should be a leaf with single key")
 	}
-	if db.Store.root.NumKeys != 1 {
-		t.Errorf("Root should have exactly 1 key, got %d", db.Store.root.NumKeys)
+	if db.store.root.NumKeys != 1 {
+		t.Errorf("Root should have exactly 1 key, got %d", db.store.root.NumKeys)
 	}
 }
 
@@ -1238,7 +1238,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.Store.root.IsLeaf, db.Store.root.NumKeys)
+	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.store.root.IsLeaf, db.store.root.NumKeys)
 }
 
 func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
@@ -1299,11 +1299,11 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	}
 
 	// After MaxKeysPerNode Keys, root should be full but still a leaf
-	if !db.Store.root.IsLeaf {
+	if !db.store.root.IsLeaf {
 		t.Error("Root should still be leaf with MaxKeysPerNode Keys")
 	}
-	if db.Store.root.NumKeys != base.MaxKeysPerNode {
-		t.Errorf("Expected %d Keys, got %d", base.MaxKeysPerNode, db.Store.root.NumKeys)
+	if db.store.root.NumKeys != base.MaxKeysPerNode {
+		t.Errorf("Expected %d Keys, got %d", base.MaxKeysPerNode, db.store.root.NumKeys)
 	}
 
 	// Insert one more key (65th key) to trigger split
@@ -1315,11 +1315,11 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	}
 
 	// After inserting MaxKeysPerNode+1 Keys, root should be branch
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Error("Root should be branch after split")
 	}
-	if len(db.Store.root.Children) < 2 {
-		t.Errorf("Root should have at least 2 Children after split, got %d", len(db.Store.root.Children))
+	if len(db.store.root.Children) < 2 {
+		t.Errorf("Root should have at least 2 Children after split, got %d", len(db.store.root.Children))
 	}
 
 	// Verify all Keys retrievable
@@ -1347,11 +1347,11 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		}
 	}
 
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Fatal("Root should be branch Node")
 	}
 
-	initialRootKeys := db.Store.root.NumKeys
+	initialRootKeys := db.store.root.NumKeys
 	t.Logf("Initial root Keys: %d", initialRootKeys)
 
 	for i := 0; i < numKeys; i++ {
@@ -1363,15 +1363,15 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 
 		if i%(numKeys/4) == 0 {
 			t.Logf("After %d deletions: root.IsLeaf=%v, root.NumKeys=%d",
-				i+1, db.Store.root.IsLeaf, db.Store.root.NumKeys)
+				i+1, db.store.root.IsLeaf, db.store.root.NumKeys)
 		}
 	}
 
-	if !db.Store.root.IsLeaf {
+	if !db.store.root.IsLeaf {
 		t.Error("Final root should be leaf")
 	}
-	if db.Store.root.NumKeys != 0 {
-		t.Errorf("Final root should have 0 Keys, got %d", db.Store.root.NumKeys)
+	if db.store.root.NumKeys != 0 {
+		t.Errorf("Final root should have 0 Keys, got %d", db.store.root.NumKeys)
 	}
 }
 
@@ -1390,12 +1390,12 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		}
 	}
 
-	if db.Store.root.IsLeaf {
+	if db.store.root.IsLeaf {
 		t.Fatal("Root should not be leaf for this test")
 	}
 
 	t.Logf("Tree structure: root.NumKeys=%d, root.Children=%d",
-		db.Store.root.NumKeys, len(db.Store.root.Children))
+		db.store.root.NumKeys, len(db.store.root.Children))
 
 	deleteCount := numKeys / 2
 	for i := 0; i < deleteCount; i++ {
@@ -1415,5 +1415,5 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 	}
 
 	t.Logf("After deletions: root.IsLeaf=%v, root.NumKeys=%d",
-		db.Store.root.IsLeaf, db.Store.root.NumKeys)
+		db.store.root.IsLeaf, db.store.root.NumKeys)
 }

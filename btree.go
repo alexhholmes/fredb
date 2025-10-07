@@ -408,7 +408,7 @@ func (bt *btree) insertNonFull(tx *Tx, n *base.Node, key, value []byte) (*base.N
 		}
 	}
 
-	// Store original child PageID to detect COW
+	// store original child PageID to detect COW
 	oldChildID := child.PageID
 
 	// Recursive insert (may COW child)

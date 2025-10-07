@@ -8,9 +8,9 @@ import (
 	"fredb/internal/base"
 )
 
-// TestWALRecoveryBasic tests that uncommitted WAL entries are recovered after restart
+// TestWALRecoveryBasic tests that uncommitted wal entries are recovered after restart
 func TestWALRecoveryBasic(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_basic.db"
+	dbPath := "/tmp/test_wal_recovery_basic.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -28,18 +28,18 @@ func TestWALRecoveryBasic(t *testing.T) {
 	// Wait for checkpoint to complete
 	time.Sleep(300 * time.Millisecond)
 
-	// Write key2, will only be in WAL
+	// Write key2, will only be in wal
 	if err := db.Set([]byte("key2"), []byte("value2")); err != nil {
 		t.Fatalf("Failed to set key2: %v", err)
 	}
 
-	// Close database normally - key2 should still be in WAL only (not checkpointed yet)
+	// Close database normally - key2 should still be in wal only (not checkpointed yet)
 	// Background checkpointer runs every 200ms, so key2 written immediately should not be checkpointed
 	if err := db.Close(); err != nil {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	// Reopen database - should recover key2 from WAL
+	// Reopen database - should recover key2 from wal
 	db2, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
@@ -66,55 +66,53 @@ func TestWALRecoveryBasic(t *testing.T) {
 
 // TestWALRecoveryUncommitted tests that uncommitted transactions are discarded
 func TestWALRecoveryUncommitted(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_uncommitted.db"
+	dbPath := "/tmp/test_wal_recovery_uncommitted.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
 	// Create database
-	ifaceDB, err := Open(dbPath)
+	db, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
 	// Write key1 (will be committed)
-	if err := ifaceDB.Set([]byte("key1"), []byte("value1")); err != nil {
+	if err := db.Set([]byte("key1"), []byte("value1")); err != nil {
 		t.Fatalf("Failed to set key1: %v", err)
 	}
 
 	// Start a transaction but don't commit it
-	tx, err := ifaceDB.Begin(true)
+	tx, err := db.Begin(true)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
 
-	// Write to WAL but don't commit
+	// Write to wal but don't commit
 	if err := tx.Set([]byte("key2"), []byte("value2")); err != nil {
 		t.Fatalf("Failed to set key2: %v", err)
 	}
 
-	// Directly access WAL to write without commit marker
-	// Flush Dirty pages to WAL without commit
+	// Directly access wal to write without commit marker
+	// Flush Dirty pages to wal without commit
 	for pageID, node := range tx.pages {
 		page, err := node.Serialize(tx.txnID)
 		if err != nil {
 			t.Fatalf("Failed to Serialize: %v", err)
 		}
-		concreteDB := ifaceDB.(*db)
-		if err := concreteDB.WAL.AppendPage(tx.txnID, pageID, page); err != nil {
-			t.Fatalf("Failed to append to WAL: %v", err)
+		if err := db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
+			t.Fatalf("Failed to append to wal: %v", err)
 		}
 	}
-	// Force fsync WAL
-	concreteDB := ifaceDB.(*db)
-	if err := concreteDB.WAL.ForceSync(); err != nil {
-		t.Fatalf("Failed to sync WAL: %v", err)
+	// Force fsync wal
+	if err := db.wal.ForceSync(); err != nil {
+		t.Fatalf("Failed to sync wal: %v", err)
 	}
 
 	// Rollback transaction to avoid proper cleanup
 	tx.Rollback()
 
-	// Close database - WAL has pages but no commit marker
-	if err := ifaceDB.Close(); err != nil {
+	// Close database - wal has pages but no commit marker
+	if err := db.Close(); err != nil {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
@@ -143,12 +141,12 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 
 // TestCheckpointIdempotency tests that checkpoint replay is idempotent
 func TestCheckpointIdempotency(t *testing.T) {
-	dbPath := "/tmp/test_checkpoint_idempotency.db"
+	dbPath := "/tmp/test_checkpoint_idempotency.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
 	// Create database and write data
-	ifaceDB, err := Open(dbPath)
+	db, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -157,7 +155,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
-		if err := ifaceDB.Set(key, value); err != nil {
+		if err := db.Set(key, value); err != nil {
 			t.Fatalf("Failed to set key %d: %v", i, err)
 		}
 	}
@@ -166,14 +164,13 @@ func TestCheckpointIdempotency(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Get current meta to simulate partial checkpoint
-	concreteDB := ifaceDB.(*db)
-	dm := concreteDB.Store.Pager
+	dm := db.store.Pager
 	meta := dm.GetMeta()
 	checkpointTxnID := meta.CheckpointTxnID
 
 	// Manually trigger checkpoint replay (simulates crash after Sync, before PutMeta update)
 	// This should be idempotent - running it twice should not corrupt data
-	err = concreteDB.WAL.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
+	err = db.wal.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
 		return dm.WritePage(pageID, page)
 	})
 	if err != nil {
@@ -182,7 +179,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Replay AGAIN (simulating restart after crash)
 	// The idempotency check should skip pages that are already at correct version
-	err = concreteDB.WAL.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
+	err = db.wal.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
 		// Read current disk version
 		oldPage, readErr := dm.ReadPageAtUnsafe(pageID)
 
@@ -206,7 +203,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	}
 
 	// Close and reopen
-	if err := ifaceDB.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
@@ -233,7 +230,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 // TestWALRecoveryMultipleTransactions tests recovery of multiple transactions
 func TestWALRecoveryMultipleTransactions(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_multi.db"
+	dbPath := "/tmp/test_wal_recovery_multi.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -301,20 +298,20 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 	}
 }
 
-// TestWALTruncateSafety tests that WAL cannot be truncated before checkpoint
+// TestWALTruncateSafety tests that wal cannot be truncated before checkpoint
 func TestWALTruncateSafety(t *testing.T) {
-	dbPath := "/tmp/test_wal_truncate_safety.db"
+	dbPath := "/tmp/test_wal_truncate_safety.DB"
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
 	// Create database
-	ifaceDB, err := Open(dbPath)
+	db, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
 	// Write and commit a transaction
-	if err := ifaceDB.Set([]byte("key1"), []byte("value1")); err != nil {
+	if err := db.Set([]byte("key1"), []byte("value1")); err != nil {
 		t.Fatalf("Failed to set key1: %v", err)
 	}
 
@@ -322,25 +319,25 @@ func TestWALTruncateSafety(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Write another transaction
-	if err := ifaceDB.Set([]byte("key2"), []byte("value2")); err != nil {
+	if err := db.Set([]byte("key2"), []byte("value2")); err != nil {
 		t.Fatalf("Failed to set key2: %v", err)
 	}
 
 	// Get current meta
-	meta := ifaceDB.(*db).Store.Pager.GetMeta()
+	meta := db.store.Pager.GetMeta()
 
-	// WAL truncation is now managed by db layer via checkpoint
+	// wal truncation is now managed by DB layer via checkpoint
 	// The safety check (preventing truncation beyond checkpoint) is enforced
 	// architecturally - checkpoint() only calls Truncate after updating CheckpointTxnID
 
-	// Truncate WAL to exactly CheckpointTxnID - simulates what checkpoint does
-	exactErr := ifaceDB.(*db).WAL.Truncate(meta.CheckpointTxnID)
+	// Truncate wal to exactly CheckpointTxnID - simulates what checkpoint does
+	exactErr := db.wal.Truncate(meta.CheckpointTxnID)
 	if exactErr != nil {
-		t.Errorf("Expected no error when truncating WAL to checkpoint, got: %v", exactErr)
+		t.Errorf("Expected no error when truncating wal to checkpoint, got: %v", exactErr)
 	}
 
 	// Close database
-	if err := ifaceDB.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 }

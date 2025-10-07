@@ -16,35 +16,30 @@ import (
 var slow = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a temporary test database
-func setupTestDB(t *testing.T) *db {
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+func setupTestDB(t *testing.T) *DB {
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
 	_ = os.Remove(tmpfile)
-	_ = os.Remove(tmpfile + ".wal") // Also remove WAL file
+	_ = os.Remove(tmpfile + ".wal") // Also remove wal file
 
-	database, err := Open(tmpfile)
+	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	// Type assert to get concrete type for tests
-	concreteDB, ok := database.(*db)
-	if !ok {
-		t.Fatal("Failed to get concrete db type")
-	}
-
 	t.Cleanup(func() {
-		_ = concreteDB.Close()
+		_ = db.Close()
 		_ = os.Remove(tmpfile)
-		_ = os.Remove(tmpfile + ".wal") // Cleanup WAL file
+		_ = os.Remove(tmpfile + ".wal") // Cleanup wal file
 	})
 
-	return concreteDB
+	return db
 }
 
 func TestDBBasicOperations(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_basic.db"
+	tmpfile := "/tmp/test_db_basic.DB"
 	os.Remove(tmpfile)
 	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
@@ -52,7 +47,7 @@ func TestDBBasicOperations(t *testing.T) {
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -104,12 +99,12 @@ func TestDBBasicOperations(t *testing.T) {
 func TestDBErrors(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_errors.db"
+	tmpfile := "/tmp/test_db_errors.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -129,12 +124,12 @@ func TestDBErrors(t *testing.T) {
 func TestDBClose(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_close.db"
+	tmpfile := "/tmp/test_db_close.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	// Set a key before closing
@@ -143,10 +138,10 @@ func TestDBClose(t *testing.T) {
 		t.Errorf("Failed to set key: %v", err)
 	}
 
-	// close the db
+	// close the DB
 	err = db.Close()
 	if err != nil {
-		t.Errorf("Failed to close db: %v", err)
+		t.Errorf("Failed to close DB: %v", err)
 	}
 
 	// Multiple close calls should not panic
@@ -163,17 +158,17 @@ func TestDBConcurrency(t *testing.T) {
 		t.Skip("Skipping slow concurrency test; use -slow to enable")
 	}
 
-	// Test concurrent access through db interface
+	// Test concurrent access through DB interface
 	// - Launch 100 goroutines
 	// - Mix of get/Set operations
 	// - Verify no races or corruption
 	// - Check final state consistency
-	tmpfile := "/tmp/test_db_concurrency.db"
+	tmpfile := "/tmp/test_db_concurrency.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -262,13 +257,13 @@ func TestDBConcurrentReads(t *testing.T) {
 	// - Insert test data
 	// - Launch multiple reader goroutines
 	// - Verify all complete successfully
-	tmpfile := "/tmp/test_db_concurrent_reads.db"
+	tmpfile := "/tmp/test_db_concurrent_reads.DB"
 	os.Remove(tmpfile) // Clean up any old test file
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -345,12 +340,12 @@ func TestDBConcurrentWrites(t *testing.T) {
 	// - Launch multiple writer goroutines
 	// - Each writes unique Keys
 	// - Verify all Keys present at end
-	tmpfile := "/tmp/test_db_concurrent_writes.db"
+	tmpfile := "/tmp/test_db_concurrent_writes.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -452,12 +447,12 @@ func TestDBConcurrentWrites(t *testing.T) {
 func TestTxSnapshotIsolation(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_snapshot_isolation.db"
+	tmpfile := "/tmp/test_tx_snapshot_isolation.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -617,12 +612,12 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		t.Skip("Skipping slow rollback test; use -slow to enable")
 	}
 
-	tmpfile := "/tmp/test_tx_rollback_contention.db"
+	tmpfile := "/tmp/test_tx_rollback_contention.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -842,7 +837,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	// At ~4KB per Page with branching, expect < 10MB
 	info, err := os.Stat(tmpfile)
 	if err != nil {
-		t.Errorf("Failed to stat db file: %v", err)
+		t.Errorf("Failed to stat DB file: %v", err)
 	} else {
 		sizeMB := float64(info.Size()) / (1024 * 1024)
 		t.Logf("Database file size: %.2f MB", sizeMB)
@@ -857,12 +852,12 @@ func TestTxRollbackUnderContention(t *testing.T) {
 func TestDBLargeKeysPerPage(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_large_keys.db"
+	tmpfile := "/tmp/test_db_large_keys.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	defer db.Close()
 
@@ -1078,13 +1073,13 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_last_committed.db"
+	tmpfile := "/tmp/test_last_committed.DB"
 	defer os.Remove(tmpfile)
 
-	// Create db and do a single commit
+	// Create DB and do a single commit
 	db1, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 	db1.Set([]byte("key1"), []byte("value1"))
 	db1.Close()
@@ -1158,7 +1153,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	}
 	defer db3.Close()
 
-	meta3 := db3.(*db).Store.Pager.GetMeta()
+	meta3 := db3.store.Pager.GetMeta()
 	t.Logf("After reopen: loaded meta with TxnID %d, RootPageID %d", meta3.TxnID, meta3.RootPageID)
 	t.Logf("Expected to recover to TxnID %d (previous valid state)", olderTxn)
 
@@ -1186,13 +1181,13 @@ func TestDiskPageManagerBasic(t *testing.T) {
 	t.Parallel()
 
 	// Create temp file
-	tmpfile := "/tmp/test_disk.db"
+	tmpfile := "/tmp/test_disk.DB"
 	defer os.Remove(tmpfile)
 
 	// Create new database
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	// Insert some data
@@ -1214,13 +1209,13 @@ func TestDiskPageManagerBasic(t *testing.T) {
 
 	// close (flushes to disk)
 	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Reopen database
 	db2, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to reopen db: %v", err)
+		t.Fatalf("Failed to reopen DB: %v", err)
 	}
 
 	// Verify data persisted
@@ -1250,14 +1245,14 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 	t.Parallel()
 
 	// Use unique filename per test to avoid parallel test collisions
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
 	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
 	// Create database and insert 100 Keys
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	for i := 0; i < 100; i++ {
@@ -1269,13 +1264,13 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 	}
 
 	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Reopen and verify all Keys
 	db2, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to reopen db: %v", err)
+		t.Fatalf("Failed to reopen DB: %v", err)
 	}
 
 	for i := 0; i < 100; i++ {
@@ -1299,13 +1294,13 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 func TestDiskPageManagerDelete(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_delete.db"
+	tmpfile := "/tmp/test_delete.DB"
 	defer os.Remove(tmpfile)
 
 	// Create database
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	// Insert Keys
@@ -1344,13 +1339,13 @@ func TestDiskPageManagerDelete(t *testing.T) {
 func TestDBFileFormat(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_format.db"
+	tmpfile := "/tmp/test_db_format.DB"
 	defer os.Remove(tmpfile)
 
-	// Create db and write some data
+	// Create DB and write some data
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key1"), []byte("value1"))
@@ -1360,13 +1355,13 @@ func TestDBFileFormat(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// validate file exists and has correct structure
 	info, err := os.Stat(tmpfile)
 	if err != nil {
-		t.Fatalf("db file not found: %v", err)
+		t.Fatalf("DB file not found: %v", err)
 	}
 
 	// File should be at least 3 pages (meta 0-1, freelist 2)
@@ -1464,7 +1459,7 @@ func TestDBFileFormat(t *testing.T) {
 		info.Size()/int64(base.PageSize))
 }
 
-// TestDBFileHexDump creates a db file and prints hex dump for manual inspection
+// TestDBFileHexDump creates a DB file and prints hex dump for manual inspection
 func TestDBFileHexDump(t *testing.T) {
 	t.Parallel()
 
@@ -1472,13 +1467,13 @@ func TestDBFileHexDump(t *testing.T) {
 		t.Skip("Skipping hex dump test in short mode")
 	}
 
-	tmpfile := "/tmp/test_db_hexdump.db"
+	tmpfile := "/tmp/test_db_hexdump.DB"
 	defer os.Remove(tmpfile)
 
-	// Create db with known data
+	// Create DB with known data
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("testkey"), []byte("testvalue"))
@@ -1488,7 +1483,7 @@ func TestDBFileHexDump(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Read first 4 pages and dump them
@@ -1578,13 +1573,13 @@ func formatHexDump(data []byte) string {
 func TestDBCorruptionDetection(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_corruption.db"
+	tmpfile := "/tmp/test_db_corruption.DB"
 	defer os.Remove(tmpfile)
 
-	// Create valid db
+	// Create valid DB
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key"), []byte("value"))
@@ -1594,7 +1589,7 @@ func TestDBCorruptionDetection(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Corrupt Page 0's magic number
@@ -1613,14 +1608,14 @@ func TestDBCorruptionDetection(t *testing.T) {
 	// Try to reopen - should succeed because Page 1 is still valid
 	db2, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to reopen db with one corrupted meta Page: %v", err)
+		t.Fatalf("Failed to reopen DB with one corrupted meta Page: %v", err)
 	}
 	defer db2.Close()
 
 	// Verify data still accessible (using Page 1)
 	v, err := db2.Get([]byte("key"))
 	if err != nil {
-		t.Errorf("Failed to get key from db with corrupted Page 0: %v", err)
+		t.Errorf("Failed to get key from DB with corrupted Page 0: %v", err)
 	}
 	if string(v) != "value" {
 		t.Errorf("Wrong value: got %s, expected value", string(v))
@@ -1634,18 +1629,18 @@ func dumpBytes(label string, data []byte) string {
 	return fmt.Sprintf("%s: %s", label, hex.EncodeToString(data))
 }
 
-// TestCrashRecoveryBothMetaCorrupted tests that db fails to open when both meta pages are invalid
+// TestCrashRecoveryBothMetaCorrupted tests that DB fails to open when both meta pages are invalid
 func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := fmt.Sprintf("/tmp/test_both_meta_corrupt_%d.db", os.Getpid())
+	tmpfile := fmt.Sprintf("/tmp/test_both_meta_corrupt_%d.DB", os.Getpid())
 	os.Remove(tmpfile) // Clean up any previous test file
 	defer os.Remove(tmpfile)
 
-	// Create valid db
+	// Create valid DB
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key"), []byte("value"))
@@ -1654,7 +1649,7 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	}
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Corrupt both meta pages (magic number)
@@ -1697,7 +1692,7 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	// Try to reopen - should FAIL because both pages corrupted
 	_, err = Open(tmpfile)
 	if err == nil {
-		t.Fatal("Expected error opening db with both meta pages corrupted, got nil")
+		t.Fatal("Expected error opening DB with both meta pages corrupted, got nil")
 	}
 	if err.Error() != "both meta pages corrupted: invalid magic number, invalid magic number" {
 		t.Logf("Got expected error: %v", err)
@@ -1708,13 +1703,13 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_checksum_corrupt.db"
+	tmpfile := "/tmp/test_checksum_corrupt.DB"
 	defer os.Remove(tmpfile)
 
-	// Create valid db
+	// Create valid DB
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key"), []byte("value"))
@@ -1740,7 +1735,7 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 	// Try to reopen - should succeed using Page 1
 	db2, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to reopen db with corrupted checksum on Page 0: %v", err)
+		t.Fatalf("Failed to reopen DB with corrupted checksum on Page 0: %v", err)
 	}
 	defer db2.Close()
 
@@ -1760,14 +1755,14 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
 	_ = os.Remove(tmpfile)
 	defer os.Remove(tmpfile)
 
-	// Create db
+	// Create DB
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	// TxnID starts at 0, so first commit writes to Page 0
@@ -1837,12 +1832,12 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_wrong_magic.db"
+	tmpfile := "/tmp/test_crash_recovery_wrong_magic.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key1"), []byte("value1"))
@@ -1852,7 +1847,7 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Corrupt meta Page with valid checksum but wrong magic
@@ -1890,12 +1885,12 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_root_zero.db"
+	tmpfile := "/tmp/test_crash_recovery_root_zero.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key1"), []byte("value1"))
@@ -1905,7 +1900,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Corrupt meta Page: set RootPageID to 0 but keep valid TxnID
@@ -1955,12 +1950,12 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 func TestCrashRecoveryTruncatedFile(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_truncated.db"
+	tmpfile := "/tmp/test_crash_recovery_truncated.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key1"), []byte("value1"))
@@ -1970,7 +1965,7 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Truncate file to only 1 Page (missing meta Page 1)
@@ -1994,12 +1989,12 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_crash_recovery_same_txnid.db"
+	tmpfile := "/tmp/test_crash_recovery_same_txnid.DB"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
 	if err != nil {
-		t.Fatalf("Failed to create db: %v", err)
+		t.Fatalf("Failed to create DB: %v", err)
 	}
 
 	err = db.Set([]byte("key1"), []byte("value1"))
@@ -2009,7 +2004,7 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 
 	err = db.Close()
 	if err != nil {
-		t.Fatalf("Failed to close db: %v", err)
+		t.Fatalf("Failed to close DB: %v", err)
 	}
 
 	// Create impossible state: both meta pages with same TxnID but different roots

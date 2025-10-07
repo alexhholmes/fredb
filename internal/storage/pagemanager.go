@@ -11,11 +11,17 @@ import (
 
 // PageManager implements PageManager with disk-based storage
 type PageManager struct {
-	mu         sync.Mutex // Protects meta and freelist access
-	file       *os.File
-	meta       base.MetaPage
-	freelist   *FreeList
-	versionMap *VersionMap // Version relocation tracking for old versions needed by long-running readers
+	mu   sync.Mutex // Protects meta and freelist access
+	file *os.File
+	meta base.MetaPage
+
+	// Freelist tracking (inlined from FreeList)
+	freePages        []base.PageID            // sorted array of free Page IDs
+	pendingFree      map[uint64][]base.PageID // txnID -> pages freed at that transaction
+	preventUpToTxnID uint64                   // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
+
+	// Version relocation tracking (inlined from VersionMap)
+	relocations map[base.PageID]map[uint64]base.PageID // originalPageID -> (txnID -> relocatedPageID)
 }
 
 // NewPageManager opens or creates a database file
@@ -290,7 +296,7 @@ func (dm *PageManager) readPageAt(id base.PageID) (*base.Page, error) {
 	return dm.ReadPageAtUnsafe(id)
 }
 
-// ReadPageAtUnsafe reads a Page from disk without WAL latch check
+// ReadPageAtUnsafe reads a Page from disk without wal latch check
 // Used during checkpoint to read old disk versions before overwriting
 func (dm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
 	dm.mu.Lock()
