@@ -285,13 +285,13 @@ func (tx *Tx) Commit() error {
 	// These pages were part of the previous version and can be reclaimed
 	// when all readers that might reference them have finished.
 	if len(tx.freed) > 0 {
-		dm := tx.db.store.Pager
+		dm := tx.db.store.pager
 		dm.FreePending(tx.txnID, tx.freed)
 	}
 
 	// Write meta Page to disk for persistence
 	// get current meta from storage
-	meta := tx.db.store.Pager.GetMeta()
+	meta := tx.db.store.pager.GetMeta()
 
 	// Build new meta Page with updated root and incremented TxnID
 	if tx.root != nil {
@@ -301,7 +301,7 @@ func (tx *Tx) Commit() error {
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Update storage's in-memory meta
-	if err := tx.db.store.Pager.PutMeta(meta); err != nil {
+	if err := tx.db.store.pager.PutMeta(meta); err != nil {
 		return err
 	}
 
@@ -334,7 +334,7 @@ func (tx *Tx) Rollback() error {
 		// Return allocated but uncommitted pages to the freelist
 		// These pages were allocated during the transaction but never used
 		if len(tx.pending) > 0 {
-			dm := tx.db.store.Pager
+			dm := tx.db.store.pager
 			// Add directly to free list, not pending - these can be reused immediately
 			// since they were never part of any committed state
 			for _, pageID := range tx.pending {
@@ -387,7 +387,7 @@ func (tx *Tx) loadNode(id base.PageID) (*base.Node, error) {
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
 	node, found := tx.db.store.cache.GetOrLoad(id, tx.txnID, func() (*base.Node, uint64, error) {
 		// Load from disk (called by at most one thread per id)
-		page, err := tx.db.store.Pager.ReadPage(id)
+		page, err := tx.db.store.pager.ReadPage(id)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -500,7 +500,7 @@ retryLoop:
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Allocate from storage (uses freelist or grows file)
 		// PageManager.allocatePage() is thread-safe via mutex
-		pageID, err := tx.db.store.Pager.AllocatePage()
+		pageID, err := tx.db.store.pager.AllocatePage()
 		if err != nil {
 			return 0, nil, err
 		}
@@ -531,7 +531,7 @@ retryLoop:
 		tx.db.store.cache.Invalidate(pageID)
 
 		// Read the freshly allocated Page
-		page, err := tx.db.store.Pager.ReadPage(pageID)
+		page, err := tx.db.store.pager.ReadPage(pageID)
 		if err != nil {
 			return 0, nil, err
 		}

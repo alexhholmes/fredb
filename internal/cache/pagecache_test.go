@@ -42,12 +42,12 @@ func TestPageCacheBasics(t *testing.T) {
 	}
 
 	// Check size
-	if cache.size() != 1 {
-		t.Errorf("Expected size 1, got %d", cache.size())
+	if cache.Size() != 1 {
+		t.Errorf("Expected size 1, got %d", cache.Size())
 	}
 
 	// Check stats
-	hits, misses, _ := cache.stats()
+	hits, misses, _ := cache.Stats()
 	if hits != 1 {
 		t.Errorf("Expected 1 hit, got %d", hits)
 	}
@@ -98,8 +98,8 @@ func TestPageCacheMVCC(t *testing.T) {
 	}
 
 	// size should be 2 (two versions)
-	if cache.size() != 2 {
-		t.Errorf("Expected size 2, got %d", cache.size())
+	if cache.Size() != 2 {
+		t.Errorf("Expected size 2, got %d", cache.Size())
 	}
 }
 
@@ -133,21 +133,21 @@ func TestPageCacheEviction(t *testing.T) {
 		cache.Put(base.PageID(i), uint64(i), makeTestNode(base.PageID(i)))
 	}
 
-	if cache.size() != 19 {
-		t.Errorf("Expected size 19, got %d", cache.size())
+	if cache.Size() != 19 {
+		t.Errorf("Expected size 19, got %d", cache.Size())
 	}
 
 	// Add 20th Page - triggers eviction
 	cache.Put(base.PageID(20), 20, makeTestNode(base.PageID(20)))
 
 	// Should be at 16 now
-	size := cache.size()
+	size := cache.Size()
 	if size != 16 {
 		t.Errorf("Expected size 16 after eviction, got %d", size)
 	}
 
 	// Check eviction stats (evicted 4: pages 1-4)
-	_, _, evictions := cache.stats()
+	_, _, evictions := cache.Stats()
 	if evictions != 4 {
 		t.Errorf("Expected 4 evictions, got %d", evictions)
 	}

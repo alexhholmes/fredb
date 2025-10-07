@@ -112,7 +112,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 // recoverFromWAL replays uncommitted wal entries into cache after startup.
 // This recovers transactions that were committed to wal but not yet checkpointed to disk.
 func (d *DB) recoverFromWAL(cache *cache.PageCache) error {
-	meta := d.store.Pager.GetMeta()
+	meta := d.store.pager.GetMeta()
 	checkpointTxn := meta.CheckpointTxnID
 
 	return d.wal.Replay(checkpointTxn, func(pageID base.PageID, page *base.Page) error {
@@ -333,7 +333,7 @@ func (d *DB) checkpoint() error {
 		return nil
 	}
 
-	dm := d.store.Pager
+	dm := d.store.pager
 
 	// get current transaction boundary
 	meta := dm.GetMeta()
@@ -395,7 +395,7 @@ func (d *DB) checkpoint() error {
 				}
 
 				// Add to VersionMap so readers can find it
-				d.store.Pager.TrackRelocation(pageID, oldTxnID, relocPageID)
+				d.store.pager.TrackRelocation(pageID, oldTxnID, relocPageID)
 
 				// NOTE: Do NOT call FreePending here! The relocated Page will be freed
 				// later by CleanupRelocatedVersions when no readers need it anymore.
@@ -503,7 +503,7 @@ func (d *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 // releasePages calls Release on the freelist with the given minimum transaction ID
 func (d *DB) releasePages(minTxn uint64) {
 	// Need to access the PageManager's freelist
-	dm := d.store.Pager
+	dm := d.store.pager
 	dm.ReleasePages(minTxn)
 
 	// Cleanup wal Page latches for checkpointed pages visible to all readers

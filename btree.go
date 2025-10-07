@@ -14,7 +14,7 @@ import (
 // It is a private structure within the public fredb package due to its
 // complexity, interaction with internal packages, and circular dependencies.
 type btree struct {
-	Pager *storage.PageManager
+	pager *storage.PageManager
 	root  *base.Node
 	cache *cache.PageCache // LRU cache for non-root nodes
 }
@@ -24,7 +24,7 @@ func newBTree(pager *storage.PageManager) (*btree, error) {
 	meta := pager.GetMeta()
 
 	bt := &btree{
-		Pager: pager,
+		pager: pager,
 		cache: cache.NewPageCache(cache.DefaultCacheSize, pager),
 	}
 
@@ -93,12 +93,12 @@ func (bt *btree) newCursor(tx *Tx) *Cursor {
 func (bt *btree) close() error {
 	// Flush root if Dirty
 	if bt.root != nil && bt.root.Dirty {
-		meta := bt.Pager.GetMeta()
+		meta := bt.pager.GetMeta()
 		page, err := bt.root.Serialize(meta.TxnID)
 		if err != nil {
 			return err
 		}
-		if err := bt.Pager.WritePage(bt.root.PageID, page); err != nil {
+		if err := bt.pager.WritePage(bt.root.PageID, page); err != nil {
 			return err
 		}
 		bt.root.Dirty = false
@@ -106,7 +106,7 @@ func (bt *btree) close() error {
 
 	// Flush all cached nodes
 	if bt.cache != nil {
-		if err := bt.cache.FlushDirty(bt.Pager); err != nil {
+		if err := bt.cache.FlushDirty(bt.pager); err != nil {
 			return err
 		}
 	}
@@ -116,7 +116,7 @@ func (bt *btree) close() error {
 	bt.root = nil
 
 	// close storage (writes meta Page and frees resources)
-	return bt.Pager.Close()
+	return bt.pager.Close()
 }
 
 // searchNode recursively searches for a key in the tree
@@ -166,7 +166,7 @@ func (bt *btree) loadNode(tx *Tx, pageID base.PageID) (*base.Node, error) {
 	// 2. GetOrLoad atomically checks cache or coordinates disk load
 	node, found := bt.cache.GetOrLoad(pageID, tx.txnID, func() (*base.Node, uint64, error) {
 		// Load from disk (called by at most one thread per PageID)
-		page, err := bt.Pager.ReadPage(pageID)
+		page, err := bt.pager.ReadPage(pageID)
 		if err != nil {
 			return nil, 0, err
 		}

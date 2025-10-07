@@ -1153,7 +1153,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	}
 	defer db3.Close()
 
-	meta3 := db3.store.Pager.GetMeta()
+	meta3 := db3.store.pager.GetMeta()
 	t.Logf("After reopen: loaded meta with TxnID %d, RootPageID %d", meta3.TxnID, meta3.RootPageID)
 	t.Logf("Expected to recover to TxnID %d (previous valid state)", olderTxn)
 
