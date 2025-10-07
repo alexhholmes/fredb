@@ -43,16 +43,16 @@ type Cursor struct {
 	valid bool          // Is cursor positioned on valid key?
 }
 
-// SeekFirst positions cursor at the first key in the database
+// First positions cursor at the first key in the database
 // Equivalent to Seek(START)
-func (it *Cursor) SeekFirst() error {
+func (it *Cursor) First() error {
 	return it.Seek(START)
 }
 
-// SeekLast positions cursor at the last key in the database
+// Last positions cursor at the last key in the database
 // Equivalent to Seek(END)
 // Returns invalid cursor if database is empty
-func (it *Cursor) SeekLast() error {
+func (it *Cursor) Last() error {
 	return it.Seek(END)
 }
 
