@@ -15,12 +15,12 @@ type PageManager struct {
 	file *os.File
 	meta base.MetaPage
 
-	// Freelist tracking (inlined from FreeList)
+	// Freelist tracking
 	freePages        []base.PageID            // sorted array of free Page IDs
 	pendingFree      map[uint64][]base.PageID // txnID -> pages freed at that transaction
 	preventUpToTxnID uint64                   // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 
-	// Version relocation tracking (inlined from VersionMap)
+	// Version relocation tracking
 	relocations map[base.PageID]map[uint64]base.PageID // originalPageID -> (txnID -> relocatedPageID)
 }
 
@@ -64,19 +64,19 @@ func NewPageManager(path string) (*PageManager, error) {
 }
 
 // ReadPage reads a Page from disk
-func (dm *PageManager) ReadPage(id base.PageID) (*base.Page, error) {
-	return dm.readPageAt(id)
+func (pm *PageManager) ReadPage(id base.PageID) (*base.Page, error) {
+	return pm.readPageAt(id)
 }
 
 // ReadPageAtUnsafe reads a Page from disk without wal latch check
 // Used during checkpoint to read old disk versions before overwriting
-func (dm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
 	offset := int64(id) * base.PageSize
 	page1 := &base.Page{}
-	n, err := dm.file.ReadAt(page1.Data[:], offset)
+	n, err := pm.file.ReadAt(page1.Data[:], offset)
 	if err != nil {
 		return nil, err
 	}
@@ -88,11 +88,11 @@ func (dm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
 }
 
 // WritePage writes a Page to a specific offset (with locking)
-func (dm *PageManager) WritePage(id base.PageID, page *base.Page) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) WritePage(id base.PageID, page *base.Page) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
-	return dm.writePageAtUnsafe(id, page)
+	return pm.writePageAtUnsafe(id, page)
 }
 
 // Sync flushes any buffered writes to disk
@@ -103,23 +103,23 @@ func (pm *PageManager) Sync() error {
 }
 
 // AllocatePage allocates a new Page (from freelist or grows file)
-func (dm *PageManager) AllocatePage() (base.PageID, error) {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) AllocatePage() (base.PageID, error) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
 	// Try freelist first
-	id := dm.allocate()
+	id := pm.allocate()
 	if id != 0 {
 		return id, nil
 	}
 
 	// Grow file
-	id = base.PageID(dm.meta.NumPages)
-	dm.meta.NumPages++
+	id = base.PageID(pm.meta.NumPages)
+	pm.meta.NumPages++
 
 	// Initialize empty Page
 	emptyPage := &base.Page{}
-	if err := dm.writePageAtUnsafe(id, emptyPage); err != nil {
+	if err := pm.writePageAtUnsafe(id, emptyPage); err != nil {
 		return 0, err
 	}
 
@@ -127,20 +127,20 @@ func (dm *PageManager) AllocatePage() (base.PageID, error) {
 }
 
 // FreePage adds a Page to the freelist
-func (dm *PageManager) FreePage(id base.PageID) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) FreePage(id base.PageID) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
-	dm.free(id)
+	pm.free(id)
 	return nil
 }
 
 // FreePending adds pages to the pending freelist at the given transaction ID
-func (dm *PageManager) FreePending(txnID uint64, pageIDs []base.PageID) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) FreePending(txnID uint64, pageIDs []base.PageID) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
-	dm.freePending(txnID, pageIDs)
+	pm.freePending(txnID, pageIDs)
 	return nil
 }
 
@@ -224,17 +224,17 @@ func (pm *PageManager) CleanupVersions(minReaderTxn uint64) []base.PageID {
 }
 
 // GetMeta returns the current metadata
-func (dm *PageManager) GetMeta() base.MetaPage {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
-	return dm.meta
+func (pm *PageManager) GetMeta() base.MetaPage {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	return pm.meta
 }
 
 // PutMeta updates the metadata and persists it to disk
 // Writes to the inactive meta Page and fsyncs for durability
-func (dm *PageManager) PutMeta(meta base.MetaPage) error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) PutMeta(meta base.MetaPage) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
 	// Update checksum
 	meta.Checksum = meta.CalculateChecksum()
@@ -246,41 +246,41 @@ func (dm *PageManager) PutMeta(meta base.MetaPage) error {
 	metaPageID := base.PageID(meta.TxnID % 2)
 
 	// Write meta Page to disk (unsafe - already holding lock)
-	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
+	if err := pm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
 	// Only update in-memory meta after successful disk write
-	dm.meta = meta
+	pm.meta = meta
 
 	return nil
 }
 
 // Close serializes freelist to disk and closes the file
-func (dm *PageManager) Close() error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (pm *PageManager) Close() error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
 	// Serialize freelist to disk
-	pagesNeeded := dm.pagesNeeded()
+	pagesNeeded := pm.pagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
-	if uint64(pagesNeeded) > dm.meta.FreelistPages {
+	if uint64(pagesNeeded) > pm.meta.FreelistPages {
 		// Mark old freelist pages as pending (not immediately reusable)
 		// Using current TxnID ensures they're only released after this close() completes
-		oldPages := make([]base.PageID, dm.meta.FreelistPages)
-		for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-			oldPages[i] = base.PageID(dm.meta.FreelistID) + base.PageID(i)
+		oldPages := make([]base.PageID, pm.meta.FreelistPages)
+		for i := uint64(0); i < pm.meta.FreelistPages; i++ {
+			oldPages[i] = base.PageID(pm.meta.FreelistID) + base.PageID(i)
 		}
-		dm.freePending(dm.meta.TxnID, oldPages)
+		pm.freePending(pm.meta.TxnID, oldPages)
 
 		// Recalculate pages needed after adding old freelist pages to pending
-		pagesNeeded = dm.pagesNeeded()
+		pagesNeeded = pm.pagesNeeded()
 
 		// Move freelist to new pages at end of file
-		dm.meta.FreelistID = base.PageID(dm.meta.NumPages)
-		dm.meta.FreelistPages = uint64(pagesNeeded)
-		dm.meta.NumPages += uint64(pagesNeeded)
+		pm.meta.FreelistID = base.PageID(pm.meta.NumPages)
+		pm.meta.FreelistPages = uint64(pagesNeeded)
+		pm.meta.NumPages += uint64(pagesNeeded)
 	}
 
 	// Write freelist
@@ -288,33 +288,33 @@ func (dm *PageManager) Close() error {
 	for i := 0; i < pagesNeeded; i++ {
 		freelistPages[i] = &base.Page{}
 	}
-	dm.serializeFreelist(freelistPages)
+	pm.serializeFreelist(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := dm.writePageAtUnsafe(base.PageID(dm.meta.FreelistID)+base.PageID(i), freelistPages[i]); err != nil {
+		if err := pm.writePageAtUnsafe(base.PageID(pm.meta.FreelistID)+base.PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
 
 	// Update meta (increment TxnID, recalculate checksum)
-	dm.meta.TxnID++
-	dm.meta.Checksum = dm.meta.CalculateChecksum()
+	pm.meta.TxnID++
+	pm.meta.Checksum = pm.meta.CalculateChecksum()
 
 	// Write meta to alternating Page
 	metaPage := &base.Page{}
-	metaPage.WriteMeta(&dm.meta)
-	metaPageID := base.PageID(dm.meta.TxnID % 2)
-	if err := dm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
+	metaPage.WriteMeta(&pm.meta)
+	metaPageID := base.PageID(pm.meta.TxnID % 2)
+	if err := pm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
-	return dm.file.Close()
+	return pm.file.Close()
 }
 
 // initializeNewDB creates a new database with dual meta pages and empty freelist
-func (dm *PageManager) initializeNewDB() error {
+func (pm *PageManager) initializeNewDB() error {
 	// Initialize meta Page
-	dm.meta = base.MetaPage{
+	pm.meta = base.MetaPage{
 		Magic:           base.MagicNumber,
 		Version:         base.FormatVersion,
 		PageSize:        base.PageSize,
@@ -325,38 +325,38 @@ func (dm *PageManager) initializeNewDB() error {
 		CheckpointTxnID: 0, // No checkpoint yet
 		NumPages:        3, // Pages 0-1 (meta), 2 (freelist) reserved
 	}
-	dm.meta.Checksum = dm.meta.CalculateChecksum()
+	pm.meta.Checksum = pm.meta.CalculateChecksum()
 
 	// Write meta to both pages 0 and 1
 	metaPage := &base.Page{}
-	metaPage.WriteMeta(&dm.meta)
+	metaPage.WriteMeta(&pm.meta)
 
-	if err := dm.WritePage(0, metaPage); err != nil {
+	if err := pm.WritePage(0, metaPage); err != nil {
 		return err
 	}
-	if err := dm.WritePage(1, metaPage); err != nil {
+	if err := pm.WritePage(1, metaPage); err != nil {
 		return err
 	}
 
 	// Write empty freelist to Page 2
 	freelistPages := []*base.Page{&base.Page{}}
-	dm.serializeFreelist(freelistPages)
-	if err := dm.WritePage(2, freelistPages[0]); err != nil {
+	pm.serializeFreelist(freelistPages)
+	if err := pm.WritePage(2, freelistPages[0]); err != nil {
 		return err
 	}
 
 	// Fsync to ensure durability
-	return dm.file.Sync()
+	return pm.file.Sync()
 }
 
 // loadExistingDB loads meta and freelist from existing database file
-func (dm *PageManager) loadExistingDB() error {
+func (pm *PageManager) loadExistingDB() error {
 	// Read both meta pages
-	page0, err := dm.readPageAt(0)
+	page0, err := pm.readPageAt(0)
 	if err != nil {
 		return err
 	}
-	page1, err := dm.readPageAt(1)
+	page1, err := pm.readPageAt(1)
 	if err != nil {
 		return err
 	}
@@ -375,46 +375,46 @@ func (dm *PageManager) loadExistingDB() error {
 
 	// Pick the valid one with highest TxnID
 	if err0 != nil {
-		dm.meta = *meta1
+		pm.meta = *meta1
 	} else if err1 != nil {
-		dm.meta = *meta0
+		pm.meta = *meta0
 	} else {
 		// Both valid, pick highest TxnID
 		if meta0.TxnID > meta1.TxnID {
-			dm.meta = *meta0
+			pm.meta = *meta0
 		} else {
-			dm.meta = *meta1
+			pm.meta = *meta1
 		}
 	}
 
 	// Load freelist
-	freelistPages := make([]*base.Page, dm.meta.FreelistPages)
-	for i := uint64(0); i < dm.meta.FreelistPages; i++ {
-		page, err := dm.readPageAt(dm.meta.FreelistID + base.PageID(i))
+	freelistPages := make([]*base.Page, pm.meta.FreelistPages)
+	for i := uint64(0); i < pm.meta.FreelistPages; i++ {
+		page, err := pm.readPageAt(pm.meta.FreelistID + base.PageID(i))
 		if err != nil {
 			return err
 		}
 		freelistPages[i] = page
 	}
-	dm.deserializeFreelist(freelistPages)
+	pm.deserializeFreelist(freelistPages)
 
 	// Release any pending pages that are safe to reclaim
 	// On startup, no readers exist, so all pending pages with txnID <= current can be released
-	dm.release(dm.meta.TxnID)
+	pm.release(pm.meta.TxnID)
 
 	return nil
 }
 
 // readPageAt reads a Page from a specific offset
 // Note: Caller should check db.wal.pages before calling this to avoid reading stale data
-func (dm *PageManager) readPageAt(id base.PageID) (*base.Page, error) {
-	return dm.ReadPageAtUnsafe(id)
+func (pm *PageManager) readPageAt(id base.PageID) (*base.Page, error) {
+	return pm.ReadPageAtUnsafe(id)
 }
 
 // writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)
-func (dm *PageManager) writePageAtUnsafe(id base.PageID, page1 *base.Page) error {
+func (pm *PageManager) writePageAtUnsafe(id base.PageID, page1 *base.Page) error {
 	offset := int64(id) * base.PageSize
-	n, err := dm.file.WriteAt(page1.Data[:], offset)
+	n, err := pm.file.WriteAt(page1.Data[:], offset)
 	if err != nil {
 		return err
 	}
