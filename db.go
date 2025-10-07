@@ -13,12 +13,18 @@ import (
 )
 
 var (
-	ErrKeyNotFound        = errors.New("key not found")
-	ErrDatabaseClosed     = errors.New("database is closed")
-	ErrCorruption         = errors.New("data corruption detected")
-	ErrKeyTooLarge        = errors.New("key too large")
-	ErrValueTooLarge      = errors.New("value too large")
-	ErrPageOverflow       = base.ErrPageOverflow
+	ErrKeyNotFound    = errors.New("key not found")
+	ErrDatabaseClosed = errors.New("database is closed")
+	ErrCorruption     = errors.New("data corruption detected")
+	ErrKeyTooLarge    = errors.New("key too large")
+	ErrValueTooLarge  = errors.New("value too large")
+	ErrPageOverflow   = base.ErrPageOverflow
+)
+
+// Exported errors from base package for public use
+//
+//goland:noinspection GoUnusedGlobalVariable
+var (
 	ErrInvalidOffset      = base.ErrInvalidOffset
 	ErrInvalidMagicNumber = base.ErrInvalidMagicNumber
 	ErrInvalidVersion     = base.ErrInvalidVersion
@@ -62,23 +68,23 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	// Open wal (DB owns wal lifecycle)
-	walPath := path + ".wal"
-	wal, err := wal.NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
+	// Open newWAL (DB owns newWAL lifecycle)
+	walPath := path + ".newWAL"
+	newWAL, err := wal.NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
 	if err != nil {
 		return nil, err
 	}
 
 	pager, err := storage.NewPageManager(path)
 	if err != nil {
-		wal.Close()
+		_ = newWAL.Close()
 		return nil, err
 	}
 
 	bt, err := newBTree(pager)
 	if err != nil {
-		wal.Close()
-		pager.Close()
+		_ = newWAL.Close()
+		_ = pager.Close()
 		return nil, err
 	}
 
@@ -87,13 +93,13 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	db := &DB{
 		store:     bt,
-		wal:       wal,
+		wal:       newWAL,
 		nextTxnID: meta.TxnID, // Resume from last committed TxnID
 		releaseC:  make(chan uint64),
 		stopC:     make(chan struct{}),
 	}
 
-	// Recover uncommitted wal entries into cache
+	// Recover uncommitted newWAL entries into cache
 	if err := db.recoverFromWAL(bt.cache); err != nil {
 		return nil, err
 	}
@@ -212,7 +218,9 @@ func (d *DB) View(fn func(*Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func(tx *Tx) {
+		_ = tx.Rollback()
+	}(tx)
 
 	return fn(tx)
 }
@@ -225,7 +233,9 @@ func (d *DB) Update(fn func(*Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func(tx *Tx) {
+		_ = tx.Rollback()
+	}(tx)
 
 	if err := fn(tx); err != nil {
 		return err
@@ -262,7 +272,7 @@ func (d *DB) Close() error {
 
 	// Close wal
 	if err := d.wal.Close(); err != nil {
-		d.store.close()
+		_ = d.store.close()
 		return err
 	}
 
@@ -458,21 +468,21 @@ func (d *DB) minReaderTxn() uint64 {
 	defer d.mu.RUnlock()
 
 	// Start with minimum possible value
-	min := d.nextTxnID
+	minTxnID := d.nextTxnID
 
 	// Consider active write transaction
 	if d.writerTx != nil {
-		min = d.writerTx.txnID
+		minTxnID = d.writerTx.txnID
 	}
 
 	// Consider all active read transactions
 	for _, tx := range d.readerTxs {
-		if tx.txnID < min {
-			min = tx.txnID
+		if tx.txnID < minTxnID {
+			minTxnID = tx.txnID
 		}
 	}
 
-	return min
+	return minTxnID
 }
 
 // minReaderTxnForCheckpoint returns minimum transaction ID for checkpoint operations.
@@ -481,23 +491,23 @@ func (d *DB) minReaderTxn() uint64 {
 func (d *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	// Start with last committed transaction as minimum
 	// This ensures pages freed by that transaction won't be reallocated during checkpoint
-	min := lastCommittedTxn
+	minTxnID := lastCommittedTxn
 
 	// Consider active write transaction (should not exist during checkpoint, but be safe)
 	if d.writerTx != nil {
-		if d.writerTx.txnID < min {
-			min = d.writerTx.txnID
+		if d.writerTx.txnID < minTxnID {
+			minTxnID = d.writerTx.txnID
 		}
 	}
 
 	// Consider all active read transactions
 	for _, tx := range d.readerTxs {
-		if tx.txnID < min {
-			min = tx.txnID
+		if tx.txnID < minTxnID {
+			minTxnID = tx.txnID
 		}
 	}
 
-	return min
+	return minTxnID
 }
 
 // releasePages calls Release on the freelist with the given minimum transaction ID
