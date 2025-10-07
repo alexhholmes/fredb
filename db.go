@@ -12,19 +12,14 @@ import (
 	"fredb/internal/wal"
 )
 
-var (
-	ErrKeyNotFound    = errors.New("key not found")
-	ErrDatabaseClosed = errors.New("database is closed")
-	ErrCorruption     = errors.New("data corruption detected")
-	ErrKeyTooLarge    = errors.New("key too large")
-	ErrValueTooLarge  = errors.New("value too large")
-	ErrPageOverflow   = base.ErrPageOverflow
-)
-
-// Exported errors from base package for public use
-//
 //goland:noinspection GoUnusedGlobalVariable
 var (
+	ErrKeyNotFound        = errors.New("key not found")
+	ErrDatabaseClosed     = errors.New("database is closed")
+	ErrCorruption         = errors.New("data corruption detected")
+	ErrKeyTooLarge        = errors.New("key too large")
+	ErrValueTooLarge      = errors.New("value too large")
+	ErrPageOverflow       = base.ErrPageOverflow
 	ErrInvalidOffset      = base.ErrInvalidOffset
 	ErrInvalidMagicNumber = base.ErrInvalidMagicNumber
 	ErrInvalidVersion     = base.ErrInvalidVersion
