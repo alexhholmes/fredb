@@ -73,39 +73,6 @@ func NewPageCache(maxSize int, pagemanager *storage.PageManager) *PageCache {
 	}
 }
 
-// get retrieves a Node version visible to the transaction (MVCC snapshot isolation).
-// Returns the latest version where version.txnID <= txnID.
-// Returns (Node, true) on cache hit, (nil, false) on miss.
-func (c *PageCache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	versions, exists := c.entries[pageID]
-	if !exists || len(versions) == 0 {
-		c.misses.Add(1)
-		return nil, false
-	}
-
-	// Find latest version visible to this transaction
-	// Versions are sorted by txnID (ascending), so search backwards
-	var found *versionEntry
-	for i := len(versions) - 1; i >= 0; i-- {
-		if versions[i].txnID <= txnID {
-			found = versions[i]
-			break
-		}
-	}
-
-	if found == nil {
-		c.misses.Add(1)
-		return nil, false
-	}
-
-	c.hits.Add(1)
-	c.lruList.MoveToFront(found.lruElement)
-	return found.node, true
-}
-
 // Put adds a new version of a Page to the cache.
 // The version is tagged with the committing transaction's ID for MVCC.
 func (c *PageCache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
@@ -187,13 +154,13 @@ func (c *PageCache) FlushDirty(pager *storage.PageManager) error {
 	return err
 }
 
-// stats returns cache statistics
-func (c *PageCache) stats() (hits, misses, evictions uint64) {
+// Stats returns cache statistics
+func (c *PageCache) Stats() (hits, misses, evictions uint64) {
 	return c.hits.Load(), c.misses.Load(), c.evictions.Load()
 }
 
-// size returns current number of cached Page versions
-func (c *PageCache) size() int {
+// Size returns current number of cached Page versions
+func (c *PageCache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -232,6 +199,51 @@ func (c *PageCache) Invalidate(pageID base.PageID) {
 
 	// Remove PageID entirely from cache
 	delete(c.entries, pageID)
+}
+
+// EvictCheckpointed removes Page versions that have been checkpointed to disk
+// AND are older than all active readers.
+// Only versions where (txnID <= CheckpointTxnID AND txnID < minReaderTxn) are safe to evict.
+// Called by background checkpointer after checkpoint completes.
+func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	meta := c.pager.GetMeta()
+	checkpointTxn := meta.CheckpointTxnID
+	evicted := 0
+
+	for pageID, versions := range c.entries {
+		// Track which versions to keep
+		keep := make([]*versionEntry, 0, len(versions))
+
+		for _, entry := range versions {
+			// Only evict if BOTH conditions are true:
+			// 1. Version is checkpointed (on disk)
+			// 2. Version is older than all active readers (no reader needs it)
+			if entry.txnID <= checkpointTxn && entry.txnID < minReaderTxn {
+				// Safe to evict
+				if entry.lruElement != nil {
+					c.lruList.Remove(entry.lruElement)
+				}
+				evicted++
+				c.evictions.Add(1)
+			} else {
+				// Keep version (either in wal only or needed by reader)
+				keep = append(keep, entry)
+			}
+		}
+
+		if len(keep) == 0 {
+			// All versions evicted, remove PageID
+			delete(c.entries, pageID)
+		} else {
+			// Update versions list
+			c.entries[pageID] = keep
+		}
+	}
+
+	return evicted
 }
 
 // GetOrLoad retrieves a Node from cache or loads it from disk atomically.
@@ -328,6 +340,39 @@ func (c *PageCache) GetOrLoad(pageID base.PageID, txnID uint64,
 	return c.loadRelocatedVersion(pageID, txnID)
 }
 
+// get retrieves a Node version visible to the transaction (MVCC snapshot isolation).
+// Returns the latest version where version.txnID <= txnID.
+// Returns (Node, true) on cache hit, (nil, false) on miss.
+func (c *PageCache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	versions, exists := c.entries[pageID]
+	if !exists || len(versions) == 0 {
+		c.misses.Add(1)
+		return nil, false
+	}
+
+	// Find latest version visible to this transaction
+	// Versions are sorted by txnID (ascending), so search backwards
+	var found *versionEntry
+	for i := len(versions) - 1; i >= 0; i-- {
+		if versions[i].txnID <= txnID {
+			found = versions[i]
+			break
+		}
+	}
+
+	if found == nil {
+		c.misses.Add(1)
+		return nil, false
+	}
+
+	c.hits.Add(1)
+	c.lruList.MoveToFront(found.lruElement)
+	return found.node, true
+}
+
 // getGeneration returns the current generation counter for a PageID.
 // Used to detect invalidation during disk loads.
 func (c *PageCache) getGeneration(pageID base.PageID) uint64 {
@@ -367,51 +412,6 @@ func (c *PageCache) loadRelocatedVersion(pageID base.PageID, txnID uint64) (*bas
 	// Cache the relocated version
 	c.Put(pageID, relocatedTxnID, relocatedNode)
 	return relocatedNode, true
-}
-
-// EvictCheckpointed removes Page versions that have been checkpointed to disk
-// AND are older than all active readers.
-// Only versions where (txnID <= CheckpointTxnID AND txnID < minReaderTxn) are safe to evict.
-// Called by background checkpointer after checkpoint completes.
-func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	meta := c.pager.GetMeta()
-	checkpointTxn := meta.CheckpointTxnID
-	evicted := 0
-
-	for pageID, versions := range c.entries {
-		// Track which versions to keep
-		keep := make([]*versionEntry, 0, len(versions))
-
-		for _, entry := range versions {
-			// Only evict if BOTH conditions are true:
-			// 1. Version is checkpointed (on disk)
-			// 2. Version is older than all active readers (no reader needs it)
-			if entry.txnID <= checkpointTxn && entry.txnID < minReaderTxn {
-				// Safe to evict
-				if entry.lruElement != nil {
-					c.lruList.Remove(entry.lruElement)
-				}
-				evicted++
-				c.evictions.Add(1)
-			} else {
-				// Keep version (either in wal only or needed by reader)
-				keep = append(keep, entry)
-			}
-		}
-
-		if len(keep) == 0 {
-			// All versions evicted, remove PageID
-			delete(c.entries, pageID)
-		} else {
-			// Update versions list
-			c.entries[pageID] = keep
-		}
-	}
-
-	return evicted
 }
 
 // canEvict returns true if a Page version is safe to evict.
