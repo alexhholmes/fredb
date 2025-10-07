@@ -21,6 +21,8 @@ type DBOption func(*DBOptions)
 
 // WithWALSyncEveryCommit configures the database to fsync wal on every commit.
 // This provides maximum durability (zero data loss) but lower throughput.
+//
+//goland:noinspection GoUnusedExportedFunction
 func WithWALSyncEveryCommit() DBOption {
 	return func(opts *DBOptions) {
 		opts.walSyncMode = wal.SyncEveryCommit
@@ -30,6 +32,8 @@ func WithWALSyncEveryCommit() DBOption {
 // WithWALSyncBytes configures the database to fsync wal every N bytes written.
 // This provides higher throughput with bounded data loss window.
 // The bytes parameter determines the maximum amount of data that could be lost on crash.
+//
+//goland:noinspection GoUnusedExportedFunction
 func WithWALSyncBytes(bytes int64) DBOption {
 	return func(opts *DBOptions) {
 		opts.walSyncMode = wal.SyncBytes
@@ -40,6 +44,8 @@ func WithWALSyncBytes(bytes int64) DBOption {
 // WithWALSyncOff disables wal fsync entirely.
 // This provides maximum throughput but all unflushed data is lost on crash.
 // Only use for testing or bulk loads where data can be reconstructed.
+//
+//goland:noinspection GoUnusedExportedFunction
 func WithWALSyncOff() DBOption {
 	return func(opts *DBOptions) {
 		opts.walSyncMode = wal.SyncOff

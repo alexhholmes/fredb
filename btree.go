@@ -896,7 +896,7 @@ func (bt *btree) deleteFromNode(tx *Tx, node *base.Node, key []byte) (*base.Node
 	}
 
 	// Check if child will underflow
-	shouldCheckUnderflow := (child.NumKeys == base.MinKeysPerNode)
+	shouldCheckUnderflow := child.NumKeys == base.MinKeysPerNode
 
 	// Delete from child
 	child, err = bt.deleteFromNode(tx, child, key)

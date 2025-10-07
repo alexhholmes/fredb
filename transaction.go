@@ -286,7 +286,10 @@ func (tx *Tx) Commit() error {
 	// when all readers that might reference them have finished.
 	if len(tx.freed) > 0 {
 		dm := tx.db.store.pager
-		dm.FreePending(tx.txnID, tx.freed)
+		err := dm.FreePending(tx.txnID, tx.freed)
+		if err != nil {
+			// TODO
+		}
 	}
 
 	// Write meta Page to disk for persistence
@@ -338,7 +341,10 @@ func (tx *Tx) Rollback() error {
 			// Add directly to free list, not pending - these can be reused immediately
 			// since they were never part of any committed state
 			for _, pageID := range tx.pending {
-				dm.FreePage(pageID)
+				err := dm.FreePage(pageID)
+				if err != nil {
+					// TODO
+				}
 			}
 		}
 

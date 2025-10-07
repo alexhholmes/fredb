@@ -42,20 +42,20 @@ func NewPageManager(path string) (*PageManager, error) {
 	// Check if new file (empty)
 	info, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 
 	if info.Size() == 0 {
 		// New database - initialize
 		if err := dm.initializeNewDB(); err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, err
 		}
 	} else {
 		// Existing database - load meta and freelist
 		if err := dm.loadExistingDB(); err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, err
 		}
 	}
@@ -270,7 +270,7 @@ func (pm *PageManager) Close() error {
 		// Using current TxnID ensures they're only released after this close() completes
 		oldPages := make([]base.PageID, pm.meta.FreelistPages)
 		for i := uint64(0); i < pm.meta.FreelistPages; i++ {
-			oldPages[i] = base.PageID(pm.meta.FreelistID) + base.PageID(i)
+			oldPages[i] = pm.meta.FreelistID + base.PageID(i)
 		}
 		pm.freePending(pm.meta.TxnID, oldPages)
 
@@ -291,7 +291,7 @@ func (pm *PageManager) Close() error {
 	pm.serializeFreelist(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := pm.writePageAtUnsafe(base.PageID(pm.meta.FreelistID)+base.PageID(i), freelistPages[i]); err != nil {
+		if err := pm.writePageAtUnsafe(pm.meta.FreelistID+base.PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
@@ -339,7 +339,7 @@ func (pm *PageManager) initializeNewDB() error {
 	}
 
 	// Write empty freelist to Page 2
-	freelistPages := []*base.Page{&base.Page{}}
+	var freelistPages []*base.Page
 	pm.serializeFreelist(freelistPages)
 	if err := pm.WritePage(2, freelistPages[0]); err != nil {
 		return err

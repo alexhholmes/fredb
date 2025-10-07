@@ -6,11 +6,10 @@ import (
 	"fredb/internal/base"
 )
 
-// Special marker Values for Seek operations
 var (
 	// START is a special marker for seeking to the first key in the database
 	// Usage: cursor.Seek(pkg.START) or cursor.SeekFirst()
-	START = []byte{}
+	START []byte
 
 	// END is a special marker for seeking to the last key in the database
 	// Since max key size is MaxKeySize (1024 bytes), END is 1024 bytes of 0xFF
