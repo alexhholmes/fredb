@@ -347,7 +347,7 @@ func (tx *Tx) Rollback() error {
 		// Remove from readers slice
 		for i, rtx := range tx.db.readerTxs {
 			if rtx == tx {
-				// Swap with last element and truncate
+				// Swap with last pathElement and truncate
 				tx.db.readerTxs[i] = tx.db.readerTxs[len(tx.db.readerTxs)-1]
 				tx.db.readerTxs = tx.db.readerTxs[:len(tx.db.readerTxs)-1]
 				break

@@ -228,7 +228,7 @@ func insertAt(slice [][]byte, index int, value []byte) [][]byte {
 	return slice
 }
 
-// removeAt removes element at index from slice
+// removeAt removes pathElement at index from slice
 func removeAt(slice [][]byte, index int) [][]byte {
 	return append(slice[:index], slice[index+1:]...)
 }

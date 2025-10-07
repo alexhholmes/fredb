@@ -4,15 +4,15 @@ import "fredb/internal/wal"
 
 // DBOptions configures database behavior.
 type DBOptions struct {
-	walSyncMode     wal.WALSyncMode
-	walBytesPerSync int64 // Used when walSyncMode == WALSyncBytes
+	walSyncMode     wal.SyncMode
+	walBytesPerSync int64 // Used when walSyncMode == SyncBytes
 }
 
 // defaultDBOptions returns safe default configuration.
 func defaultDBOptions() DBOptions {
 	return DBOptions{
-		walSyncMode:     wal.WALSyncEveryCommit, // Maximum durability by default
-		walBytesPerSync: 1024 * 1024,            // 1MB
+		walSyncMode:     wal.SyncEveryCommit, // Maximum durability by default
+		walBytesPerSync: 1024 * 1024,         // 1MB
 	}
 }
 
@@ -23,7 +23,7 @@ type DBOption func(*DBOptions)
 // This provides maximum durability (zero data loss) but lower throughput.
 func WithWALSyncEveryCommit() DBOption {
 	return func(opts *DBOptions) {
-		opts.walSyncMode = wal.WALSyncEveryCommit
+		opts.walSyncMode = wal.SyncEveryCommit
 	}
 }
 
@@ -32,7 +32,7 @@ func WithWALSyncEveryCommit() DBOption {
 // The bytes parameter determines the maximum amount of data that could be lost on crash.
 func WithWALSyncBytes(bytes int64) DBOption {
 	return func(opts *DBOptions) {
-		opts.walSyncMode = wal.WALSyncBytes
+		opts.walSyncMode = wal.SyncBytes
 		opts.walBytesPerSync = bytes
 	}
 }
@@ -42,6 +42,6 @@ func WithWALSyncBytes(bytes int64) DBOption {
 // Only use for testing or bulk loads where data can be reconstructed.
 func WithWALSyncOff() DBOption {
 	return func(opts *DBOptions) {
-		opts.walSyncMode = wal.WALSyncOff
+		opts.walSyncMode = wal.SyncOff
 	}
 }

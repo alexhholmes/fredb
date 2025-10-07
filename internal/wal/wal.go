@@ -10,27 +10,27 @@ import (
 	"fredb/internal/base"
 )
 
-// WALSyncMode controls when the WAL is fsynced to disk.
-type WALSyncMode int
+// SyncMode controls when the WAL is fsynced to disk.
+type SyncMode int
 
 const (
-	// WALSyncEveryCommit fsyncs on every transaction commit (BoltDB-style).
+	// SyncEveryCommit fsyncs on every transaction commit (BoltDB-style).
 	// - Guarantees zero data loss on power failure
 	// - Limited by fsync latency (typically 1-10ms per commit)
 	// - Use for: Financial transactions, critical data, etcd or Raft
-	WALSyncEveryCommit WALSyncMode = iota
+	SyncEveryCommit SyncMode = iota
 
-	// WALSyncBytes fsyncs when bytesPerSync bytes have been written (RocksDB-style).
+	// SyncBytes fsyncs when bytesPerSync bytes have been written (RocksDB-style).
 	// - Higher throughput than per-commit fsync
 	// - Data loss window: up to bytesPerSync bytes on power failure
 	// - Use for: Analytics, caches, high-throughput workloads
-	WALSyncBytes
+	SyncBytes
 
-	// WALSyncOff disables fsync entirely (testing/bulk loads only).
+	// SyncOff disables fsync entirely (testing/bulk loads only).
 	// - Maximum throughput
 	// - All unflushed data lost on crash
 	// - Use for: Testing, bulk imports with external durability
-	WALSyncOff
+	SyncOff
 )
 
 // WAL implements Write-Ahead Logging for crash recovery and batched commits
@@ -40,7 +40,7 @@ type WAL struct {
 	offset int64 // Current write position
 
 	// Sync configuration
-	syncMode       WALSyncMode
+	syncMode       SyncMode
 	bytesPerSync   int64
 	bytesSinceSync int64 // Bytes written since last fsync
 
@@ -48,17 +48,25 @@ type WAL struct {
 	Pages sync.Map // PageID -> uint64 (txnID) - Pages in WAL but not yet on disk
 }
 
+// Record represents a single WAL record
+type Record struct {
+	Type   uint8
+	TxnID  uint64
+	PageID base.PageID
+	Page   *base.Page
+}
+
 // Record types
 const (
-	WALRecordPage   uint8 = 1 // Page write
-	WALRecordCommit uint8 = 2 // Commit marker
+	RecordPage   uint8 = 1 // Page write
+	RecordCommit uint8 = 2 // Commit marker
 )
 
-// Record format: [Type:1][TxnID:8][PageID:8][DataLen:4][Data:N]
-const WALRecordHeaderSize = 1 + 8 + 8 + 4
+// RecordHeaderSize Record format: [Type:1][TxnID:8][PageID:8][DataLen:4][Data:N]
+const RecordHeaderSize = 1 + 8 + 8 + 4
 
 // NewWAL opens or creates a WAL file with the specified sync mode
-func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error) {
+func NewWAL(path string, syncMode SyncMode, bytesPerSync int64) (*WAL, error) {
 	// Open wal file with read/write, create if not exists
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
@@ -82,7 +90,7 @@ func NewWAL(path string, syncMode WALSyncMode, bytesPerSync int64) (*WAL, error)
 }
 
 // AppendPage writes a Page record to the WAL
-// Format: [WALRecordPage:1][TxnID:8][PageID:8][PageSize:4][Page.data:PageSize]
+// Format: [RecordPage:1][TxnID:8][PageID:8][PageSize:4][Page.data:PageSize]
 //
 // KNOWN LIMITATION: Uses two separate write() calls (header + data).
 // If crash occurs between writes, WAL will have partial record, causing
@@ -92,8 +100,8 @@ func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) erro
 	defer w.mu.Unlock()
 
 	// Build record header
-	header := make([]byte, WALRecordHeaderSize)
-	header[0] = WALRecordPage
+	header := make([]byte, RecordHeaderSize)
+	header[0] = RecordPage
 	binary.LittleEndian.PutUint64(header[1:9], txnID)
 	binary.LittleEndian.PutUint64(header[9:17], uint64(pageID))
 	binary.LittleEndian.PutUint32(header[17:21], base.PageSize)
@@ -109,7 +117,7 @@ func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) erro
 	}
 
 	// Update offset and track bytes since sync
-	bytesWritten := int64(WALRecordHeaderSize + base.PageSize)
+	bytesWritten := int64(RecordHeaderSize + base.PageSize)
 	w.offset += bytesWritten
 	w.bytesSinceSync += bytesWritten
 
@@ -120,14 +128,14 @@ func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) erro
 }
 
 // AppendCommit writes a commit marker to the WAL
-// Format: [WALRecordCommit:1][TxnID:8][0:8][0:4]
+// Format: [RecordCommit:1][TxnID:8][0:8][0:4]
 func (w *WAL) AppendCommit(txnID uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	// Build commit record (no data payload)
-	header := make([]byte, WALRecordHeaderSize)
-	header[0] = WALRecordCommit
+	header := make([]byte, RecordHeaderSize)
+	header[0] = RecordCommit
 	binary.LittleEndian.PutUint64(header[1:9], txnID)
 	binary.LittleEndian.PutUint64(header[9:17], 0)
 	binary.LittleEndian.PutUint32(header[17:21], 0)
@@ -138,7 +146,7 @@ func (w *WAL) AppendCommit(txnID uint64) error {
 	}
 
 	// Update offset and track bytes since sync
-	bytesWritten := int64(WALRecordHeaderSize)
+	bytesWritten := int64(RecordHeaderSize)
 	w.offset += bytesWritten
 	w.bytesSinceSync += bytesWritten
 
@@ -151,18 +159,18 @@ func (w *WAL) Sync() error {
 	defer w.mu.Unlock()
 
 	switch w.syncMode {
-	case WALSyncEveryCommit:
+	case SyncEveryCommit:
 		// Always sync
 		return w.syncUnsafe()
 
-	case WALSyncBytes:
+	case SyncBytes:
 		// Sync if we've exceeded the byte threshold
 		if w.bytesSinceSync >= w.bytesPerSync {
 			return w.syncUnsafe()
 		}
 		return nil
 
-	case WALSyncOff:
+	case SyncOff:
 		// Never sync
 		return nil
 
@@ -190,14 +198,6 @@ func (w *WAL) syncUnsafe() error {
 	return nil
 }
 
-// WALRecord represents a single WAL record
-type WALRecord struct {
-	Type   uint8
-	TxnID  uint64
-	PageID base.PageID
-	Page   *base.Page
-}
-
 // Replay reads the WAL and applies all committed transactions after fromTxnID
 func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) error) error {
 	w.mu.Lock()
@@ -210,9 +210,9 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 
 	// Track uncommitted transactions
 	// Map: TxnID -> list of (PageID, Page) to apply if commit marker found
-	uncommitted := make(map[uint64][]WALRecord)
+	uncommitted := make(map[uint64][]Record)
 
-	header := make([]byte, WALRecordHeaderSize)
+	header := make([]byte, RecordHeaderSize)
 
 	for {
 		// Read record header
@@ -223,7 +223,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 		if err != nil {
 			return fmt.Errorf("wal replay read error: %w", err)
 		}
-		if n != WALRecordHeaderSize {
+		if n != RecordHeaderSize {
 			return fmt.Errorf("wal replay: short header read: %d bytes", n)
 		}
 
@@ -234,7 +234,7 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 		dataLen := binary.LittleEndian.Uint32(header[17:21])
 
 		switch recordType {
-		case WALRecordPage:
+		case RecordPage:
 			// Read Page data
 			if dataLen != base.PageSize {
 				return fmt.Errorf("wal replay: invalid Page size: %d", dataLen)
@@ -246,14 +246,14 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 			}
 
 			// store in uncommitted map
-			uncommitted[txnID] = append(uncommitted[txnID], WALRecord{
-				Type:   WALRecordPage,
+			uncommitted[txnID] = append(uncommitted[txnID], Record{
+				Type:   RecordPage,
 				TxnID:  txnID,
 				PageID: pageID,
 				Page:   page,
 			})
 
-		case WALRecordCommit:
+		case RecordCommit:
 			// Transaction committed - apply all Pages if txnID > fromTxnID
 			if txnID > fromTxnID {
 				for _, record := range uncommitted[txnID] {
@@ -294,7 +294,7 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 		return err
 	}
 
-	header := make([]byte, WALRecordHeaderSize)
+	header := make([]byte, RecordHeaderSize)
 	truncateOffset := int64(0)
 
 	for {
@@ -310,7 +310,7 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 		if err != nil {
 			return fmt.Errorf("wal truncate read error: %w", err)
 		}
-		if n != WALRecordHeaderSize {
+		if n != RecordHeaderSize {
 			return fmt.Errorf("wal truncate: short header read")
 		}
 
@@ -319,14 +319,14 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 		dataLen := binary.LittleEndian.Uint32(header[17:21])
 
 		// Skip data section if present
-		if recordType == WALRecordPage {
+		if recordType == RecordPage {
 			if _, err := w.file.Seek(int64(dataLen), io.SeekCurrent); err != nil {
 				return err
 			}
 		}
 
 		// Check if this commit is beyond our checkpoint
-		if recordType == WALRecordCommit && txnID > upToTxnID {
+		if recordType == RecordCommit && txnID > upToTxnID {
 			// Found first commit beyond checkpoint - truncate here
 			truncateOffset = currentOffset
 			break
@@ -349,7 +349,7 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 	return nil
 }
 
-// CleanupLatch removes WAL Pages latches for Pages that have been checkpointed
+// CleanupLatch removes WAL Pages latches for Pages that have been checkpoint
 // AND are visible to all active readers (txnID < minReaderTxn).
 func (w *WAL) CleanupLatch(checkpointTxn, minReaderTxn uint64) {
 	w.Pages.Range(func(key, value interface{}) bool {
