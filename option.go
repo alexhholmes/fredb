@@ -14,6 +14,7 @@ func defaultDBOptions() DBOptions {
 	return DBOptions{
 		walSyncMode:     wal.SyncEveryCommit, // Maximum durability by default
 		walBytesPerSync: 1024 * 1024,         // 1MB
+		maxCacheSizeMB:  128,                 // 128MB
 	}
 }
 
@@ -33,6 +34,7 @@ func WithWALSyncEveryCommit() DBOption {
 // WithWALSyncBytes configures the database to fsync wal every N bytes written.
 // This provides higher throughput with bounded data loss window.
 // The bytes parameter determines the maximum amount of data that could be lost on crash.
+// Note: It is optimal to align this value to the filesystem block size (typically 4096 bytes).
 //
 //goland:noinspection GoUnusedExportedFunction
 func WithWALSyncBytes(bytes int) DBOption {
@@ -55,7 +57,6 @@ func WithWALSyncOff() DBOption {
 
 // WithMaxCacheSizeMB sets the maximum size of in-memory cache in MB.
 // When the cache exceeds this size, the least recently used items are evicted.
-// A value of 0 means no limit.
 //
 //goland:noinspection GoUnusedExportedFunction
 func WithMaxCacheSizeMB(mb int) DBOption {

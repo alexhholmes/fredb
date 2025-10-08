@@ -368,7 +368,7 @@ func (d *DB) checkpoint() error {
 		newPage *base.Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the wal latch check for this read
-		oldPage, readErr := dm.ReadPageUnsafe(pageID)
+		oldPage, readErr := dm.ReadPage(pageID)
 
 		// Get new pages version for idempotency check
 		newHeader := newPage.Header()

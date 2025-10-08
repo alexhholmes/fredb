@@ -113,16 +113,6 @@ func TestPageCacheMinSize(t *testing.T) {
 	}
 }
 
-func TestPageCacheMaxSize(t *testing.T) {
-	t.Parallel()
-
-	// Request size too large
-	cache := NewPageCache(500000000, nil)
-	if cache.maxSize != MaxCacheSize {
-		t.Errorf("Expected max size %d, got %d", MaxCacheSize, cache.maxSize)
-	}
-}
-
 func TestPageCacheEviction(t *testing.T) {
 	t.Parallel()
 

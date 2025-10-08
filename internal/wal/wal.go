@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"fredb/internal/base"
+	"fredb/internal/directio"
 )
 
 // SyncMode controls when the WAL is fsynced to disk.
@@ -44,6 +45,9 @@ type WAL struct {
 	bytesPerSync   int
 	bytesSinceSync int // Bytes written since last fsync
 
+	// Direct I/O buffer pool
+	bufPool *sync.Pool
+
 	// Page tracking - latches prevent stale disk reads
 	Pages sync.Map // PageID -> uint64 (txnID) - Pages in WAL but not yet on disk
 }
@@ -67,8 +71,8 @@ const RecordHeaderSize = 1 + 8 + 8 + 4
 
 // NewWAL opens or creates a WAL file with the specified sync mode
 func NewWAL(path string, syncMode SyncMode, bytesPerSync int) (*WAL, error) {
-	// Open wal file with read/write, create if not exists
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
+	// Open wal file with DirectIO support
+	file, err := directio.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +85,13 @@ func NewWAL(path string, syncMode SyncMode, bytesPerSync int) (*WAL, error) {
 	}
 
 	return &WAL{
-		file:           file,
-		offset:         info.Size(),
+		file:   file,
+		offset: info.Size(),
+		bufPool: &sync.Pool{
+			New: func() interface{} {
+				return directio.AlignedBlock(directio.BlockSize * 2)
+			},
+		},
 		syncMode:       syncMode,
 		bytesPerSync:   bytesPerSync,
 		bytesSinceSync: 0,
@@ -90,36 +99,34 @@ func NewWAL(path string, syncMode SyncMode, bytesPerSync int) (*WAL, error) {
 }
 
 // AppendPage writes a Page record to the WAL
-// Format: [RecordPage:1][TxnID:8][PageID:8][PageSize:4][Page.data:PageSize]
-//
-// KNOWN LIMITATION: Uses two separate write() calls (header + data).
-// If crash occurs between writes, WAL will have partial record, causing
-// recovery to fail. Future fix: buffer entire record for atomic write or add checksums.
+// Format: [RecordPage:1][TxnID:8][PageID:8][PageSize:4][Page.data:PageSize][Padding]
+// Records are padded to BlockSize*2 (8192) for DirectIO alignment
 func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Get aligned buffer from pool
+	buf := w.bufPool.Get().([]byte)
+	defer w.bufPool.Put(buf)
+
 	// Build record header
-	header := make([]byte, RecordHeaderSize)
-	header[0] = RecordPage
-	binary.LittleEndian.PutUint64(header[1:9], txnID)
-	binary.LittleEndian.PutUint64(header[9:17], uint64(pageID))
-	binary.LittleEndian.PutUint32(header[17:21], base.PageSize)
+	buf[0] = RecordPage
+	binary.LittleEndian.PutUint64(buf[1:9], txnID)
+	binary.LittleEndian.PutUint64(buf[9:17], uint64(pageID))
+	binary.LittleEndian.PutUint32(buf[17:21], base.PageSize)
 
-	// Write header
-	if _, err := w.file.Write(header); err != nil {
-		return err
-	}
+	// Copy page data
+	copy(buf[RecordHeaderSize:RecordHeaderSize+base.PageSize], page.Data[:])
 
-	// Write Page data
-	if _, err := w.file.Write(page.Data[:]); err != nil {
+	// Write entire aligned buffer (header + page + padding)
+	writeSize := directio.BlockSize * 2
+	if _, err := w.file.Write(buf[:writeSize]); err != nil {
 		return err
 	}
 
 	// Update offset and track bytes since sync
-	bytesWritten := int64(RecordHeaderSize + base.PageSize)
-	w.offset += bytesWritten
-	w.bytesSinceSync += int(bytesWritten)
+	w.offset += int64(writeSize)
+	w.bytesSinceSync += writeSize
 
 	// Set latch to prevent stale disk reads
 	w.Pages.Store(pageID, txnID)
@@ -128,27 +135,31 @@ func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) erro
 }
 
 // AppendCommit writes a commit marker to the WAL
-// Format: [RecordCommit:1][TxnID:8][0:8][0:4]
+// Format: [RecordCommit:1][TxnID:8][0:8][0:4][Padding]
+// Records are padded to BlockSize (4096) for DirectIO alignment
 func (w *WAL) AppendCommit(txnID uint64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Build commit record (no data payload)
-	header := make([]byte, RecordHeaderSize)
-	header[0] = RecordCommit
-	binary.LittleEndian.PutUint64(header[1:9], txnID)
-	binary.LittleEndian.PutUint64(header[9:17], 0)
-	binary.LittleEndian.PutUint32(header[17:21], 0)
+	// Get aligned buffer from pool
+	buf := w.bufPool.Get().([]byte)
+	defer w.bufPool.Put(buf)
 
-	// Write commit marker
-	if _, err := w.file.Write(header); err != nil {
+	// Build commit record (no data payload)
+	buf[0] = RecordCommit
+	binary.LittleEndian.PutUint64(buf[1:9], txnID)
+	binary.LittleEndian.PutUint64(buf[9:17], 0)
+	binary.LittleEndian.PutUint32(buf[17:21], 0)
+
+	// Write aligned buffer (header + padding)
+	writeSize := directio.BlockSize
+	if _, err := w.file.Write(buf[:writeSize]); err != nil {
 		return err
 	}
 
 	// Update offset and track bytes since sync
-	bytesWritten := int64(RecordHeaderSize)
-	w.offset += bytesWritten
-	w.bytesSinceSync += int(bytesWritten)
+	w.offset += int64(writeSize)
+	w.bytesSinceSync += writeSize
 
 	return nil
 }
@@ -245,6 +256,12 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 				return fmt.Errorf("wal replay: failed to read Page data: %w", err)
 			}
 
+			// Skip padding (BlockSize*2 - RecordHeaderSize - PageSize)
+			paddingSize := directio.BlockSize*2 - RecordHeaderSize - base.PageSize
+			if _, err := w.file.Seek(int64(paddingSize), io.SeekCurrent); err != nil {
+				return fmt.Errorf("wal replay: failed to skip padding: %w", err)
+			}
+
 			// store in uncommitted map
 			uncommitted[txnID] = append(uncommitted[txnID], Record{
 				Type:   RecordPage,
@@ -254,6 +271,12 @@ func (w *WAL) Replay(fromTxnID uint64, applyFn func(base.PageID, *base.Page) err
 			})
 
 		case RecordCommit:
+			// Skip padding (BlockSize - RecordHeaderSize)
+			paddingSize := directio.BlockSize - RecordHeaderSize
+			if _, err := w.file.Seek(int64(paddingSize), io.SeekCurrent); err != nil {
+				return fmt.Errorf("wal replay: failed to skip padding: %w", err)
+			}
+
 			// Transaction committed - apply all Pages if txnID > fromTxnID
 			if txnID > fromTxnID {
 				for _, record := range uncommitted[txnID] {
@@ -316,11 +339,19 @@ func (w *WAL) Truncate(upToTxnID uint64) error {
 
 		recordType := header[0]
 		txnID := binary.LittleEndian.Uint64(header[1:9])
-		dataLen := binary.LittleEndian.Uint32(header[17:21])
 
-		// Skip data section if present
+		// Skip data section and padding based on record type
+		var skipSize int64
 		if recordType == RecordPage {
-			if _, err := w.file.Seek(int64(dataLen), io.SeekCurrent); err != nil {
+			// Skip: PageData + Padding = (BlockSize*2 - RecordHeaderSize)
+			skipSize = int64(directio.BlockSize*2 - RecordHeaderSize)
+		} else if recordType == RecordCommit {
+			// Skip: Padding = (BlockSize - RecordHeaderSize)
+			skipSize = int64(directio.BlockSize - RecordHeaderSize)
+		}
+
+		if skipSize > 0 {
+			if _, err := w.file.Seek(skipSize, io.SeekCurrent); err != nil {
 				return err
 			}
 		}

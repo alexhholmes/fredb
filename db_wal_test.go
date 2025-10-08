@@ -181,7 +181,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	// The idempotency check should skip pages that are already at correct version
 	err = db.wal.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
 		// Read current disk version
-		oldPage, readErr := dm.ReadPageUnsafe(pageID)
+		oldPage, readErr := dm.ReadPage(pageID)
 
 		newHeader := page.Header()
 		newTxnID := newHeader.TxnID

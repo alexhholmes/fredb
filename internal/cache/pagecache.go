@@ -24,7 +24,7 @@ type PageCache struct {
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
 	generations sync.Map // map[PageID]uint64 - detect invalidation during load
 
-	// stats
+	// Stats
 	hits         atomic.Uint64
 	misses       atomic.Uint64
 	evictions    atomic.Uint64
@@ -51,17 +51,12 @@ type versionEntry struct {
 }
 
 const (
-	MinCacheSize = 16        // Minimum: hold tree path + concurrent ops
-	MaxCacheSize = 65536 / 8 // 32MB max
+	MinCacheSize = 16 // Minimum: hold tree path + concurrent ops
 )
 
 // NewPageCache creates a new Page cache with the specified maximum size
 func NewPageCache(maxSize int, pagemanager *storage.PageManager) *PageCache {
-	if maxSize == 0 {
-		maxSize = MaxCacheSize
-	}
 	maxSize = max(maxSize, MinCacheSize)
-	maxSize = min(maxSize, MaxCacheSize)
 
 	return &PageCache{
 		maxSize:  maxSize,
