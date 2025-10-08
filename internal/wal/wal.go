@@ -41,8 +41,8 @@ type WAL struct {
 
 	// Sync configuration
 	syncMode       SyncMode
-	bytesPerSync   int64
-	bytesSinceSync int64 // Bytes written since last fsync
+	bytesPerSync   int
+	bytesSinceSync int // Bytes written since last fsync
 
 	// Page tracking - latches prevent stale disk reads
 	Pages sync.Map // PageID -> uint64 (txnID) - Pages in WAL but not yet on disk
@@ -66,7 +66,7 @@ const (
 const RecordHeaderSize = 1 + 8 + 8 + 4
 
 // NewWAL opens or creates a WAL file with the specified sync mode
-func NewWAL(path string, syncMode SyncMode, bytesPerSync int64) (*WAL, error) {
+func NewWAL(path string, syncMode SyncMode, bytesPerSync int) (*WAL, error) {
 	// Open wal file with read/write, create if not exists
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
@@ -119,7 +119,7 @@ func (w *WAL) AppendPage(txnID uint64, pageID base.PageID, page *base.Page) erro
 	// Update offset and track bytes since sync
 	bytesWritten := int64(RecordHeaderSize + base.PageSize)
 	w.offset += bytesWritten
-	w.bytesSinceSync += bytesWritten
+	w.bytesSinceSync += int(bytesWritten)
 
 	// Set latch to prevent stale disk reads
 	w.Pages.Store(pageID, txnID)
@@ -148,7 +148,7 @@ func (w *WAL) AppendCommit(txnID uint64) error {
 	// Update offset and track bytes since sync
 	bytesWritten := int64(RecordHeaderSize)
 	w.offset += bytesWritten
-	w.bytesSinceSync += bytesWritten
+	w.bytesSinceSync += int(bytesWritten)
 
 	return nil
 }

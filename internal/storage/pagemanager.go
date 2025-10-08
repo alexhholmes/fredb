@@ -79,12 +79,12 @@ func NewPageManager(path string) (*PageManager, error) {
 
 // ReadPage reads a Page from disk
 func (pm *PageManager) ReadPage(id base.PageID) (*base.Page, error) {
-	return pm.readPageAt(id)
+	return pm.ReadPageUnsafe(id)
 }
 
-// ReadPageAtUnsafe reads a Page from disk without wal latch check
+// ReadPageUnsafe reads a Page from disk without wal latch check
 // Used during checkpoint to read old disk versions before overwriting
-func (pm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
+func (pm *PageManager) ReadPageUnsafe(id base.PageID) (*base.Page, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -375,11 +375,11 @@ func (pm *PageManager) initializeNewDB() error {
 // loadExistingDB loads meta and freelist from existing database file
 func (pm *PageManager) loadExistingDB() error {
 	// Read both meta pages
-	page0, err := pm.readPageAt(0)
+	page0, err := pm.ReadPageUnsafe(0)
 	if err != nil {
 		return err
 	}
-	page1, err := pm.readPageAt(1)
+	page1, err := pm.ReadPageUnsafe(1)
 	if err != nil {
 		return err
 	}
@@ -413,7 +413,7 @@ func (pm *PageManager) loadExistingDB() error {
 	// Load freelist
 	freelistPages := make([]*base.Page, pm.meta.FreelistPages)
 	for i := uint64(0); i < pm.meta.FreelistPages; i++ {
-		page, err := pm.readPageAt(pm.meta.FreelistID + base.PageID(i))
+		page, err := pm.ReadPageUnsafe(pm.meta.FreelistID + base.PageID(i))
 		if err != nil {
 			return err
 		}
@@ -426,12 +426,6 @@ func (pm *PageManager) loadExistingDB() error {
 	pm.release(pm.meta.TxnID)
 
 	return nil
-}
-
-// readPageAt reads a Page from a specific offset
-// Note: Caller should check db.wal.pages before calling this to avoid reading stale data
-func (pm *PageManager) readPageAt(id base.PageID) (*base.Page, error) {
-	return pm.ReadPageAtUnsafe(id)
 }
 
 // writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)

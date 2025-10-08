@@ -76,7 +76,9 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		return nil, err
 	}
 
-	bt, err := newBTree(pager)
+	c := cache.NewPageCache(opts.maxCacheSizeMB, pager)
+
+	bt, err := newTree(pager, c)
 	if err != nil {
 		_ = newWAL.Close()
 		_ = pager.Close()
@@ -366,7 +368,7 @@ func (d *DB) checkpoint() error {
 		newPage *base.Page) error {
 		// Read current disk version BEFORE overwriting
 		// Note: We need to bypass the wal latch check for this read
-		oldPage, readErr := dm.ReadPageAtUnsafe(pageID)
+		oldPage, readErr := dm.ReadPageUnsafe(pageID)
 
 		// Get new pages version for idempotency check
 		newHeader := newPage.Header()

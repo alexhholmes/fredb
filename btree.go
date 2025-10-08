@@ -15,17 +15,17 @@ import (
 // complexity, interaction with internal packages, and circular dependencies.
 type btree struct {
 	pager *storage.PageManager
-	root  *base.Node
 	cache *cache.PageCache // LRU cache for non-root nodes
+	root  *base.Node
 }
 
-// newBTree creates a new btree with the given PageManager
-func newBTree(pager *storage.PageManager) (*btree, error) {
+// newTree creates a new btree with the given PageManager
+func newTree(pager *storage.PageManager, c *cache.PageCache) (*btree, error) {
 	meta := pager.GetMeta()
 
 	bt := &btree{
 		pager: pager,
-		cache: cache.NewPageCache(cache.MaxCacheSize, pager),
+		cache: c,
 	}
 
 	// Check if existing root exists

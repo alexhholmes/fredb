@@ -5,7 +5,8 @@ import "fredb/internal/wal"
 // DBOptions configures database behavior.
 type DBOptions struct {
 	walSyncMode     wal.SyncMode
-	walBytesPerSync int64 // Used when walSyncMode == SyncBytes
+	walBytesPerSync int // Used when walSyncMode == SyncBytes
+	maxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
 // defaultDBOptions returns safe default configuration.
@@ -34,7 +35,7 @@ func WithWALSyncEveryCommit() DBOption {
 // The bytes parameter determines the maximum amount of data that could be lost on crash.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithWALSyncBytes(bytes int64) DBOption {
+func WithWALSyncBytes(bytes int) DBOption {
 	return func(opts *DBOptions) {
 		opts.walSyncMode = wal.SyncBytes
 		opts.walBytesPerSync = bytes
@@ -49,5 +50,16 @@ func WithWALSyncBytes(bytes int64) DBOption {
 func WithWALSyncOff() DBOption {
 	return func(opts *DBOptions) {
 		opts.walSyncMode = wal.SyncOff
+	}
+}
+
+// WithMaxCacheSizeMB sets the maximum size of in-memory cache in MB.
+// When the cache exceeds this size, the least recently used items are evicted.
+// A value of 0 means no limit.
+//
+//goland:noinspection GoUnusedExportedFunction
+func WithMaxCacheSizeMB(mb int) DBOption {
+	return func(opts *DBOptions) {
+		opts.maxCacheSizeMB = mb
 	}
 }

@@ -13,12 +13,12 @@ import (
 // Each Page can have multiple versions (one per committing transaction).
 // Readers see the latest version where version.txnID <= reader.txnID.
 type PageCache struct {
+	mu       sync.RWMutex
 	maxSize  int                             // Max total versions (e.g., 1024)
 	lowWater int                             // Evict to this (80% of max)
 	entries  map[base.PageID][]*versionEntry // Multiple versions per Page
 	lruList  *list.List                      // Doubly-linked list (front=MRU, back=LRU)
-	mu       sync.RWMutex
-	pager    *storage.PageManager
+	pager    *storage.PageManager            // Sibling-reference not ownership
 
 	// Atomic GetOrLoad coordination
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
