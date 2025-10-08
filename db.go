@@ -107,7 +107,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	// Start background checkpoint goroutine
 	db.wg.Add(1)
-	go db.backgroundCheckpointer()
+	go db.backgroundCheckpoint()
 
 	return db, nil
 }
@@ -187,8 +187,8 @@ func (d *DB) Begin(writable bool) (*Tx, error) {
 		txnID:    txnID,
 		writable: writable,
 		root:     d.store.root, // Capture snapshot for MVCC isolation
-		pending:  make([]base.PageID, 0),
-		freed:    make([]base.PageID, 0),
+		pending:  make(map[base.PageID]struct{}),
+		freed:    make(map[base.PageID]struct{}),
 		done:     false,
 	}
 
@@ -303,8 +303,8 @@ func (d *DB) backgroundReleaser() {
 	}
 }
 
-// backgroundCheckpointer periodically checkpoints the wal to disk
-func (d *DB) backgroundCheckpointer() {
+// backgroundCheckpoint periodically checkpoints the wal to disk
+func (d *DB) backgroundCheckpoint() {
 	defer d.wg.Done()
 
 	ticker := time.NewTicker(200 * time.Millisecond)

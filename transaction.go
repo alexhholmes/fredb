@@ -27,8 +27,8 @@ type Tx struct {
 	db       *DB                        // Database this transaction belongs to (concrete type for internal access)
 	root     *base.Node                 // Root Node at transaction start
 	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  []base.PageID              // Pages allocated in this transaction (for COW)
-	freed    []base.PageID              // Pages freed in this transaction (for freelist)
+	pending  map[base.PageID]struct{}   // Pages allocated in this transaction (for COW)
+	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
 	done     bool                       // Has Commit() or Rollback() been called?
 }
 
@@ -217,7 +217,11 @@ func (tx *Tx) Delete(key []byte) error {
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
 	// Pass transaction to cursor for snapshot isolation
-	return tx.db.store.newCursor(tx)
+	return &Cursor{
+		btree: tx.db.store,
+		tx:    tx,
+		valid: false,
+	}
 }
 
 // Commit writes all changes and makes them visible to future transactions.
@@ -286,7 +290,12 @@ func (tx *Tx) Commit() error {
 	// when all readers that might reference them have finished.
 	if len(tx.freed) > 0 {
 		dm := tx.db.store.pager
-		err := dm.FreePending(tx.txnID, tx.freed)
+		// Convert map to slice for FreePending
+		freedSlice := make([]base.PageID, 0, len(tx.freed))
+		for pageID := range tx.freed {
+			freedSlice = append(freedSlice, pageID)
+		}
+		err := dm.FreePending(tx.txnID, freedSlice)
 		if err != nil {
 			// TODO
 		}
@@ -340,7 +349,7 @@ func (tx *Tx) Rollback() error {
 			dm := tx.db.store.pager
 			// Add directly to free list, not pending - these can be reused immediately
 			// since they were never part of any committed state
-			for _, pageID := range tx.pending {
+			for pageID := range tx.pending {
 				err := dm.FreePage(pageID)
 				if err != nil {
 					// TODO
@@ -461,11 +470,9 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 
 	// 2. Check if this Node already belongs to this transaction (pending allocations)
 	// If its PageID is in tx.pending, it was allocated in this transaction
-	for _, pid := range tx.pending {
-		if pid == node.PageID {
-			// Node already owned by this transaction, no COW needed
-			return node, nil
-		}
+	if _, inPending := tx.pending[node.PageID]; inPending {
+		// Node already owned by this transaction, no COW needed
+		return node, nil
 	}
 
 	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
@@ -512,25 +519,21 @@ retryLoop:
 		}
 
 		// Check for duplicate in tx.pending (should never happen)
-		for _, pid := range tx.pending {
-			if pid == pageID {
-				return 0, nil, fmt.Errorf("FATAL: freelist returned PageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
-					pageID, tx.txnID, tx.pending, tx.freed)
-			}
+		if _, inPending := tx.pending[pageID]; inPending {
+			return 0, nil, fmt.Errorf("FATAL: freelist returned PageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+				pageID, tx.txnID, tx.pending, tx.freed)
 		}
 
 		// Check if Page is in tx.freed (race with background releaser)
 		// If so, skip and retry WITHOUT returning to freelist
 		// Returning it would cause the freelist to give it back immediately, creating a loop
 		// Instead, just skip - the freelist will eventually exhaust and grow the file
-		for _, pid := range tx.freed {
-			if pid == pageID {
-				continue retryLoop // Skip this Page, try allocating again
-			}
+		if _, inFreed := tx.freed[pageID]; inFreed {
+			continue retryLoop // Skip this Page, try allocating again
 		}
 
 		// Track in pending pages (for COW)
-		tx.pending = append(tx.pending, pageID)
+		tx.pending[pageID] = struct{}{}
 
 		// invalidate any stale cache entries for this reused PageID
 		// When a Page is freed and reallocated, old versions must be removed
@@ -555,11 +558,6 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 	if pageID == 0 {
 		return
 	}
-	// Check if already freed to prevent duplicates
-	for _, pid := range tx.freed {
-		if pid == pageID {
-			return // Already freed
-		}
-	}
-	tx.freed = append(tx.freed, pageID)
+	// Add to map (automatically handles duplicates)
+	tx.freed[pageID] = struct{}{}
 }

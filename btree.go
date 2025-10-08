@@ -79,16 +79,6 @@ func newTree(pager *storage.PageManager, c *cache.PageCache) (*btree, error) {
 	return bt, nil
 }
 
-// newCursor creates a new cursor for this B-tree
-// Cursor starts in invalid state - call Seek() to position it
-func (bt *btree) newCursor(tx *Tx) *Cursor {
-	return &Cursor{
-		btree: bt,
-		tx:    tx,
-		valid: false,
-	}
-}
-
 // close flushes any Dirty pages and closes the B-tree
 func (bt *btree) close() error {
 	// Flush root if Dirty
