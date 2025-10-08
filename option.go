@@ -14,7 +14,7 @@ func defaultDBOptions() DBOptions {
 	return DBOptions{
 		walSyncMode:     wal.SyncEveryCommit, // Maximum durability by default
 		walBytesPerSync: 1024 * 1024,         // 1MB
-		maxCacheSizeMB:  128,                 // 128MB
+		maxCacheSizeMB:  512,                 // 512MB
 	}
 }
 

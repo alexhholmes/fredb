@@ -1,6 +1,9 @@
 # fredb
 
-Embedded B-tree key-value store in Go.
+A simple embedded B-tree key-value store in Go.
+
+Designed for up to 1TB+, read-heavy, local KV storage for edge, containers, and 
+infrastructure.
 
 ## Status
 
@@ -166,7 +169,6 @@ Page 3+:  {Free list pages} ⊕ {B-tree data pages}, allocation order preserved
 go test ./fredb -v
 ```
 
-Currently: 49 tests passing
 - B-tree ops: insert, delete, split, merge, rebalance
 - Wire format: byte-level serialization tests
 - Concurrency: parallel reads/writes
@@ -186,6 +188,5 @@ Currently: 49 tests passing
 
 ## Inspiration
 
-- **bbolt**: Page layout, unsafe.Pointer serialization
-- **BoltDB**: Original design philosophy
-- **SQLite**: Robustness patterns
+- **bbolt**
+- **BadgerDB**

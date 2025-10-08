@@ -9,8 +9,8 @@ import (
 
 var (
 	ErrTxNotWritable = errors.New("transaction is read-only")
-	ErrTxDone        = errors.New("transaction has been committed or rolled back")
 	ErrTxInProgress  = errors.New("write transaction already in progress")
+	ErrTxDone        = errors.New("transaction has been committed or rolled back")
 )
 
 // Tx represents a transaction on the database.
