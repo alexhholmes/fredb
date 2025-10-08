@@ -10,7 +10,6 @@ import (
 const (
 	AlignSize = 4096
 	BlockSize = 4096
-	DirectIO  = true
 )
 
 // OpenFile is a modified version of os.OpenFile which sets O_DIRECT.

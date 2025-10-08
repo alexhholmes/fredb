@@ -5,7 +5,6 @@ package directio
 const (
 	AlignSize = 0
 	BlockSize = 4096
-	DirectIO  = false
 )
 
 // OpenFile is a modified version of os.OpenFile which sets O_DIRECT.

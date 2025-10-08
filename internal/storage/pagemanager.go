@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"fredb/internal/base"
@@ -26,6 +27,10 @@ type PageManager struct {
 
 	// Version relocation tracking
 	relocations map[base.PageID]map[uint64]base.PageID // originalPageID -> (txnID -> relocatedPageID)
+
+	// Stats
+	diskReads  atomic.Uint64 // Number of actual disk reads
+	diskWrites atomic.Uint64 // Number of actual disk writes
 }
 
 // NewPageManager opens or creates a database file
@@ -90,6 +95,7 @@ func (pm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
 	buf := pm.bufPool.Get().([]byte)
 	defer pm.bufPool.Put(buf)
 
+	pm.diskReads.Add(1) // Track disk read
 	n, err := pm.file.ReadAt(buf, offset)
 	if err != nil {
 		return nil, err
@@ -439,6 +445,7 @@ func (pm *PageManager) writePageAtUnsafe(id base.PageID, page *base.Page) error 
 	// Copy page to aligned buffer
 	copy(buf, page.Data[:])
 
+	pm.diskWrites.Add(1) // Track disk write
 	n, err := pm.file.WriteAt(buf, offset)
 	if err != nil {
 		return err
@@ -733,4 +740,9 @@ func (pm *PageManager) deserializeFreelist(pages []*base.Page) {
 			pm.pendingFree[txnID] = pageIDs
 		}
 	}
+}
+
+// Stats returns disk I/O statistics
+func (pm *PageManager) Stats() (reads, writes uint64) {
+	return pm.diskReads.Load(), pm.diskWrites.Load()
 }

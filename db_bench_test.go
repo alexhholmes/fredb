@@ -27,6 +27,10 @@ func BenchmarkDBGet(b *testing.B) {
 		}
 	}
 
+	// Reset cache and disk I/O stats before benchmark
+	hitsBefore, missesBefore, evictionsBefore := db.store.cache.Stats()
+	diskReadsBefore, diskWritesBefore := db.store.pager.Stats()
+
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -37,6 +41,21 @@ func BenchmarkDBGet(b *testing.B) {
 			b.Errorf("get failed: %v", err)
 		}
 	}
+
+	b.StopTimer()
+	hitsAfter, missesAfter, evictionsAfter := db.store.cache.Stats()
+	diskReadsAfter, diskWritesAfter := db.store.pager.Stats()
+
+	// Calculate benchmark-only stats
+	hits := hitsAfter - hitsBefore
+	misses := missesAfter - missesBefore
+	evictions := evictionsAfter - evictionsBefore
+	diskReads := diskReadsAfter - diskReadsBefore
+	diskWrites := diskWritesAfter - diskWritesBefore
+
+	b.Logf("Cache - Hits: %d, Misses: %d, Evictions: %d, Hit Rate: %.2f%%",
+		hits, misses, evictions, float64(hits)*100.0/float64(hits+misses))
+	b.Logf("Disk I/O - Reads: %d, Writes: %d (from start of benchmark)", diskReads, diskWrites)
 }
 
 func BenchmarkDBSet(b *testing.B) {

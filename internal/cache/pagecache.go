@@ -25,9 +25,10 @@ type PageCache struct {
 	generations sync.Map // map[PageID]uint64 - detect invalidation during load
 
 	// stats
-	hits      atomic.Uint64
-	misses    atomic.Uint64
-	evictions atomic.Uint64
+	hits         atomic.Uint64
+	misses       atomic.Uint64
+	evictions    atomic.Uint64
+	totalEntries atomic.Int64 // Total number of cached versions
 }
 
 // loadState coordinates concurrent disk loads for the same PageID
@@ -50,9 +51,8 @@ type versionEntry struct {
 }
 
 const (
-	DefaultCacheSize = 1024      // 5MB (1024 pages × 4KB)
-	MinCacheSize     = 16        // Minimum: hold tree path + concurrent ops
-	MaxCacheSize     = 335544320 // 320MB TODO increase if needed
+	MinCacheSize = 16        // Minimum: hold tree path + concurrent ops
+	MaxCacheSize = 65536 / 8 // 32MB max
 )
 
 // NewPageCache creates a new Page cache with the specified maximum size
@@ -101,15 +101,10 @@ func (c *PageCache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 
 	// Append to versions list (maintains sorted order if txnID is monotonic)
 	c.entries[pageID] = append(c.entries[pageID], entry)
-
-	// Count total entries across all versions
-	totalEntries := 0
-	for _, versions := range c.entries {
-		totalEntries += len(versions)
-	}
+	c.totalEntries.Add(1)
 
 	// Trigger batch eviction if at or over limit
-	if totalEntries >= c.maxSize {
+	if int(c.totalEntries.Load()) >= c.maxSize {
 		c.evictToWaterMark()
 	}
 }
@@ -190,6 +185,7 @@ func (c *PageCache) Invalidate(pageID base.PageID) {
 	}
 
 	// Remove all versions from LRU list
+	numVersions := len(versions)
 	for _, entry := range versions {
 		if entry.lruElement != nil {
 			c.lruList.Remove(entry.lruElement)
@@ -199,6 +195,7 @@ func (c *PageCache) Invalidate(pageID base.PageID) {
 
 	// Remove PageID entirely from cache
 	delete(c.entries, pageID)
+	c.totalEntries.Add(-int64(numVersions))
 }
 
 // EvictCheckpointed removes Page versions that have been checkpointed to disk
@@ -228,6 +225,7 @@ func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
 				}
 				evicted++
 				c.evictions.Add(1)
+				c.totalEntries.Add(-1)
 			} else {
 				// Keep version (either in wal only or needed by reader)
 				keep = append(keep, entry)
@@ -522,6 +520,7 @@ func (c *PageCache) removeEntry(entry *versionEntry) {
 		delete(c.entries, entry.pageID)
 	}
 
+	c.totalEntries.Add(-1)
 	c.evictions.Add(1)
 }
 
@@ -531,9 +530,8 @@ func (c *PageCache) evictToWaterMark() {
 	target := c.lowWater
 	attempts := 0
 	maxAttempts := c.maxSize * 2
-	totalEntries := c.countEntries()
 
-	for totalEntries > target && attempts < maxAttempts {
+	for int(c.totalEntries.Load()) > target && attempts < maxAttempts {
 		elem := c.lruList.Back()
 		if elem == nil {
 			break
@@ -560,8 +558,7 @@ func (c *PageCache) evictToWaterMark() {
 			continue
 		}
 
-		// Evict
+		// Evict (removeEntry decrements totalEntries atomically)
 		c.removeEntry(entry)
-		totalEntries--
 	}
 }
