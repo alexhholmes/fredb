@@ -7,6 +7,7 @@ import (
 	"unsafe"
 
 	"fredb/internal/base"
+	"fredb/internal/directio"
 )
 
 // PageManager implements PageManager with disk-based storage
@@ -14,6 +15,9 @@ type PageManager struct {
 	mu   sync.Mutex // Protects meta and freelist access
 	file *os.File
 	meta base.MetaPage
+
+	// Direct I/O buffer pool
+	bufPool *sync.Pool // Pool of aligned []byte buffers for direct I/O
 
 	// Freelist tracking
 	freePages        []base.PageID            // sorted array of free Page IDs
@@ -26,8 +30,8 @@ type PageManager struct {
 
 // NewPageManager opens or creates a database file
 func NewPageManager(path string) (*PageManager, error) {
-	// Open file with read/write, create if not exists
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+	// Use directio.OpenFile - falls back to regular I/O on unsupported platforms
+	file, err := directio.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -37,6 +41,11 @@ func NewPageManager(path string) (*PageManager, error) {
 		freePages:   make([]base.PageID, 0),
 		pendingFree: make(map[uint64][]base.PageID),
 		relocations: make(map[base.PageID]map[uint64]base.PageID),
+		bufPool: &sync.Pool{
+			New: func() interface{} {
+				return directio.AlignedBlock(base.PageSize)
+			},
+		},
 	}
 
 	// Check if new file (empty)
@@ -75,8 +84,13 @@ func (pm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
 	defer pm.mu.Unlock()
 
 	offset := int64(id) * base.PageSize
-	page1 := &base.Page{}
-	n, err := pm.file.ReadAt(page1.Data[:], offset)
+	page := &base.Page{}
+
+	// Get aligned buffer from pool
+	buf := pm.bufPool.Get().([]byte)
+	defer pm.bufPool.Put(buf)
+
+	n, err := pm.file.ReadAt(buf, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +98,10 @@ func (pm *PageManager) ReadPageAtUnsafe(id base.PageID) (*base.Page, error) {
 		return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, base.PageSize)
 	}
 
-	return page1, nil
+	// Copy from aligned buffer to page
+	copy(page.Data[:], buf)
+
+	return page, nil
 }
 
 // WritePage writes a Page to a specific offset (with locking)
@@ -339,7 +356,7 @@ func (pm *PageManager) initializeNewDB() error {
 	}
 
 	// Write empty freelist to Page 2
-	var freelistPages []*base.Page
+	freelistPages := []*base.Page{&base.Page{}}
 	pm.serializeFreelist(freelistPages)
 	if err := pm.WritePage(2, freelistPages[0]); err != nil {
 		return err
@@ -412,9 +429,17 @@ func (pm *PageManager) readPageAt(id base.PageID) (*base.Page, error) {
 }
 
 // writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)
-func (pm *PageManager) writePageAtUnsafe(id base.PageID, page1 *base.Page) error {
+func (pm *PageManager) writePageAtUnsafe(id base.PageID, page *base.Page) error {
 	offset := int64(id) * base.PageSize
-	n, err := pm.file.WriteAt(page1.Data[:], offset)
+
+	// Get aligned buffer from pool
+	buf := pm.bufPool.Get().([]byte)
+	defer pm.bufPool.Put(buf)
+
+	// Copy page to aligned buffer
+	copy(buf, page.Data[:])
+
+	n, err := pm.file.WriteAt(buf, offset)
 	if err != nil {
 		return err
 	}

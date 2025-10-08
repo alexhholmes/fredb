@@ -555,7 +555,7 @@ func TestCursorSeekFirstFunction(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// SeekFirst() should position at first key
-	if err := cursor.SeekFirst(); err != nil {
+	if err := cursor.First(); err != nil {
 		t.Fatalf("SeekFirst() failed: %v", err)
 	}
 
@@ -591,7 +591,7 @@ func TestCursorSeekLastFunction(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// SeekLast() positions at last key
-	if err := cursor.SeekLast(); err != nil {
+	if err := cursor.Last(); err != nil {
 		t.Fatalf("SeekLast() failed: %v", err)
 	}
 
@@ -627,7 +627,7 @@ func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// SeekFirst() on empty tree
-	if err := cursor.SeekFirst(); err != nil {
+	if err := cursor.First(); err != nil {
 		t.Fatalf("SeekFirst() failed: %v", err)
 	}
 
@@ -636,7 +636,7 @@ func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 	}
 
 	// SeekLast() on empty tree
-	if err := cursor.SeekLast(); err != nil {
+	if err := cursor.Last(); err != nil {
 		t.Fatalf("SeekLast() failed: %v", err)
 	}
 
