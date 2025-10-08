@@ -76,7 +76,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		return nil, err
 	}
 
-	c := cache.NewPageCache(opts.maxCacheSizeMB, pager)
+	c := cache.NewPageCache(opts.maxCacheSizeMB*256, pager)
 
 	bt, err := newTree(pager, c)
 	if err != nil {

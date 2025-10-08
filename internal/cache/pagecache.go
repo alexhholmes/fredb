@@ -57,12 +57,11 @@ const (
 
 // NewPageCache creates a new Page cache with the specified maximum size
 func NewPageCache(maxSize int, pagemanager *storage.PageManager) *PageCache {
-	if maxSize < MinCacheSize {
-		maxSize = MinCacheSize
-	}
-	if maxSize > MaxCacheSize {
+	if maxSize == 0 {
 		maxSize = MaxCacheSize
 	}
+	maxSize = max(maxSize, MinCacheSize)
+	maxSize = min(maxSize, MaxCacheSize)
 
 	return &PageCache{
 		maxSize:  maxSize,
