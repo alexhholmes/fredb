@@ -1,9 +1,11 @@
 package fredb
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"fredb/internal/base"
 )
@@ -18,38 +20,24 @@ func TestBTreeBasicOps(t *testing.T) {
 
 	// Insert key-value pair
 	err := db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Errorf("Failed to set key1: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// get existing key
 	val, err := db.Get([]byte("key1"))
-	if err != nil {
-		t.Errorf("Failed to get key1: %v", err)
-	}
-	if string(val) != "value1" {
-		t.Errorf("Expected value1, got %s", string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "value1", string(val))
 
 	// Update existing key
 	err = db.Set([]byte("key1"), []byte("value2"))
-	if err != nil {
-		t.Errorf("Failed to update key1: %v", err)
-	}
+	assert.NoError(t, err)
 
 	val, err = db.Get([]byte("key1"))
-	if err != nil {
-		t.Errorf("Failed to get updated key1: %v", err)
-	}
-	if string(val) != "value2" {
-		t.Errorf("Expected value2 after update, got %s", string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "value2", string(val))
 
 	// get non-existent key (should return ErrKeyNotFound)
 	_, err = db.Get([]byte("nonexistent"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound, got %v", err)
-	}
+	assert.Equal(t, ErrKeyNotFound, err)
 }
 
 func TestBTreeUpdate(t *testing.T) {
@@ -60,24 +48,16 @@ func TestBTreeUpdate(t *testing.T) {
 
 	// Insert key with value1
 	err := db.Set([]byte("testkey"), []byte("value1"))
-	if err != nil {
-		t.Errorf("Failed to set testkey: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Update same key with value2
 	err = db.Set([]byte("testkey"), []byte("value2"))
-	if err != nil {
-		t.Errorf("Failed to update testkey: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Verify get returns value2
 	val, err := db.Get([]byte("testkey"))
-	if err != nil {
-		t.Errorf("Failed to get testkey: %v", err)
-	}
-	if string(val) != "value2" {
-		t.Errorf("Expected value2, got %s", string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "value2", string(val))
 
 	// Insert more Keys to ensure no duplication
 	for i := 0; i < 10; i++ {
@@ -88,17 +68,11 @@ func TestBTreeUpdate(t *testing.T) {
 
 	// Update the original key again
 	err = db.Set([]byte("testkey"), []byte("value3"))
-	if err != nil {
-		t.Errorf("Failed to update testkey again: %v", err)
-	}
+	assert.NoError(t, err)
 
 	val, err = db.Get([]byte("testkey"))
-	if err != nil {
-		t.Errorf("Failed to get testkey after second update: %v", err)
-	}
-	if string(val) != "value3" {
-		t.Errorf("Expected value3, got %s", string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "value3", string(val))
 }
 
 // Node Splitting Tests
@@ -117,30 +91,20 @@ func TestBTreeSplitting(t *testing.T) {
 		keys[key] = value
 
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	if db.store.root.IsLeaf {
-		t.Errorf("Root should not be a leaf after splitting")
-	}
+	assert.False(t, db.store.root.IsLeaf, "Root should not be a leaf after splitting")
 
 	// Check tree height increases (root should have Children)
-	if len(db.store.root.Children) == 0 {
-		t.Errorf("Root should have Children after splitting")
-	}
+	assert.NotEmpty(t, db.store.root.Children, "Root should have Children after splitting")
 
 	// Verify all Keys still retrievable
 	for key, expectedValue := range keys {
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to get %s after split: %v", key, err)
-			continue
-		}
-		if string(val) != expectedValue {
-			t.Errorf("For key %s, expected %s, got %s", key, expectedValue, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, expectedValue, string(val))
 		}
 	}
 }
@@ -161,30 +125,20 @@ func TestBTreeMultipleSplits(t *testing.T) {
 		keys[key] = value
 
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify tree structure remains valid (root is not a leaf for large tree)
-	if db.store.root.IsLeaf {
-		t.Errorf("Root should not be a leaf after multiple splits")
-	}
+	assert.False(t, db.store.root.IsLeaf, "Root should not be a leaf after multiple splits")
 
 	// Verify root has multiple Children
-	if len(db.store.root.Children) < 2 {
-		t.Errorf("Root should have multiple Children after multiple splits, got %d", len(db.store.root.Children))
-	}
+	assert.GreaterOrEqual(t, len(db.store.root.Children), 2, "Root should have multiple Children after multiple splits")
 
 	// All Keys retrievable
 	for key, expectedValue := range keys {
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to get %s after multiple splits: %v", key, err)
-			continue
-		}
-		if string(val) != expectedValue {
-			t.Errorf("For key %s, expected %s, got %s", key, expectedValue, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, expectedValue, string(val))
 		}
 	}
 
@@ -192,17 +146,11 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	testKey := []byte("test_after_splits")
 	testValue := []byte("test_value")
 	err := db.Set(testKey, testValue)
-	if err != nil {
-		t.Errorf("Failed to insert after multiple splits: %v", err)
-	}
+	assert.NoError(t, err)
 
 	val, err := db.Get(testKey)
-	if err != nil {
-		t.Errorf("Failed to get test key after multiple splits: %v", err)
-	}
-	if string(val) != string(testValue) {
-		t.Errorf("Expected %s, got %s", string(testValue), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(testValue), string(val))
 }
 
 // Sequential vs Random Insert Tests
@@ -220,9 +168,7 @@ func TestSequentialInsert(t *testing.T) {
 		value := fmt.Sprintf("value%08d", i)
 
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify all retrievable
@@ -231,12 +177,8 @@ func TestSequentialInsert(t *testing.T) {
 		expectedValue := fmt.Sprintf("value%08d", i)
 
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to get %s: %v", key, err)
-			continue
-		}
-		if string(val) != expectedValue {
-			t.Errorf("For key %s, expected %s, got %s", key, expectedValue, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, expectedValue, string(val))
 		}
 	}
 
@@ -278,20 +220,14 @@ func TestRandomInsert(t *testing.T) {
 		keys[key] = value
 
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify all retrievable
 	for key, expectedValue := range keys {
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to get %s: %v", key, err)
-			continue
-		}
-		if string(val) != expectedValue {
-			t.Errorf("For key %s, expected %s, got %s", key, expectedValue, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, expectedValue, string(val))
 		}
 	}
 
@@ -320,9 +256,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 		value := fmt.Sprintf("value%08d", i)
 
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify all retrievable
@@ -331,12 +265,8 @@ func TestReverseSequentialInsert(t *testing.T) {
 		expectedValue := fmt.Sprintf("value%08d", i)
 
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to get %s: %v", key, err)
-			continue
-		}
-		if string(val) != expectedValue {
-			t.Errorf("For key %s, expected %s, got %s", key, expectedValue, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, expectedValue, string(val))
 		}
 	}
 
@@ -366,60 +296,42 @@ func TestBTreeDelete(t *testing.T) {
 	keys := []string{"key1", "key2", "key3", "key4", "key5"}
 	for _, k := range keys {
 		err := db.Set([]byte(k), []byte("value-"+k))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", k, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Delete middle key
 	err := db.Delete([]byte("key3"))
-	if err != nil {
-		t.Errorf("Failed to delete key3: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Verify key3 is gone
 	_, err = db.Get([]byte("key3"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for deleted key3, got %v", err)
-	}
+	assert.Equal(t, ErrKeyNotFound, err)
 
 	// Verify other Keys still exist
 	for _, k := range []string{"key1", "key2", "key4", "key5"} {
 		val, err := db.Get([]byte(k))
-		if err != nil {
-			t.Errorf("Failed to get %s after delete: %v", k, err)
-		}
-		if string(val) != "value-"+k {
-			t.Errorf("Wrong value for %s: got %s", k, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, "value-"+k, string(val))
 		}
 	}
 
 	// Delete first key
 	err = db.Delete([]byte("key1"))
-	if err != nil {
-		t.Errorf("Failed to delete key1: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Delete last key
 	err = db.Delete([]byte("key5"))
-	if err != nil {
-		t.Errorf("Failed to delete key5: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Delete non-existent key
 	err = db.Delete([]byte("nonexistent"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
-	}
+	assert.Equal(t, ErrKeyNotFound, err)
 
 	// Verify remaining Keys
 	for _, k := range []string{"key2", "key4"} {
 		val, err := db.Get([]byte(k))
-		if err != nil {
-			t.Errorf("Failed to get %s: %v", k, err)
-		}
-		if string(val) != "value-"+k {
-			t.Errorf("Wrong value for %s: got %s", k, string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, "value-"+k, string(val))
 		}
 	}
 }
@@ -436,35 +348,26 @@ func TestBTreeDeleteAll(t *testing.T) {
 		key := fmt.Sprintf("key%04d", i)
 		value := fmt.Sprintf("value%04d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Delete all Keys in order
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to delete %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 
 		// Verify deleted
 		_, err = db.Get([]byte(key))
-		if err != ErrKeyNotFound {
-			t.Errorf("Key %s should be deleted, got %v", key, err)
-		}
+		assert.Equal(t, ErrKeyNotFound, err)
 
 		// Verify remaining Keys still exist
 		for j := i + 1; j < numKeys && j < i+5; j++ {
 			checkKey := fmt.Sprintf("key%04d", j)
 			val, err := db.Get([]byte(checkKey))
-			if err != nil {
-				t.Errorf("Key %s should still exist: %v", checkKey, err)
-			}
-			expectedVal := fmt.Sprintf("value%04d", j)
-			if string(val) != expectedVal {
-				t.Errorf("Wrong value for %s: got %s, expected %s", checkKey, string(val), expectedVal)
+			if assert.NoError(t, err) {
+				expectedVal := fmt.Sprintf("value%04d", j)
+				assert.Equal(t, expectedVal, string(val))
 			}
 		}
 	}
@@ -473,9 +376,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
 		_, err := db.Get([]byte(key))
-		if err != ErrKeyNotFound {
-			t.Errorf("Key %s should not exist in empty tree", key)
-		}
+		assert.Equal(t, ErrKeyNotFound, err)
 	}
 }
 
@@ -491,9 +392,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Check initial tree structure
@@ -505,9 +404,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to delete %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
@@ -517,18 +414,12 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 		// Verify key is deleted
 		_, err = db.Get([]byte(key))
-		if err != ErrKeyNotFound {
-			t.Errorf("Key %s should be deleted", key)
-		}
+		assert.Equal(t, ErrKeyNotFound, err)
 	}
 
 	// Final tree should be empty
-	if db.store.root.NumKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
-	}
-	if !db.store.root.IsLeaf {
-		t.Errorf("Empty tree root should be leaf")
-	}
+	assert.Equal(t, uint16(0), db.store.root.NumKeys, "Tree should be empty")
+	assert.True(t, db.store.root.IsLeaf, "Empty tree root should be leaf")
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
@@ -550,9 +441,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 			value := fmt.Sprintf("value%06d", i)
 			keys[i] = key
 			err := db.Set([]byte(key), []byte(value))
-			if err != nil {
-				t.Errorf("Failed to set %s: %v", key, err)
-			}
+			assert.NoError(t, err)
 		}
 
 		// Check initial tree structure
@@ -578,9 +467,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 		for i, idx := range deleteOrder {
 			key := keys[idx]
 			err := db.Delete([]byte(key))
-			if err != nil {
-				t.Errorf("Failed to delete %s: %v", key, err)
-			}
+			assert.NoError(t, err)
 			deleted[key] = true
 
 			// Log tree structure changes at key points
@@ -591,21 +478,16 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 			// Verify deleted key is gone
 			_, err = db.Get([]byte(key))
-			if err != ErrKeyNotFound {
-				t.Errorf("Key %s should be deleted", key)
-			}
+			assert.Equal(t, ErrKeyNotFound, err)
 
 			// Verify some non-deleted Keys still exist (spot active)
 			checked := 0
 			for _, k := range keys {
 				if !deleted[k] && checked < 5 {
 					val, err := db.Get([]byte(k))
-					if err != nil {
-						t.Errorf("Key %s should still exist: %v", k, err)
-					}
-					expectedVal := "value" + k[3:] // Concatenate value prefix with key suffix
-					if string(val) != expectedVal {
-						t.Errorf("Wrong value for %s: got %s", k, string(val))
+					if assert.NoError(t, err) {
+						expectedVal := "value" + k[3:] // Concatenate value prefix with key suffix
+						assert.Equal(t, expectedVal, string(val))
 					}
 					checked++
 				}
@@ -613,12 +495,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Final tree should be empty
-		if db.store.root.NumKeys != 0 {
-			t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
-		}
-		if !db.store.root.IsLeaf {
-			t.Errorf("Empty tree root should be leaf")
-		}
+		assert.Equal(t, uint16(0), db.store.root.NumKeys, "Tree should be empty")
+		assert.True(t, db.store.root.IsLeaf, "Empty tree root should be leaf")
 
 		// close database after each iteration
 		db.Close()
@@ -637,9 +515,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Check initial tree structure
@@ -649,9 +525,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	for i := numKeys - 1; i >= 0; i-- {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Errorf("Failed to delete %s: %v", key, err)
-		}
+		assert.NoError(t, err)
 
 		// Log tree structure at key points
 		deletedCount := numKeys - i
@@ -662,15 +536,11 @@ func TestBTreeReverseDelete(t *testing.T) {
 
 		// Verify key is deleted
 		_, err = db.Get([]byte(key))
-		if err != ErrKeyNotFound {
-			t.Errorf("Key %s should be deleted", key)
-		}
+		assert.Equal(t, ErrKeyNotFound, err)
 	}
 
 	// Final tree should be empty
-	if db.store.root.NumKeys != 0 {
-		t.Errorf("Tree should be empty, but root has %d Keys", db.store.root.NumKeys)
-	}
+	assert.Equal(t, uint16(0), db.store.root.NumKeys, "Tree should be empty")
 }
 
 // Stress Tests
@@ -729,9 +599,7 @@ func TestEmptyTree(t *testing.T) {
 
 	// get from empty tree (should return ErrKeyNotFound)
 	_, err := db.Get([]byte("nonexistent"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound from empty tree, got %v", err)
-	}
+	assert.Equal(t, ErrKeyNotFound, err)
 
 	// Try multiple different Keys on empty tree
 	testKeys := [][]byte{
@@ -743,9 +611,7 @@ func TestEmptyTree(t *testing.T) {
 
 	for _, key := range testKeys {
 		_, err = db.Get(key)
-		if err != ErrKeyNotFound {
-			t.Errorf("Expected ErrKeyNotFound for key %v, got %v", key, err)
-		}
+		assert.Equal(t, ErrKeyNotFound, err)
 	}
 }
 
@@ -760,47 +626,29 @@ func TestSingleKey(t *testing.T) {
 	testValue := []byte("single_value")
 
 	err := db.Set(testKey, testValue)
-	if err != nil {
-		t.Errorf("Failed to set single key: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// get that key
 	val, err := db.Get(testKey)
-	if err != nil {
-		t.Errorf("Failed to get single key: %v", err)
-	}
-	if string(val) != string(testValue) {
-		t.Errorf("Expected %s, got %s", string(testValue), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(testValue), string(val))
 
 	// get non-existent key
 	_, err = db.Get([]byte("nonexistent"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
-	}
+	assert.Equal(t, ErrKeyNotFound, err)
 
 	// Update the key
 	newValue := []byte("updated_value")
 	err = db.Set(testKey, newValue)
-	if err != nil {
-		t.Errorf("Failed to update single key: %v", err)
-	}
+	assert.NoError(t, err)
 
 	val, err = db.Get(testKey)
-	if err != nil {
-		t.Errorf("Failed to get updated single key: %v", err)
-	}
-	if string(val) != string(newValue) {
-		t.Errorf("Expected %s after update, got %s", string(newValue), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(newValue), string(val))
 
 	// Verify tree is still a leaf (single key shouldn't cause split)
-	if !db.store.root.IsLeaf {
-		t.Errorf("Root should be a leaf with single key")
-	}
-	if db.store.root.NumKeys != 1 {
-		t.Errorf("Root should have exactly 1 key, got %d", db.store.root.NumKeys)
-	}
+	assert.True(t, db.store.root.IsLeaf, "Root should be a leaf with single key")
+	assert.Equal(t, uint16(1), db.store.root.NumKeys, "Root should have exactly 1 key")
 }
 
 func TestDuplicateKeys(t *testing.T) {
@@ -816,33 +664,21 @@ func TestDuplicateKeys(t *testing.T) {
 
 	// Insert key with value1
 	err := db.Set(key, value1)
-	if err != nil {
-		t.Errorf("Failed to set key: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Verify value1 is stored
 	val, err := db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get key: %v", err)
-	}
-	if string(val) != string(value1) {
-		t.Errorf("Expected %s, got %s", string(value1), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(value1), string(val))
 
 	// Insert same key with value2
 	err = db.Set(key, value2)
-	if err != nil {
-		t.Errorf("Failed to update key: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Verify only one entry exists with value2
 	val, err = db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get updated key: %v", err)
-	}
-	if string(val) != string(value2) {
-		t.Errorf("Expected %s after update, got %s", string(value2), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(value2), string(val))
 
 	// Add more Keys to ensure tree structure
 	for i := 0; i < 10; i++ {
@@ -853,17 +689,11 @@ func TestDuplicateKeys(t *testing.T) {
 
 	// Update original key again with value3
 	err = db.Set(key, value3)
-	if err != nil {
-		t.Errorf("Failed to update key again: %v", err)
-	}
+	assert.NoError(t, err)
 
 	val, err = db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get key after second update: %v", err)
-	}
-	if string(val) != string(value3) {
-		t.Errorf("Expected %s after second update, got %s", string(value3), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(value3), string(val))
 }
 
 func TestBinaryKeys(t *testing.T) {
@@ -890,20 +720,14 @@ func TestBinaryKeys(t *testing.T) {
 	// Insert all binary Keys
 	for _, td := range testData {
 		err := db.Set(td.key, td.value)
-		if err != nil {
-			t.Errorf("Failed to set %s: %v", td.desc, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify correct retrieval
 	for _, td := range testData {
 		val, err := db.Get(td.key)
-		if err != nil {
-			t.Errorf("Failed to get %s: %v", td.desc, err)
-			continue
-		}
-		if string(val) != string(td.value) {
-			t.Errorf("For %s, expected %s, got %s", td.desc, string(td.value), string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, string(td.value), string(val))
 		}
 	}
 
@@ -918,14 +742,12 @@ func TestBinaryKeys(t *testing.T) {
 
 	// Both should be retrievable
 	v, err := db.Get(key1)
-	if err != nil || string(v) != string(val1) {
-		t.Errorf("Binary ordering test failed for key1")
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(val1), string(v))
 
 	v, err = db.Get(key2)
-	if err != nil || string(v) != string(val2) {
-		t.Errorf("Binary ordering test failed for key2")
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(val2), string(v))
 }
 
 func TestZeroLengthKeys(t *testing.T) {
@@ -939,18 +761,12 @@ func TestZeroLengthKeys(t *testing.T) {
 	emptyValue := []byte("empty_key_value")
 
 	err := db.Set(emptyKey, emptyValue)
-	if err != nil {
-		t.Errorf("Failed to set empty key: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Retrieve empty key
 	val, err := db.Get(emptyKey)
-	if err != nil {
-		t.Errorf("Failed to get empty key: %v", err)
-	}
-	if string(val) != string(emptyValue) {
-		t.Errorf("Expected %s for empty key, got %s", string(emptyValue), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(emptyValue), string(val))
 
 	// Mix with non-empty Keys
 	normalKeys := []struct {
@@ -965,29 +781,19 @@ func TestZeroLengthKeys(t *testing.T) {
 
 	for _, kv := range normalKeys {
 		err := db.Set(kv.key, kv.value)
-		if err != nil {
-			t.Errorf("Failed to set key %v: %v", kv.key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify empty key was updated
 	val, err = db.Get(emptyKey)
-	if err != nil {
-		t.Errorf("Failed to get empty key after update: %v", err)
-	}
-	if string(val) != "another_empty" {
-		t.Errorf("Expected 'another_empty' for empty key, got %s", string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "another_empty", string(val))
 
 	// Verify all Keys are retrievable
 	for _, kv := range normalKeys {
 		val, err := db.Get(kv.key)
-		if err != nil {
-			t.Errorf("Failed to get key %v: %v", kv.key, err)
-			continue
-		}
-		if string(val) != string(kv.value) {
-			t.Errorf("For key %v, expected %s, got %s", kv.key, string(kv.value), string(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, string(kv.value), string(val))
 		}
 	}
 }
@@ -1003,18 +809,12 @@ func TestZeroLengthValues(t *testing.T) {
 	emptyValue := []byte{}
 
 	err := db.Set(key, emptyValue)
-	if err != nil {
-		t.Errorf("Failed to set key with empty value: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Retrieve and verify empty value
 	val, err := db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get key with empty value: %v", err)
-	}
-	if len(val) != 0 {
-		t.Errorf("Expected empty value, got %v with length %d", val, len(val))
-	}
+	assert.NoError(t, err)
+	assert.Empty(t, val)
 
 	// Mix empty and non-empty Values
 	testData := []struct {
@@ -1030,21 +830,14 @@ func TestZeroLengthValues(t *testing.T) {
 
 	for _, td := range testData {
 		err := db.Set(td.key, td.value)
-		if err != nil {
-			t.Errorf("Failed to set key %s: %v", string(td.key), err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Verify all Values are correctly stored
 	for _, td := range testData {
 		val, err := db.Get(td.key)
-		if err != nil {
-			t.Errorf("Failed to get key %s: %v", string(td.key), err)
-			continue
-		}
-		if string(val) != string(td.value) {
-			t.Errorf("For key %s, expected value length %d, got length %d",
-				string(td.key), len(td.value), len(val))
+		if assert.NoError(t, err) {
+			assert.Equal(t, string(td.value), string(val))
 		}
 	}
 
@@ -1053,20 +846,15 @@ func TestZeroLengthValues(t *testing.T) {
 	db.Set(updateKey, []byte("initial_value"))
 
 	val, err = db.Get(updateKey)
-	if err != nil || string(val) != "initial_value" {
-		t.Errorf("Failed initial value setup")
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "initial_value", string(val))
 
 	// Update to empty value
 	db.Set(updateKey, []byte{})
 
 	val, err = db.Get(updateKey)
-	if err != nil {
-		t.Errorf("Failed to get key after updating to empty value: %v", err)
-	}
-	if len(val) != 0 {
-		t.Errorf("Expected empty value after update, got %v", val)
-	}
+	assert.NoError(t, err)
+	assert.Empty(t, val)
 }
 
 func TestPageOverflowLargeKey(t *testing.T) {
@@ -1082,9 +870,7 @@ func TestPageOverflowLargeKey(t *testing.T) {
 	value := []byte("small_value")
 
 	err := db.Set(largeKey, value)
-	if err != ErrKeyTooLarge {
-		t.Errorf("Expected ErrKeyTooLarge for large key, got: %v", err)
-	}
+	assert.Equal(t, ErrKeyTooLarge, err)
 }
 
 func TestPageOverflowLargeValue(t *testing.T) {
@@ -1101,9 +887,7 @@ func TestPageOverflowLargeValue(t *testing.T) {
 	}
 
 	err := db.Set(key, largeValue)
-	if err != ErrPageOverflow {
-		t.Errorf("Expected ErrPageOverflow for large value, got: %v", err)
-	}
+	assert.Equal(t, ErrPageOverflow, err)
 }
 
 func TestPageOverflowCombinedSize(t *testing.T) {
@@ -1123,9 +907,7 @@ func TestPageOverflowCombinedSize(t *testing.T) {
 	}
 
 	err := db.Set(key, value)
-	if err != ErrPageOverflow {
-		t.Errorf("Expected ErrPageOverflow for combined size, got: %v", err)
-	}
+	assert.Equal(t, ErrPageOverflow, err)
 }
 
 func TestPageOverflowBoundary(t *testing.T) {
@@ -1152,18 +934,12 @@ func TestPageOverflowBoundary(t *testing.T) {
 	}
 
 	err := db.Set(key, value)
-	if err != nil {
-		t.Errorf("Should fit in Page, got error: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Verify we can retrieve it
 	retrieved, err := db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get key after boundary insert: %v", err)
-	}
-	if len(retrieved) != valueSize {
-		t.Errorf("Retrieved value wrong size: expected %d, got %d", valueSize, len(retrieved))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, valueSize, len(retrieved))
 }
 
 func TestPageOverflowMaxKeyValue(t *testing.T) {
@@ -1184,18 +960,12 @@ func TestPageOverflowMaxKeyValue(t *testing.T) {
 	}
 
 	err := db.Set(key, value)
-	if err != nil {
-		t.Errorf("Max size key+value should fit, got error: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Verify retrieval
 	retrieved, err := db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get max size key: %v", err)
-	}
-	if !bytes.Equal(retrieved, value) {
-		t.Error("Retrieved value doesn't match for max size")
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, value, retrieved)
 }
 
 func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
@@ -1209,9 +979,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
 	// Delete until we have a Node with exactly MinKeysPerNode=64 Keys
@@ -1220,21 +988,16 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Fatalf("Failed to delete key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
 	// Verify remaining Keys exist
 	for i := deleteCount; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Key %s should still exist: %v", key, err)
-		}
-		expectedValue := fmt.Sprintf("value%06d", i)
-		if string(val) != expectedValue {
-			t.Errorf("Wrong value for %s", key)
+		if assert.NoError(t, err) {
+			expectedValue := fmt.Sprintf("value%06d", i)
+			assert.Equal(t, expectedValue, string(val))
 		}
 	}
 
@@ -1251,25 +1014,19 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
 	deleteCount := numKeys - base.MinKeysPerNode - 1
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Fatalf("Failed to delete key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
 	key := fmt.Sprintf("key%06d", deleteCount)
 	err := db.Delete([]byte(key))
-	if err != nil {
-		t.Fatalf("Failed to trigger underflow: %v", err)
-	}
+	require.NoError(t, err)
 
 	remainingKeys := numKeys - deleteCount - 1
 	t.Logf("Remaining Keys after underflow: %d", remainingKeys)
@@ -1277,9 +1034,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 	for i := deleteCount + 1; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Key %s should exist after underflow: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 }
 
@@ -1293,42 +1048,28 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
 	// After MaxKeysPerNode Keys, root should be full but still a leaf
-	if !db.store.root.IsLeaf {
-		t.Error("Root should still be leaf with MaxKeysPerNode Keys")
-	}
-	if db.store.root.NumKeys != base.MaxKeysPerNode {
-		t.Errorf("Expected %d Keys, got %d", base.MaxKeysPerNode, db.store.root.NumKeys)
-	}
+	assert.True(t, db.store.root.IsLeaf, "Root should still be leaf with MaxKeysPerNode Keys")
+	assert.Equal(t, base.MaxKeysPerNode, int(db.store.root.NumKeys))
 
 	// Insert one more key (65th key) to trigger split
 	splitKey := fmt.Sprintf("key%06d", base.MaxKeysPerNode)
 	splitValue := fmt.Sprintf("value%06d", base.MaxKeysPerNode)
 	err := db.Set([]byte(splitKey), []byte(splitValue))
-	if err != nil {
-		t.Fatalf("Failed to trigger split: %v", err)
-	}
+	require.NoError(t, err)
 
 	// After inserting MaxKeysPerNode+1 Keys, root should be branch
-	if db.store.root.IsLeaf {
-		t.Error("Root should be branch after split")
-	}
-	if len(db.store.root.Children) < 2 {
-		t.Errorf("Root should have at least 2 Children after split, got %d", len(db.store.root.Children))
-	}
+	assert.False(t, db.store.root.IsLeaf, "Root should be branch after split")
+	assert.GreaterOrEqual(t, len(db.store.root.Children), 2, "Root should have at least 2 Children after split")
 
 	// Verify all Keys retrievable
 	for i := 0; i <= base.MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Key %s not found after split: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 }
 
@@ -1342,14 +1083,10 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
-	if db.store.root.IsLeaf {
-		t.Fatal("Root should be branch Node")
-	}
+	require.False(t, db.store.root.IsLeaf, "Root should be branch Node")
 
 	initialRootKeys := db.store.root.NumKeys
 	t.Logf("Initial root Keys: %d", initialRootKeys)
@@ -1357,9 +1094,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Fatalf("Failed to delete key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 
 		if i%(numKeys/4) == 0 {
 			t.Logf("After %d deletions: root.IsLeaf=%v, root.NumKeys=%d",
@@ -1367,12 +1102,8 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		}
 	}
 
-	if !db.store.root.IsLeaf {
-		t.Error("Final root should be leaf")
-	}
-	if db.store.root.NumKeys != 0 {
-		t.Errorf("Final root should have 0 Keys, got %d", db.store.root.NumKeys)
-	}
+	assert.True(t, db.store.root.IsLeaf, "Final root should be leaf")
+	assert.Equal(t, uint16(0), db.store.root.NumKeys, "Final root should have 0 Keys")
 }
 
 func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
@@ -1385,14 +1116,10 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
-	if db.store.root.IsLeaf {
-		t.Fatal("Root should not be leaf for this test")
-	}
+	require.False(t, db.store.root.IsLeaf, "Root should not be leaf for this test")
 
 	t.Logf("Tree structure: root.NumKeys=%d, root.Children=%d",
 		db.store.root.NumKeys, len(db.store.root.Children))
@@ -1401,17 +1128,13 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 	for i := 0; i < deleteCount; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		err := db.Delete([]byte(key))
-		if err != nil {
-			t.Fatalf("Failed to delete key %d: %v", i, err)
-		}
+		require.NoError(t, err)
 	}
 
 	for i := deleteCount; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Key %s should exist: %v", key, err)
-		}
+		assert.NoError(t, err)
 	}
 
 	t.Logf("After deletions: root.IsLeaf=%v, root.NumKeys=%d",

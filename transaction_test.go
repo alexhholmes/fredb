@@ -5,6 +5,9 @@ import (
 	"os"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTxBasicOperations(t *testing.T) {
@@ -14,9 +17,7 @@ func TestTxBasicOperations(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Test Update (write transaction)
@@ -31,9 +32,7 @@ func TestTxBasicOperations(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("Update failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Test View (read transaction)
 	err = db.View(func(tx *Tx) error {
@@ -41,22 +40,16 @@ func TestTxBasicOperations(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if string(val) != "value1" {
-			t.Errorf("Expected value1, got %s", string(val))
-		}
+		assert.Equal(t, "value1", string(val))
 
 		val, err = tx.Get([]byte("key2"))
 		if err != nil {
 			return err
 		}
-		if string(val) != "value2" {
-			t.Errorf("Expected value2, got %s", string(val))
-		}
+		assert.Equal(t, "value2", string(val))
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("View failed: %v", err)
-	}
+	require.NoError(t, err)
 }
 
 func TestTxCommitRollback(t *testing.T) {
@@ -67,24 +60,16 @@ func TestTxCommitRollback(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Test commit
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
+	require.NoError(t, err)
 	err = tx.Set([]byte("committed"), []byte("value"))
-	if err != nil {
-		t.Fatalf("Set failed: %v", err)
-	}
+	require.NoError(t, err)
 	err = tx.Commit()
-	if err != nil {
-		t.Fatalf("Commit failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Verify committed data persists
 	err = db.View(func(tx *Tx) error {
@@ -92,40 +77,26 @@ func TestTxCommitRollback(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if string(val) != "value" {
-			t.Errorf("Expected value, got %s", string(val))
-		}
+		assert.Equal(t, "value", string(val))
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("View failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Test rollback
 	tx, err = db.Begin(true)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
+	require.NoError(t, err)
 	err = tx.Set([]byte("rolled-back"), []byte("should not exist"))
-	if err != nil {
-		t.Fatalf("Set failed: %v", err)
-	}
+	require.NoError(t, err)
 	err = tx.Rollback()
-	if err != nil {
-		t.Fatalf("Rollback failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Verify rolled back data does not persist
 	err = db.View(func(tx *Tx) error {
 		_, err := tx.Get([]byte("rolled-back"))
-		if err != ErrKeyNotFound {
-			t.Errorf("Expected ErrKeyNotFound, got %v", err)
-		}
+		assert.ErrorIs(t, err, ErrKeyNotFound)
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("View failed: %v", err)
-	}
+	require.NoError(t, err)
 }
 
 func TestTxSingleWriter(t *testing.T) {
@@ -135,35 +106,25 @@ func TestTxSingleWriter(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Start first write transaction
 	tx1, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx1.Rollback()
 
 	// Try to start second write transaction (should fail)
 	_, err = db.Begin(true)
-	if err != ErrTxInProgress {
-		t.Errorf("Expected ErrTxInProgress, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrTxInProgress)
 
 	// Commit first transaction
 	err = tx1.Commit()
-	if err != nil {
-		t.Fatalf("Commit failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Now second write transaction should succeed
 	tx2, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Begin after commit should succeed: %v", err)
-	}
+	require.NoError(t, err)
 	tx2.Rollback()
 }
 
@@ -174,53 +135,40 @@ func TestTxMultipleReaders(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Insert test data
 	err = db.Update(func(tx *Tx) error {
 		return tx.Set([]byte("key"), []byte("value"))
 	})
-	if err != nil {
-		t.Fatalf("Update failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Start multiple read transactions
 	tx1, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Begin read tx1 failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx1.Rollback()
 
 	tx2, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Begin read tx2 failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx2.Rollback()
 
 	tx3, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Begin read tx3 failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx3.Rollback()
 
 	// All should read successfully
 	val1, err := tx1.Get([]byte("key"))
-	if err != nil || string(val1) != "value" {
-		t.Errorf("tx1 read failed")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "value", string(val1))
 
 	val2, err := tx2.Get([]byte("key"))
-	if err != nil || string(val2) != "value" {
-		t.Errorf("tx2 read failed")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "value", string(val2))
 
 	val3, err := tx3.Get([]byte("key"))
-	if err != nil || string(val3) != "value" {
-		t.Errorf("tx3 read failed")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "value", string(val3))
 }
 
 func TestTxWriteOnReadOnly(t *testing.T) {
@@ -230,26 +178,20 @@ func TestTxWriteOnReadOnly(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Try to write in read-only transaction
 	err = db.View(func(tx *Tx) error {
 		return tx.Set([]byte("key"), []byte("value"))
 	})
-	if err != ErrTxNotWritable {
-		t.Errorf("Expected ErrTxNotWritable, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrTxNotWritable)
 
 	// Try to delete in read-only transaction
 	err = db.View(func(tx *Tx) error {
 		return tx.Delete([]byte("key"))
 	})
-	if err != ErrTxNotWritable {
-		t.Errorf("Expected ErrTxNotWritable, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrTxNotWritable)
 }
 
 func TestTxDoneCheck(t *testing.T) {
@@ -259,46 +201,30 @@ func TestTxDoneCheck(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Test operations after commit
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
+	require.NoError(t, err)
 	err = tx.Commit()
-	if err != nil {
-		t.Fatalf("Commit failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Operations after commit should fail
 	err = tx.Set([]byte("key"), []byte("value"))
-	if err != ErrTxDone {
-		t.Errorf("Expected ErrTxDone after commit, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrTxDone)
 
 	_, err = tx.Get([]byte("key"))
-	if err != ErrTxDone {
-		t.Errorf("Expected ErrTxDone after commit, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrTxDone)
 
 	// Test operations after rollback
 	tx2, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Begin failed: %v", err)
-	}
+	require.NoError(t, err)
 	err = tx2.Rollback()
-	if err != nil {
-		t.Fatalf("Rollback failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	_, err = tx2.Get([]byte("key"))
-	if err != ErrTxDone {
-		t.Errorf("Expected ErrTxDone after rollback, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrTxDone)
 }
 
 func TestTxAutoRollback(t *testing.T) {
@@ -309,9 +235,7 @@ func TestTxAutoRollback(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Update with error should auto-rollback
@@ -322,21 +246,16 @@ func TestTxAutoRollback(t *testing.T) {
 		}
 		return fmt.Errorf("intentional error")
 	})
-	if err == nil || err.Error() != "intentional error" {
-		t.Errorf("Expected intentional error, got %v", err)
-	}
+	assert.Error(t, err)
+	assert.Equal(t, "intentional error", err.Error())
 
 	// Key should not exist (rolled back)
 	err = db.View(func(tx *Tx) error {
 		_, err := tx.Get([]byte("key"))
-		if err != ErrKeyNotFound {
-			t.Errorf("Expected ErrKeyNotFound after rollback, got %v", err)
-		}
+		assert.ErrorIs(t, err, ErrKeyNotFound)
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("View failed: %v", err)
-	}
+	require.NoError(t, err)
 }
 
 func TestTxMultipleBeginWithoutCommit(t *testing.T) {
@@ -346,56 +265,37 @@ func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Begin first write transaction
 	tx1, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Failed to begin first transaction: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Attempt to begin second write transaction without committing first
 	tx2, err := db.Begin(true)
-	if err != ErrTxInProgress {
-		t.Errorf("Expected ErrTxInProgress for second write tx, got: %v", err)
-	}
-	if tx2 != nil {
-		t.Error("Second transaction should be nil when ErrTxInProgress is returned")
-		tx2.Rollback()
-	}
+	assert.ErrorIs(t, err, ErrTxInProgress)
+	assert.Nil(t, tx2)
 
 	// First transaction should still be valid
 	testKey := []byte("test_key")
 	testValue := []byte("test_value")
 	err = tx1.Set(testKey, testValue)
-	if err != nil {
-		t.Errorf("First transaction should still be valid: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Commit first transaction
 	err = tx1.Commit()
-	if err != nil {
-		t.Errorf("Failed to commit first transaction: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Now second write transaction should succeed
 	tx3, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Failed to begin write tx after commit: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx3.Rollback()
 
 	// Verify we can access the committed data
 	val, err := tx3.Get(testKey)
-	if err != nil {
-		t.Errorf("Failed to get committed data: %v", err)
-	}
-	if string(val) != string(testValue) {
-		t.Errorf("Expected %s, got %s", string(testValue), string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, string(testValue), string(val))
 }
 
 func TestTxOperationsAfterClose(t *testing.T) {
@@ -405,35 +305,27 @@ func TestTxOperationsAfterClose(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Insert some data
 	err = db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Fatalf("Failed to set data: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Begin transaction before close
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Close database
 	err = db.Close()
-	if err != nil {
-		t.Errorf("Failed to close DB: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Operations on transaction after DB.Close() should still work
 	// because transaction captured snapshot
 	val, err := tx.Get([]byte("key1"))
 	if err != nil {
 		t.Logf("get after close returned error: %v (may be expected)", err)
-	} else if string(val) != "value1" {
-		t.Errorf("Expected value1, got %s", string(val))
+	} else {
+		assert.Equal(t, "value1", string(val))
 	}
 
 	// Rollback should not panic
@@ -444,9 +336,7 @@ func TestTxOperationsAfterClose(t *testing.T) {
 
 	// New transaction after close should fail
 	_, err = db.Begin(false)
-	if err == nil {
-		t.Error("Expected error when beginning transaction after close")
-	}
+	assert.Error(t, err)
 }
 
 func TestTxConcurrentWriteBegin(t *testing.T) {
@@ -456,16 +346,12 @@ func TestTxConcurrentWriteBegin(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Begin first write transaction
 	tx1, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Failed to begin first transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx1.Rollback()
 
 	// Launch goroutines attempting to begin write transactions
@@ -508,21 +394,15 @@ func TestTxConcurrentWriteBegin(t *testing.T) {
 		}
 	}
 
-	if errorCount > 0 {
-		t.Errorf("%d goroutines had unexpected behavior", errorCount)
-	}
+	assert.Equal(t, 0, errorCount, "goroutines had unexpected behavior")
 
 	// Commit the first transaction
 	err = tx1.Commit()
-	if err != nil {
-		t.Errorf("Failed to commit: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Now a new write transaction should succeed
 	tx2, err := db.Begin(true)
-	if err != nil {
-		t.Errorf("Should be able to begin write tx after commit: %v", err)
-	}
+	assert.NoError(t, err)
 	if tx2 != nil {
 		tx2.Rollback()
 	}
@@ -535,28 +415,20 @@ func TestTxWriteThenReadMultiple(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err)
 	defer db.Close()
 
 	// Write some data
 	err = db.Set([]byte("initial"), []byte("data"))
-	if err != nil {
-		t.Fatalf("Failed to set initial data: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Begin write transaction
 	writeTx, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Failed to begin write transaction: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write in write transaction
 	err = writeTx.Set([]byte("write_key"), []byte("write_value"))
-	if err != nil {
-		t.Errorf("Failed to set in write tx: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// Multiple read transactions should be allowed concurrently
 	numReaders := 5
@@ -603,29 +475,19 @@ func TestTxWriteThenReadMultiple(t *testing.T) {
 
 	// Check all readers succeeded
 	for err := range readerErrors {
-		if err != nil {
-			t.Error(err)
-		}
+		assert.NoError(t, err)
 	}
 
 	// Commit write transaction
 	err = writeTx.Commit()
-	if err != nil {
-		t.Errorf("Failed to commit write tx: %v", err)
-	}
+	assert.NoError(t, err)
 
 	// New read transaction should see committed write
 	readTx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin read tx after commit: %v", err)
-	}
+	require.NoError(t, err)
 	defer readTx.Rollback()
 
 	val, err := readTx.Get([]byte("write_key"))
-	if err != nil {
-		t.Errorf("Should see committed write: %v", err)
-	}
-	if string(val) != "write_value" {
-		t.Errorf("Expected write_value, got %s", string(val))
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, "write_value", string(val))
 }

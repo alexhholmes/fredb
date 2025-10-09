@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCursorSequentialScan(t *testing.T) {
@@ -15,22 +18,16 @@ func TestCursorSequentialScan(t *testing.T) {
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	// Sequential scan from beginning
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key000")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key000")))
 
 	count := 0
 	for cursor.Valid() {
@@ -38,21 +35,15 @@ func TestCursorSequentialScan(t *testing.T) {
 		expectedKey := []byte(fmt.Sprintf("key%03d", count))
 		expectedValue := []byte(fmt.Sprintf("value%d", count))
 
-		if !bytes.Equal(cursor.Key(), expectedKey) {
-			t.Errorf("Key mismatch at position %d: got %s, want %s", count, cursor.Key(), expectedKey)
-		}
-		if !bytes.Equal(cursor.Value(), expectedValue) {
-			t.Errorf("Value mismatch at position %d: got %s, want %s", count, cursor.Value(), expectedValue)
-		}
+		assert.Equal(t, expectedKey, cursor.Key(), "Key mismatch at position %d", count)
+		assert.Equal(t, expectedValue, cursor.Value(), "Value mismatch at position %d", count)
 
 		if !cursor.Next() {
 			break
 		}
 	}
 
-	if count != 100 {
-		t.Errorf("Expected 100 Keys, got %d", count)
-	}
+	assert.Equal(t, 100, count)
 }
 
 func TestCursorReverseScan(t *testing.T) {
@@ -64,36 +55,24 @@ func TestCursorReverseScan(t *testing.T) {
 	for i := 1; i <= 50; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	// Seek to last key
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key999")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key999")))
 
 	// Should be invalid (no key >= key999)
-	if cursor.Valid() {
-		t.Error("Expected invalid cursor after seeking past end")
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor after seeking past end")
 
 	// Seek to actual last key
-	if err := cursor.Seek([]byte("key050")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key050")))
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor on key050")
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor on key050")
 
 	// Reverse scan from key050 down to key001
 	count := 50
@@ -101,12 +80,8 @@ func TestCursorReverseScan(t *testing.T) {
 		expectedKey := []byte(fmt.Sprintf("key%03d", count))
 		expectedValue := []byte(fmt.Sprintf("value%d", count))
 
-		if !bytes.Equal(cursor.Key(), expectedKey) {
-			t.Errorf("Key mismatch at position %d: got %s, want %s", count, cursor.Key(), expectedKey)
-		}
-		if !bytes.Equal(cursor.Value(), expectedValue) {
-			t.Errorf("Value mismatch at position %d: got %s, want %s", count, cursor.Value(), expectedValue)
-		}
+		assert.Equal(t, expectedKey, cursor.Key(), "Key mismatch at position %d", count)
+		assert.Equal(t, expectedValue, cursor.Value(), "Value mismatch at position %d", count)
 
 		count--
 		if count == 0 {
@@ -117,9 +92,7 @@ func TestCursorReverseScan(t *testing.T) {
 		}
 	}
 
-	if count != 0 {
-		t.Errorf("Expected to scan down to key001, stopped at count=%d", count)
-	}
+	assert.Equal(t, 0, count, "Expected to scan down to key001")
 }
 
 func TestCursorRangeScan(t *testing.T) {
@@ -131,22 +104,16 @@ func TestCursorRangeScan(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i*10, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i*10)
 	}
 
 	// Range scan: [30, 70)
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key030")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key030")))
 
 	var keys []string
 	for cursor.Valid() {
@@ -159,15 +126,7 @@ func TestCursorRangeScan(t *testing.T) {
 	}
 
 	expectedKeys := []string{"key030", "key040", "key050", "key060"}
-	if len(keys) != len(expectedKeys) {
-		t.Errorf("Expected %d Keys, got %d", len(expectedKeys), len(keys))
-	}
-
-	for i, key := range keys {
-		if key != expectedKeys[i] {
-			t.Errorf("Key mismatch at position %d: got %s, want %s", i, key, expectedKeys[i])
-		}
-	}
+	assert.Equal(t, expectedKeys, keys)
 }
 
 func TestCursorEmptyTree(t *testing.T) {
@@ -177,28 +136,17 @@ func TestCursorEmptyTree(t *testing.T) {
 
 	// Empty tree - cursor should be invalid
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("anykey")); err != nil {
-		t.Fatalf("Seek on empty tree failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("anykey")))
 
-	if cursor.Valid() {
-		t.Error("Expected invalid cursor on empty tree")
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree")
 
 	// Next/Prev should return false
-	if cursor.Next() {
-		t.Error("Next() should return false on invalid cursor")
-	}
-
-	if cursor.Prev() {
-		t.Error("Prev() should return false on invalid cursor")
-	}
+	assert.False(t, cursor.Next(), "Next() should return false on invalid cursor")
+	assert.False(t, cursor.Prev(), "Prev() should return false on invalid cursor")
 }
 
 func TestCursorSeekNotFound(t *testing.T) {
@@ -210,52 +158,30 @@ func TestCursorSeekNotFound(t *testing.T) {
 	for i := 1; i <= 9; i += 2 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	// Seek to key002 (not present) - should land on key003
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key002")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key002")))
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor")
-	}
-
-	if !bytes.Equal(cursor.Key(), []byte("key003")) {
-		t.Errorf("Expected key003, got %s", cursor.Key())
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor")
+	assert.Equal(t, []byte("key003"), cursor.Key())
 
 	// Seek to key000 (before all Keys) - should land on key001
-	if err := cursor.Seek([]byte("key000")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key000")))
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor")
-	}
-
-	if !bytes.Equal(cursor.Key(), []byte("key001")) {
-		t.Errorf("Expected key001, got %s", cursor.Key())
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor")
+	assert.Equal(t, []byte("key001"), cursor.Key())
 
 	// Seek to key999 (after all Keys) - should be invalid
-	if err := cursor.Seek([]byte("key999")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key999")))
 
-	if cursor.Valid() {
-		t.Errorf("Expected invalid cursor, but got key %s", cursor.Key())
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor")
 }
 
 func TestCursorAcrossSplits(t *testing.T) {
@@ -268,22 +194,16 @@ func TestCursorAcrossSplits(t *testing.T) {
 	for i := 1; i <= 200; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	// Full scan should traverse all leaves via sibling pointers
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key00000")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key00000")))
 
 	count := 0
 	prevKey := []byte{}
@@ -291,8 +211,8 @@ func TestCursorAcrossSplits(t *testing.T) {
 		count++
 
 		// Verify Keys are in order
-		if len(prevKey) > 0 && bytes.Compare(cursor.Key(), prevKey) <= 0 {
-			t.Errorf("Keys out of order: %s should be > %s", cursor.Key(), prevKey)
+		if len(prevKey) > 0 {
+			assert.Greater(t, bytes.Compare(cursor.Key(), prevKey), 0, "Keys out of order: %s should be > %s", cursor.Key(), prevKey)
 		}
 		prevKey = append([]byte{}, cursor.Key()...)
 
@@ -301,9 +221,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 		}
 	}
 
-	if count != 200 {
-		t.Errorf("Expected 200 Keys after splits, got %d", count)
-	}
+	assert.Equal(t, 200, count, "Expected 200 Keys after splits")
 }
 
 func TestCursorAfterMerges(t *testing.T) {
@@ -315,30 +233,22 @@ func TestCursorAfterMerges(t *testing.T) {
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	// Delete every other key to trigger potential merges
 	for i := 2; i <= 100; i += 2 {
 		key := []byte(fmt.Sprintf("key%05d", i))
-		if err := db.Delete(key); err != nil {
-			t.Fatalf("Failed to delete key %d: %v", i, err)
-		}
+		require.NoError(t, db.Delete(key), "Failed to delete key %d", i)
 	}
 
 	// Scan remaining Keys (odd numbers only)
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key00000")); err != nil {
-		t.Fatalf("Seek failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key00000")))
 
 	count := 0
 	expectedNum := 1
@@ -346,9 +256,7 @@ func TestCursorAfterMerges(t *testing.T) {
 		count++
 		expectedKey := []byte(fmt.Sprintf("key%05d", expectedNum))
 
-		if !bytes.Equal(cursor.Key(), expectedKey) {
-			t.Errorf("Key mismatch at position %d: got %s, want %s", count, cursor.Key(), expectedKey)
-		}
+		assert.Equal(t, expectedKey, cursor.Key(), "Key mismatch at position %d", count)
 
 		expectedNum += 2
 		if !cursor.Next() {
@@ -356,9 +264,7 @@ func TestCursorAfterMerges(t *testing.T) {
 		}
 	}
 
-	if count != 50 {
-		t.Errorf("Expected 50 Keys after deletions, got %d", count)
-	}
+	assert.Equal(t, 50, count, "Expected 50 Keys after deletions")
 }
 
 func TestCursorSeekSTART(t *testing.T) {
@@ -370,31 +276,21 @@ func TestCursorSeekSTART(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i*10, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i*10)
 	}
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// Seek(START) should position at first key
-	if err := cursor.Seek(START); err != nil {
-		t.Fatalf("Seek(START) failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek(START))
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor after Seek(START)")
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor after Seek(START)")
 
-	if !bytes.Equal(cursor.Key(), []byte("key010")) {
-		t.Errorf("Expected first key 'key010', got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key010"), cursor.Key())
 
 	// Scan all Keys from START
 	count := 1
@@ -402,9 +298,7 @@ func TestCursorSeekSTART(t *testing.T) {
 		count++
 	}
 
-	if count != 10 {
-		t.Errorf("Expected 10 Keys from START, got %d", count)
-	}
+	assert.Equal(t, 10, count, "Expected 10 Keys from START")
 }
 
 func TestCursorSeekEND(t *testing.T) {
@@ -416,36 +310,24 @@ func TestCursorSeekEND(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i*10, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i*10)
 	}
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// Seek(END) should position at last key
-	if err := cursor.Seek(END); err != nil {
-		t.Fatalf("Seek(END) failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek(END))
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor after Seek(END)")
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor after Seek(END)")
 
-	if !bytes.Equal(cursor.Key(), []byte("key100")) {
-		t.Errorf("Expected last key 'key100', got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key100"), cursor.Key())
 
 	// Verify this is actually the last key by trying Next()
-	if cursor.Next() {
-		t.Errorf("Next() after Seek(END) should return false, got key %s", cursor.Key())
-	}
+	assert.False(t, cursor.Next(), "Next() after Seek(END) should return false")
 }
 
 func TestCursorSeekSTARTEmptyTree(t *testing.T) {
@@ -454,21 +336,15 @@ func TestCursorSeekSTARTEmptyTree(t *testing.T) {
 	db := setupTestDB(t)
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// Seek(START) on empty tree should be invalid
-	if err := cursor.Seek(START); err != nil {
-		t.Fatalf("Seek(START) failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek(START))
 
-	if cursor.Valid() {
-		t.Error("Expected invalid cursor on empty tree")
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree")
 }
 
 func TestCursorSeekENDEmptyTree(t *testing.T) {
@@ -477,21 +353,15 @@ func TestCursorSeekENDEmptyTree(t *testing.T) {
 	db := setupTestDB(t)
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// Seek(END) on empty tree should be invalid
-	if err := cursor.Seek(END); err != nil {
-		t.Fatalf("Seek(END) failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek(END))
 
-	if cursor.Valid() {
-		t.Error("Expected invalid cursor on empty tree")
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree")
 }
 
 func TestCursorRangeScanWithSTARTEND(t *testing.T) {
@@ -503,23 +373,17 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// Full range scan using START and END
-	if err := cursor.Seek(START); err != nil {
-		t.Fatalf("Seek(START) failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek(START))
 
 	count := 0
 	for cursor.Valid() && bytes.Compare(cursor.Key(), END) < 0 {
@@ -527,9 +391,7 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 		cursor.Next()
 	}
 
-	if count != 100 {
-		t.Errorf("Expected 100 Keys in range [START, END), got %d", count)
-	}
+	assert.Equal(t, 100, count, "Expected 100 Keys in range [START, END)")
 }
 
 func TestCursorSeekFirstFunction(t *testing.T) {
@@ -541,31 +403,21 @@ func TestCursorSeekFirstFunction(t *testing.T) {
 	for i := 10; i <= 50; i += 10 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err, "Failed to begin transaction")
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// SeekFirst() should position at first key
-	if err := cursor.First(); err != nil {
-		t.Fatalf("SeekFirst() failed: %v", err)
-	}
+	require.NoError(t, cursor.First(), "SeekFirst() failed")
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor after SeekFirst()")
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor after SeekFirst()")
 
-	if !bytes.Equal(cursor.Key(), []byte("key010")) {
-		t.Errorf("Expected first key 'key010', got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key010"), cursor.Key(), "Expected first key 'key010'")
 }
 
 func TestCursorSeekLastFunction(t *testing.T) {
@@ -577,40 +429,26 @@ func TestCursorSeekLastFunction(t *testing.T) {
 	for i := 10; i <= 50; i += 10 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
 	}
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err, "Failed to begin transaction")
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// SeekLast() positions at last key
-	if err := cursor.Last(); err != nil {
-		t.Fatalf("SeekLast() failed: %v", err)
-	}
+	require.NoError(t, cursor.Last(), "SeekLast() failed")
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor after SeekLast()")
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor after SeekLast()")
 
-	if !bytes.Equal(cursor.Key(), []byte("key050")) {
-		t.Errorf("Expected last key 'key050', got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key050"), cursor.Key(), "Expected last key 'key050'")
 
 	// Verify we can navigate backward
-	if !cursor.Prev() {
-		t.Error("Expected Prev() to succeed from last key")
-	}
+	assert.True(t, cursor.Prev(), "Expected Prev() to succeed from last key")
 
-	if !bytes.Equal(cursor.Key(), []byte("key040")) {
-		t.Errorf("Expected 'key040' after Prev(), got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key040"), cursor.Key(), "Expected 'key040' after Prev()")
 }
 
 func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
@@ -619,30 +457,20 @@ func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 	db := setupTestDB(t)
 
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err, "Failed to begin transaction")
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
 
 	// SeekFirst() on empty tree
-	if err := cursor.First(); err != nil {
-		t.Fatalf("SeekFirst() failed: %v", err)
-	}
+	require.NoError(t, cursor.First(), "SeekFirst() failed")
 
-	if cursor.Valid() {
-		t.Error("Expected invalid cursor on empty tree after SeekFirst()")
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree after SeekFirst()")
 
 	// SeekLast() on empty tree
-	if err := cursor.Last(); err != nil {
-		t.Fatalf("SeekLast() failed: %v", err)
-	}
+	require.NoError(t, cursor.Last(), "SeekLast() failed")
 
-	if cursor.Valid() {
-		t.Error("Expected invalid cursor on empty tree after SeekLast()")
-	}
+	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree after SeekLast()")
 }
 
 func TestCursorSeekENDComparison(t *testing.T) {
@@ -667,46 +495,28 @@ func TestCursorSeekENDComparison(t *testing.T) {
 	nearMaxKey[MaxKeySize-1] = 0xFE
 
 	// Insert both Keys
-	if err := db.Set(maxKey, []byte("max_value")); err != nil {
-		t.Fatalf("Failed to insert maxKey: %v", err)
-	}
-	if err := db.Set(nearMaxKey, []byte("near_max_value")); err != nil {
-		t.Fatalf("Failed to insert nearMaxKey: %v", err)
-	}
+	require.NoError(t, db.Set(maxKey, []byte("max_value")), "Failed to insert maxKey")
+	require.NoError(t, db.Set(nearMaxKey, []byte("near_max_value")), "Failed to insert nearMaxKey")
 
 	// Verify END compares greater than both Keys
-	if bytes.Compare(maxKey, END) >= 0 {
-		t.Errorf("Expected maxKey < END, but got maxKey >= END")
-	}
-	if bytes.Compare(nearMaxKey, END) >= 0 {
-		t.Errorf("Expected nearMaxKey < END, but got nearMaxKey >= END")
-	}
+	assert.Less(t, bytes.Compare(maxKey, END), 0, "Expected maxKey < END")
+	assert.Less(t, bytes.Compare(nearMaxKey, END), 0, "Expected nearMaxKey < END")
 
 	// Verify Seek(END) positions on the last key (lexicographically)
 	tx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err, "Failed to begin transaction")
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek(END); err != nil {
-		t.Fatalf("Seek(END) failed: %v", err)
-	}
+	require.NoError(t, cursor.Seek(END), "Seek(END) failed")
 
-	if !cursor.Valid() {
-		t.Fatal("Expected valid cursor after Seek(END)")
-	}
+	require.True(t, cursor.Valid(), "Expected valid cursor after Seek(END)")
 
 	// The last key lexicographically should be nearMaxKey (1023 0xFF + 1 0xFE)
 	// because it compares greater than maxKey (1024 0xFE)
 	expectedLastKey := nearMaxKey
-	if !bytes.Equal(cursor.Key(), expectedLastKey) {
-		t.Errorf("Expected Seek(END) to position on nearMaxKey, got different key")
-	}
+	assert.Equal(t, expectedLastKey, cursor.Key(), "Expected Seek(END) to position on nearMaxKey")
 
 	// Verify this is actually the last key
-	if cursor.Next() {
-		t.Errorf("Next() after Seek(END) should return false")
-	}
+	assert.False(t, cursor.Next(), "Next() after Seek(END) should return false")
 }

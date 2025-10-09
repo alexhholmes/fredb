@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"fredb/internal/base"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWALRecoveryBasic tests that uncommitted wal entries are recovered after restart
@@ -16,52 +18,34 @@ func TestWALRecoveryBasic(t *testing.T) {
 
 	// Create database and write some data
 	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write key1, will be checkpointed
-	if err := db.Set([]byte("key1"), []byte("value1")); err != nil {
-		t.Fatalf("Failed to set key1: %v", err)
-	}
+	require.NoError(t, db.Set([]byte("key1"), []byte("value1")))
 
 	// Wait for checkpoint to complete
 	time.Sleep(300 * time.Millisecond)
 
 	// Write key2, will only be in wal
-	if err := db.Set([]byte("key2"), []byte("value2")); err != nil {
-		t.Fatalf("Failed to set key2: %v", err)
-	}
+	require.NoError(t, db.Set([]byte("key2"), []byte("value2")))
 
 	// Close database normally - key2 should still be in wal only (not checkpointed yet)
 	// Background checkpointer runs every 200ms, so key2 written immediately should not be checkpointed
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close database: %v", err)
-	}
+	require.NoError(t, db.Close())
 
 	// Reopen database - should recover key2 from wal
 	db2, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to reopen database: %v", err)
-	}
+	require.NoError(t, err)
 	defer db2.Close()
 
 	// Verify both Keys exist
 	val1, err := db2.Get([]byte("key1"))
-	if err != nil {
-		t.Fatalf("Failed to get key1 after recovery: %v", err)
-	}
-	if string(val1) != "value1" {
-		t.Errorf("key1 value mismatch: got %s, want value1", val1)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "value1", string(val1))
 
 	val2, err := db2.Get([]byte("key2"))
-	if err != nil {
-		t.Fatalf("Failed to get key2 after recovery: %v", err)
-	}
-	if string(val2) != "value2" {
-		t.Errorf("key2 value mismatch: got %s, want value2", val2)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "value2", string(val2))
 }
 
 // TestWALRecoveryUncommitted tests that uncommitted transactions are discarded
@@ -72,71 +56,47 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 
 	// Create database
 	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write key1 (will be committed)
-	if err := db.Set([]byte("key1"), []byte("value1")); err != nil {
-		t.Fatalf("Failed to set key1: %v", err)
-	}
+	require.NoError(t, db.Set([]byte("key1"), []byte("value1")))
 
 	// Start a transaction but don't commit it
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatalf("Failed to begin transaction: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write to wal but don't commit
-	if err := tx.Set([]byte("key2"), []byte("value2")); err != nil {
-		t.Fatalf("Failed to set key2: %v", err)
-	}
+	require.NoError(t, tx.Set([]byte("key2"), []byte("value2")))
 
 	// Directly access wal to write without commit marker
 	// Flush Dirty pages to wal without commit
 	for pageID, node := range tx.pages {
 		page, err := node.Serialize(tx.txnID)
-		if err != nil {
-			t.Fatalf("Failed to Serialize: %v", err)
-		}
-		if err := db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
-			t.Fatalf("Failed to append to wal: %v", err)
-		}
+		require.NoError(t, err)
+		require.NoError(t, db.wal.AppendPage(tx.txnID, pageID, page))
 	}
 	// Force fsync wal
-	if err := db.wal.ForceSync(); err != nil {
-		t.Fatalf("Failed to sync wal: %v", err)
-	}
+	require.NoError(t, db.wal.ForceSync())
 
 	// Rollback transaction to avoid proper cleanup
 	tx.Rollback()
 
 	// Close database - wal has pages but no commit marker
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close database: %v", err)
-	}
+	require.NoError(t, db.Close())
 
 	// Reopen database
 	db2, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to reopen database: %v", err)
-	}
+	require.NoError(t, err)
 	defer db2.Close()
 
 	// Verify key1 exists
 	val1, err := db2.Get([]byte("key1"))
-	if err != nil {
-		t.Fatalf("Failed to get key1 after recovery: %v", err)
-	}
-	if string(val1) != "value1" {
-		t.Errorf("key1 value mismatch: got %s, want value1", val1)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "value1", string(val1))
 
 	// Verify key2 does NOT exist (uncommitted transaction discarded)
 	_, err = db2.Get([]byte("key2"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for uncommitted key2, got: %v", err)
-	}
+	assert.Equal(t, ErrKeyNotFound, err)
 }
 
 // TestCheckpointIdempotency tests that checkpoint replay is idempotent
@@ -147,17 +107,13 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 	// Create database and write data
 	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write multiple Keys
 	for i := 0; i < 10; i++ {
 		key := []byte{byte(i)}
 		value := []byte{byte(i + 100)}
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value))
 	}
 
 	// Wait for checkpoint
@@ -173,9 +129,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	err = db.wal.Replay(checkpointTxnID, func(pageID base.PageID, page *base.Page) error {
 		return dm.WritePage(pageID, page)
 	})
-	if err != nil {
-		t.Fatalf("First replay failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Replay AGAIN (simulating restart after crash)
 	// The idempotency check should skip pages that are already at correct version
@@ -198,19 +152,13 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 		return dm.WritePage(pageID, page)
 	})
-	if err != nil {
-		t.Fatalf("Second replay failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Close and reopen
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close database: %v", err)
-	}
+	require.NoError(t, db.Close())
 
 	db2, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to reopen database: %v", err)
-	}
+	require.NoError(t, err)
 	defer db2.Close()
 
 	// Verify all Keys still have correct Values (no corruption from double-apply)
@@ -219,12 +167,9 @@ func TestCheckpointIdempotency(t *testing.T) {
 		expectedValue := []byte{byte(i + 100)}
 
 		value, err := db2.Get(key)
-		if err != nil {
-			t.Fatalf("Failed to get key %d after double replay: %v", i, err)
-		}
-		if len(value) != 1 || value[0] != expectedValue[0] {
-			t.Errorf("Key %d value mismatch after double replay: got %v, want %v", i, value, expectedValue)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, 1, len(value))
+		assert.Equal(t, expectedValue[0], value[0])
 	}
 }
 
@@ -236,9 +181,7 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 
 	// Create database
 	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write multiple transactions
 	for i := 1; i <= 5; i++ {
@@ -250,24 +193,18 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 			key = []byte{byte(i)}
 			value = []byte{byte(i + 100)}
 		}
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value))
 	}
 
 	// Wait for at least one checkpoint
 	time.Sleep(300 * time.Millisecond)
 
 	// Close database
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close database: %v", err)
-	}
+	require.NoError(t, db.Close())
 
 	// Reopen and verify all Keys
 	db2, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to reopen database: %v", err)
-	}
+	require.NoError(t, err)
 	defer db2.Close()
 
 	// Verify all Keys recovered
@@ -282,18 +219,13 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 		}
 
 		value, err := db2.Get(key)
-		if err != nil {
-			t.Fatalf("Failed to get key %d after recovery: %v", i, err)
-		}
+		require.NoError(t, err)
 
 		if i == 1 {
-			if string(value) != string(expectedValue) {
-				t.Errorf("Key %d mismatch: got %s, want %s", i, value, expectedValue)
-			}
+			assert.Equal(t, string(expectedValue), string(value))
 		} else {
-			if len(value) != 1 || value[0] != expectedValue[0] {
-				t.Errorf("Key %d mismatch: got %v, want %v", i, value, expectedValue)
-			}
+			assert.Equal(t, 1, len(value))
+			assert.Equal(t, expectedValue[0], value[0])
 		}
 	}
 }
@@ -306,22 +238,16 @@ func TestWALTruncateSafety(t *testing.T) {
 
 	// Create database
 	db, err := Open(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Write and commit a transaction
-	if err := db.Set([]byte("key1"), []byte("value1")); err != nil {
-		t.Fatalf("Failed to set key1: %v", err)
-	}
+	require.NoError(t, db.Set([]byte("key1"), []byte("value1")))
 
 	// Wait for checkpoint
 	time.Sleep(300 * time.Millisecond)
 
 	// Write another transaction
-	if err := db.Set([]byte("key2"), []byte("value2")); err != nil {
-		t.Fatalf("Failed to set key2: %v", err)
-	}
+	require.NoError(t, db.Set([]byte("key2"), []byte("value2")))
 
 	// Get current meta
 	meta := db.store.pager.GetMeta()
@@ -332,12 +258,8 @@ func TestWALTruncateSafety(t *testing.T) {
 
 	// Truncate wal to exactly CheckpointTxnID - simulates what checkpoint does
 	exactErr := db.wal.Truncate(meta.CheckpointTxnID)
-	if exactErr != nil {
-		t.Errorf("Expected no error when truncating wal to checkpoint, got: %v", exactErr)
-	}
+	assert.NoError(t, exactErr)
 
 	// Close database
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close database: %v", err)
-	}
+	require.NoError(t, db.Close())
 }

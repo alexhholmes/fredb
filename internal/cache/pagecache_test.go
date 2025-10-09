@@ -3,6 +3,8 @@ package cache
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"fredb/internal/base"
 )
 
@@ -24,9 +26,7 @@ func TestPageCacheBasics(t *testing.T) {
 
 	// Test cache miss
 	_, hit := cache.get(base.PageID(1), 0)
-	if hit {
-		t.Error("Expected cache miss for Page 1")
-	}
+	assert.False(t, hit, "Expected cache miss for Page 1")
 
 	// Add Node to cache with txnID=1
 	node1 := makeTestNode(base.PageID(1))
@@ -34,26 +34,16 @@ func TestPageCacheBasics(t *testing.T) {
 
 	// Should now hit (for txnID >= 1)
 	retrieved, hit := cache.get(base.PageID(1), 1)
-	if !hit {
-		t.Error("Expected cache hit for Page 1")
-	}
-	if retrieved.PageID != node1.PageID {
-		t.Error("Retrieved wrong Node")
-	}
+	assert.True(t, hit, "Expected cache hit for Page 1")
+	assert.Equal(t, node1.PageID, retrieved.PageID, "Retrieved wrong Node")
 
 	// Check size
-	if cache.Size() != 1 {
-		t.Errorf("Expected size 1, got %d", cache.Size())
-	}
+	assert.Equal(t, 1, cache.Size())
 
 	// Check stats
 	hits, misses, _ := cache.Stats()
-	if hits != 1 {
-		t.Errorf("Expected 1 hit, got %d", hits)
-	}
-	if misses != 1 {
-		t.Errorf("Expected 1 miss, got %d", misses)
-	}
+	assert.Equal(t, uint64(1), hits)
+	assert.Equal(t, uint64(1), misses)
 }
 
 func TestPageCacheMVCC(t *testing.T) {
@@ -72,35 +62,21 @@ func TestPageCacheMVCC(t *testing.T) {
 
 	// Reader at txnID=1 should see version 1
 	retrieved, hit := cache.get(base.PageID(1), 1)
-	if !hit {
-		t.Error("Expected cache hit for txnID=1")
-	}
-	if retrieved.NumKeys != 0 {
-		t.Error("Expected version 1 (NumKeys=0)")
-	}
+	assert.True(t, hit, "Expected cache hit for txnID=1")
+	assert.Equal(t, uint16(0), retrieved.NumKeys, "Expected version 1 (NumKeys=0)")
 
 	// Reader at txnID=2 should see version 2
 	retrieved, hit = cache.get(base.PageID(1), 2)
-	if !hit {
-		t.Error("Expected cache hit for txnID=2")
-	}
-	if retrieved.NumKeys != 5 {
-		t.Error("Expected version 2 (NumKeys=5)")
-	}
+	assert.True(t, hit, "Expected cache hit for txnID=2")
+	assert.Equal(t, uint16(5), retrieved.NumKeys, "Expected version 2 (NumKeys=5)")
 
 	// Reader at txnID=3 should see version 2 (latest committed)
 	retrieved, hit = cache.get(base.PageID(1), 3)
-	if !hit {
-		t.Error("Expected cache hit for txnID=3")
-	}
-	if retrieved.NumKeys != 5 {
-		t.Error("Expected version 2 (NumKeys=5)")
-	}
+	assert.True(t, hit, "Expected cache hit for txnID=3")
+	assert.Equal(t, uint16(5), retrieved.NumKeys, "Expected version 2 (NumKeys=5)")
 
 	// size should be 2 (two versions)
-	if cache.Size() != 2 {
-		t.Errorf("Expected size 2, got %d", cache.Size())
-	}
+	assert.Equal(t, 2, cache.Size())
 }
 
 func TestPageCacheMinSize(t *testing.T) {
@@ -108,9 +84,7 @@ func TestPageCacheMinSize(t *testing.T) {
 
 	// Request size too small
 	cache := NewPageCache(5, nil)
-	if cache.maxSize != MinCacheSize {
-		t.Errorf("Expected min size %d, got %d", MinCacheSize, cache.maxSize)
-	}
+	assert.Equal(t, MinCacheSize, cache.maxSize)
 }
 
 func TestPageCacheEviction(t *testing.T) {
@@ -123,34 +97,26 @@ func TestPageCacheEviction(t *testing.T) {
 		cache.Put(base.PageID(i), uint64(i), makeTestNode(base.PageID(i)))
 	}
 
-	if cache.Size() != 19 {
-		t.Errorf("Expected size 19, got %d", cache.Size())
-	}
+	assert.Equal(t, 19, cache.Size())
 
 	// Add 20th Page - triggers eviction
 	cache.Put(base.PageID(20), 20, makeTestNode(base.PageID(20)))
 
 	// Should be at 16 now
 	size := cache.Size()
-	if size != 16 {
-		t.Errorf("Expected size 16 after eviction, got %d", size)
-	}
+	assert.Equal(t, 16, size, "Expected size 16 after eviction")
 
 	// Check eviction stats (evicted 4: pages 1-4)
 	_, _, evictions := cache.Stats()
-	if evictions != 4 {
-		t.Errorf("Expected 4 evictions, got %d", evictions)
-	}
+	assert.Equal(t, uint64(4), evictions)
 
 	// Pages 1-4 (LRU) should be evicted
 	for i := 1; i <= 4; i++ {
-		if _, hit := cache.get(base.PageID(i), uint64(i)); hit {
-			t.Errorf("Page %d should have been evicted", i)
-		}
+		_, hit := cache.get(base.PageID(i), uint64(i))
+		assert.False(t, hit, "Page %d should have been evicted", i)
 	}
 
 	// Page 20 (newest) should still be there
-	if _, hit := cache.get(base.PageID(20), 20); !hit {
-		t.Error("Page 20 should still be in cache")
-	}
+	_, hit := cache.get(base.PageID(20), 20)
+	assert.True(t, hit, "Page 20 should still be in cache")
 }

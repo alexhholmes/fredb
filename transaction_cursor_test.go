@@ -6,6 +6,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCursorAfterTxCommit tests that cursor becomes invalid after transaction commit
@@ -14,69 +17,43 @@ func TestCursorAfterTxCommit(t *testing.T) {
 
 	// Insert some test data
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := tx.Set(key, value); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, tx.Set(key, value))
 	}
 
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tx.Commit())
 
 	// Create read transaction with cursor
 	tx, err = db.Begin(false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key00")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key00")))
 
 	// Cursor should be valid
-	if !cursor.Valid() {
-		t.Error("Cursor should be valid before commit")
-	}
+	assert.True(t, cursor.Valid(), "Cursor should be valid before commit")
 
 	// Read first key
-	if !bytes.Equal(cursor.Key(), []byte("key00")) {
-		t.Errorf("Expected key00, got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key00"), cursor.Key())
 
 	// Commit the transaction
-	if err := tx.Commit(); err == nil {
-		t.Error("Read transaction should not support commit")
-	}
+	assert.Error(t, tx.Commit(), "Read transaction should not support commit")
 
 	// Rollback instead
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tx.Rollback())
 
 	// Cursor operations should fail after rollback
-	if cursor.Next() {
-		t.Error("Next() should return false after transaction rollback")
-	}
+	assert.False(t, cursor.Next(), "Next() should return false after transaction rollback")
 
-	if cursor.Prev() {
-		t.Error("Prev() should return false after transaction rollback")
-	}
+	assert.False(t, cursor.Prev(), "Prev() should return false after transaction rollback")
 
-	if err := cursor.Seek([]byte("key05")); err != ErrTxDone {
-		t.Errorf("Seek() should return ErrTxDone after rollback, got %v", err)
-	}
+	assert.Equal(t, ErrTxDone, cursor.Seek([]byte("key05")), "Seek() should return ErrTxDone after rollback")
 
-	if cursor.Valid() {
-		t.Error("Cursor should be invalid after transaction rollback")
-	}
+	assert.False(t, cursor.Valid(), "Cursor should be invalid after transaction rollback")
 }
 
 // TestCursorAfterWriteTxCommit tests cursor behavior with write transaction
@@ -85,47 +62,31 @@ func TestCursorAfterWriteTxCommit(t *testing.T) {
 
 	// Create write transaction
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Insert data
 	for i := 0; i < 5; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := tx.Set(key, value); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, tx.Set(key, value))
 	}
 
 	// Create cursor in same write transaction
 	cursor := tx.Cursor()
-	if err := cursor.Seek([]byte("key00")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key00")))
 
-	if !cursor.Valid() {
-		t.Error("Cursor should be valid")
-	}
+	assert.True(t, cursor.Valid(), "Cursor should be valid")
 
 	// Verify we see uncommitted data
-	if !bytes.Equal(cursor.Key(), []byte("key00")) {
-		t.Errorf("Expected key00, got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key00"), cursor.Key())
 
 	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tx.Commit())
 
 	// Cursor should be invalid after commit
-	if cursor.Next() {
-		t.Error("Next() should return false after commit")
-	}
+	assert.False(t, cursor.Next(), "Next() should return false after commit")
 
-	if err := cursor.Seek([]byte("key00")); err != ErrTxDone {
-		t.Errorf("Seek() should return ErrTxDone after commit, got %v", err)
-	}
+	assert.Equal(t, ErrTxDone, cursor.Seek([]byte("key00")), "Seek() should return ErrTxDone after commit")
 }
 
 // TestCursorSnapshotIsolation tests that cursors see consistent snapshots
@@ -134,82 +95,52 @@ func TestCursorSnapshotIsolation(t *testing.T) {
 
 	// Insert initial data
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := tx.Set(key, value); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, tx.Set(key, value))
 	}
 
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tx.Commit())
 
 	// Start read transaction
 	readTx, err := db.Begin(false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer readTx.Rollback()
 
 	// Create cursor on read transaction
 	cursor := readTx.Cursor()
-	if err := cursor.Seek([]byte("key05")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key05")))
 
-	if !cursor.Valid() {
-		t.Fatal("Cursor should be valid")
-	}
+	require.True(t, cursor.Valid(), "Cursor should be valid")
 
 	// Verify initial value
-	if !bytes.Equal(cursor.Value(), []byte("value5")) {
-		t.Errorf("Expected value5, got %s", cursor.Value())
-	}
+	assert.Equal(t, []byte("value5"), cursor.Value())
 
 	// Concurrent write transaction modifies key05
 	writeTx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if err := writeTx.Set([]byte("key05"), []byte("modified5")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeTx.Set([]byte("key05"), []byte("modified5")))
 
-	if err := writeTx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeTx.Commit())
 
 	// Cursor should still see old value (snapshot isolation)
-	if err := cursor.Seek([]byte("key05")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key05")))
 
-	if !bytes.Equal(cursor.Value(), []byte("value5")) {
-		t.Errorf("Cursor should see snapshot value 'value5', got %s", cursor.Value())
-	}
+	assert.Equal(t, []byte("value5"), cursor.Value(), "Cursor should see snapshot value 'value5'")
 
 	// New transaction should see new value
 	newTx, err := db.Begin(false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer newTx.Rollback()
 
 	val, err := newTx.Get([]byte("key05"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if !bytes.Equal(val, []byte("modified5")) {
-		t.Errorf("New transaction should see 'modified5', got %s", val)
-	}
+	assert.Equal(t, []byte("modified5"), val, "New transaction should see 'modified5'")
 }
 
 // TestCursorConcurrentModifications tests cursor with concurrent modifications
@@ -218,21 +149,15 @@ func TestCursorConcurrentModifications(t *testing.T) {
 
 	// Insert initial data
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	for i := 0; i < 100; i++ {
 		key := []byte(fmt.Sprintf("key%04d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := tx.Set(key, value); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, tx.Set(key, value))
 	}
 
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tx.Commit())
 
 	// Start multiple readers with cursors
 	var wg sync.WaitGroup
@@ -245,15 +170,13 @@ func TestCursorConcurrentModifications(t *testing.T) {
 			defer wg.Done()
 
 			tx, err := db.Begin(false)
-			if err != nil {
-				t.Error(err)
+			if !assert.NoError(t, err) {
 				return
 			}
 			defer tx.Rollback()
 
 			cursor := tx.Cursor()
-			if err := cursor.Seek([]byte("key0000")); err != nil {
-				t.Error(err)
+			if !assert.NoError(t, cursor.Seek([]byte("key0000"))) {
 				return
 			}
 
@@ -267,9 +190,8 @@ func TestCursorConcurrentModifications(t *testing.T) {
 				expectedVal := fmt.Sprintf("value%d", count)
 				if !bytes.Equal(val, []byte(expectedVal)) {
 					// Could be modified value, that's ok in snapshot
-					if !bytes.HasPrefix(val, []byte("modified")) {
-						t.Errorf("Reader %d: unexpected value at %s: %s", readerID, key, val)
-					}
+					assert.True(t, bytes.HasPrefix(val, []byte("modified")),
+						"Reader %d: unexpected value at %s: %s", readerID, key, val)
 				}
 
 				count++
@@ -279,9 +201,7 @@ func TestCursorConcurrentModifications(t *testing.T) {
 			}
 
 			// Should see exactly 100 Keys
-			if count != 100 {
-				t.Errorf("Reader %d: expected 100 Keys, got %d", readerID, count)
-			}
+			assert.Equal(t, 100, count, "Reader %d: expected 100 Keys", readerID)
 		}(r)
 	}
 
@@ -326,77 +246,51 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 
 	// Insert initial data
 	tx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	for i := 0; i < 20; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		if err := tx.Set(key, value); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, tx.Set(key, value))
 	}
 
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tx.Commit())
 
 	// Start read transaction with cursor
 	readTx, err := db.Begin(false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer readTx.Rollback()
 
 	cursor := readTx.Cursor()
-	if err := cursor.Seek([]byte("key00")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key00")))
 
 	// Advance to middle
 	for i := 0; i < 10; i++ {
-		if !cursor.Next() {
-			t.Fatal("Should be able to advance")
-		}
+		require.True(t, cursor.Next(), "Should be able to advance")
 	}
 
 	// Should be at key10
-	if !bytes.Equal(cursor.Key(), []byte("key10")) {
-		t.Errorf("Expected key10, got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key10"), cursor.Key())
 
 	// Delete Keys in another transaction
 	writeTx, err := db.Begin(true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Delete Keys 05-14
 	for i := 5; i < 15; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
-		if err := writeTx.Delete(key); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, writeTx.Delete(key))
 	}
 
-	if err := writeTx.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writeTx.Commit())
 
 	// Original cursor should still see all Keys (snapshot)
-	if err := cursor.Seek([]byte("key05")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, cursor.Seek([]byte("key05")))
 
 	// Should successfully find key05 in snapshot
-	if !cursor.Valid() {
-		t.Error("Cursor should be valid on key05 in snapshot")
-	}
+	assert.True(t, cursor.Valid(), "Cursor should be valid on key05 in snapshot")
 
-	if !bytes.Equal(cursor.Key(), []byte("key05")) {
-		t.Errorf("Expected key05 in snapshot, got %s", cursor.Key())
-	}
+	assert.Equal(t, []byte("key05"), cursor.Key(), "Expected key05 in snapshot")
 
 	// Count remaining Keys in snapshot
 	count := 1 // Starting at key05
@@ -405,7 +299,5 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 	}
 
 	// Should see all 15 remaining Keys (05-19) in snapshot
-	if count != 15 {
-		t.Errorf("Expected 15 Keys from key05 to key19 in snapshot, got %d", count)
-	}
+	assert.Equal(t, 15, count, "Expected 15 Keys from key05 to key19 in snapshot")
 }

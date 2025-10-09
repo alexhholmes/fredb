@@ -110,7 +110,7 @@ func (pm *PageManager) WritePage(id base.PageID, page *base.Page) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	return pm.writePageAtUnsafe(id, page)
+	return pm.writePageUnsafe(id, page)
 }
 
 // Sync flushes any buffered writes to disk
@@ -137,7 +137,7 @@ func (pm *PageManager) AllocatePage() (base.PageID, error) {
 
 	// Initialize empty Page
 	emptyPage := &base.Page{}
-	if err := pm.writePageAtUnsafe(id, emptyPage); err != nil {
+	if err := pm.writePageUnsafe(id, emptyPage); err != nil {
 		return 0, err
 	}
 
@@ -266,7 +266,7 @@ func (pm *PageManager) PutMeta(meta base.MetaPage) error {
 	metaPageID := base.PageID(meta.TxnID % 2)
 
 	// Write meta Page to disk (unsafe - already holding lock)
-	if err := pm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
+	if err := pm.writePageUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
@@ -311,7 +311,7 @@ func (pm *PageManager) Close() error {
 	pm.serializeFreelist(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := pm.writePageAtUnsafe(pm.meta.FreelistID+base.PageID(i), freelistPages[i]); err != nil {
+		if err := pm.writePageUnsafe(pm.meta.FreelistID+base.PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
@@ -324,7 +324,7 @@ func (pm *PageManager) Close() error {
 	metaPage := &base.Page{}
 	metaPage.WriteMeta(&pm.meta)
 	metaPageID := base.PageID(pm.meta.TxnID % 2)
-	if err := pm.writePageAtUnsafe(metaPageID, metaPage); err != nil {
+	if err := pm.writePageUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
@@ -425,8 +425,8 @@ func (pm *PageManager) loadExistingDB() error {
 	return nil
 }
 
-// writePageAtUnsafe writes a Page without acquiring the lock (caller must hold lock)
-func (pm *PageManager) writePageAtUnsafe(id base.PageID, page *base.Page) error {
+// writePageUnsafe writes a Page without acquiring the lock (caller must hold lock)
+func (pm *PageManager) writePageUnsafe(id base.PageID, page *base.Page) error {
 	offset := int64(id) * base.PageSize
 
 	// Get aligned buffer from pool

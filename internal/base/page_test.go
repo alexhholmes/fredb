@@ -3,43 +3,27 @@ package base
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPageHeaderAlignment(t *testing.T) {
 	t.Parallel()
 
 	// Verify struct sizes match expectations (no padding)
-	if size := unsafe.Sizeof(PageID(0)); size != 8 {
-		t.Errorf("PageID size = %d bytes, expected 8", size)
-	}
-
-	if size := unsafe.Sizeof(PageHeader{}); size != 40 {
-		t.Errorf("PageHeader size = %d bytes, expected 40", size)
-	}
+	assert.Equal(t, uintptr(8), unsafe.Sizeof(PageID(0)), "PageID size")
+	assert.Equal(t, uintptr(40), unsafe.Sizeof(PageHeader{}), "PageHeader size")
 
 	// Verify field offsets (no padding needed)
 	var h PageHeader
-	if offset := unsafe.Offsetof(h.PageID); offset != 0 {
-		t.Errorf("PageID offset = %d, expected 0", offset)
-	}
-	if offset := unsafe.Offsetof(h.Flags); offset != 8 {
-		t.Errorf("Flags offset = %d, expected 8", offset)
-	}
-	if offset := unsafe.Offsetof(h.NumKeys); offset != 10 {
-		t.Errorf("NumKeys offset = %d, expected 10", offset)
-	}
-	if offset := unsafe.Offsetof(h.Padding); offset != 12 {
-		t.Errorf("Padding offset = %d, expected 12", offset)
-	}
-	if offset := unsafe.Offsetof(h.TxnID); offset != 16 {
-		t.Errorf("TxnID offset = %d, expected 16", offset)
-	}
-	if offset := unsafe.Offsetof(h._NextLeaf); offset != 24 {
-		t.Errorf("_NextLeaf offset = %d, expected 24", offset)
-	}
-	if offset := unsafe.Offsetof(h._PrevLeaf); offset != 32 {
-		t.Errorf("_PrevLeaf offset = %d, expected 32", offset)
-	}
+	assert.Equal(t, uintptr(0), unsafe.Offsetof(h.PageID), "PageID offset")
+	assert.Equal(t, uintptr(8), unsafe.Offsetof(h.Flags), "Flags offset")
+	assert.Equal(t, uintptr(10), unsafe.Offsetof(h.NumKeys), "NumKeys offset")
+	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.Padding), "Padding offset")
+	assert.Equal(t, uintptr(16), unsafe.Offsetof(h.TxnID), "TxnID offset")
+	assert.Equal(t, uintptr(24), unsafe.Offsetof(h._NextLeaf), "_NextLeaf offset")
+	assert.Equal(t, uintptr(32), unsafe.Offsetof(h._PrevLeaf), "_PrevLeaf offset")
 }
 
 func TestPageHeaderRoundTrip(t *testing.T) {
@@ -60,21 +44,11 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 	// Read back using unsafe pointer
 	readHdr := page.Header()
 
-	if readHdr.PageID != writeHdr.PageID {
-		t.Errorf("PageID: got %d, want %d", readHdr.PageID, writeHdr.PageID)
-	}
-	if readHdr.Flags != writeHdr.Flags {
-		t.Errorf("Flags: got %d, want %d", readHdr.Flags, writeHdr.Flags)
-	}
-	if readHdr.NumKeys != writeHdr.NumKeys {
-		t.Errorf("NumKeys: got %d, want %d", readHdr.NumKeys, writeHdr.NumKeys)
-	}
-	if readHdr.Padding != writeHdr.Padding {
-		t.Errorf("Padding: got %d, want %d", readHdr.Padding, writeHdr.Padding)
-	}
-	if readHdr.TxnID != writeHdr.TxnID {
-		t.Errorf("TxnID: got %d, want %d", readHdr.TxnID, writeHdr.TxnID)
-	}
+	assert.Equal(t, writeHdr.PageID, readHdr.PageID, "PageID")
+	assert.Equal(t, writeHdr.Flags, readHdr.Flags, "Flags")
+	assert.Equal(t, writeHdr.NumKeys, readHdr.NumKeys, "NumKeys")
+	assert.Equal(t, writeHdr.Padding, readHdr.Padding, "Padding")
+	assert.Equal(t, writeHdr.TxnID, readHdr.TxnID, "TxnID")
 }
 
 func TestPageHeaderByteLayout(t *testing.T) {
@@ -113,18 +87,14 @@ func TestPageHeaderByteLayout(t *testing.T) {
 	}
 
 	for i, expectedByte := range expected {
-		if page.Data[i] != expectedByte {
-			t.Errorf("byte[%d]: got 0x%02X, want 0x%02X", i, page.Data[i], expectedByte)
-		}
+		assert.Equal(t, expectedByte, page.Data[i], "byte[%d]", i)
 	}
 }
 
 func TestLeafElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	if size := unsafe.Sizeof(LeafElement{}); size != 12 {
-		t.Errorf("LeafElement size = %d bytes, expected 12", size)
-	}
+	assert.Equal(t, uintptr(12), unsafe.Sizeof(LeafElement{}), "LeafElement size")
 }
 
 func TestLeafElementByteLayout(t *testing.T) {
@@ -166,9 +136,7 @@ func TestLeafElementByteLayout(t *testing.T) {
 	}
 
 	for i, expectedByte := range expected {
-		if page.Data[offset+i] != expectedByte {
-			t.Errorf("byte[%d]: got 0x%02X, want 0x%02X", offset+i, page.Data[offset+i], expectedByte)
-		}
+		assert.Equal(t, expectedByte, page.Data[offset+i], "byte[%d]", offset+i)
 	}
 }
 
@@ -207,37 +175,21 @@ func TestLeafElementRoundTrip(t *testing.T) {
 	// Read back using unsafe pointer
 	elements := page.LeafElements()
 
-	if len(elements) != 2 {
-		t.Fatalf("got %d elements, want 2", len(elements))
-	}
+	require.Len(t, elements, 2)
 
-	if elements[0].KeyOffset != elem1.KeyOffset {
-		t.Errorf("elem[0].KeyOffset: got %d, want %d", elements[0].KeyOffset, elem1.KeyOffset)
-	}
-	if elements[0].KeySize != elem1.KeySize {
-		t.Errorf("elem[0].KeySize: got %d, want %d", elements[0].KeySize, elem1.KeySize)
-	}
-	if elements[0].ValueOffset != elem1.ValueOffset {
-		t.Errorf("elem[0].ValueOffset: got %d, want %d", elements[0].ValueOffset, elem1.ValueOffset)
-	}
-	if elements[0].ValueSize != elem1.ValueSize {
-		t.Errorf("elem[0].ValueSize: got %d, want %d", elements[0].ValueSize, elem1.ValueSize)
-	}
+	assert.Equal(t, elem1.KeyOffset, elements[0].KeyOffset, "elem[0].KeyOffset")
+	assert.Equal(t, elem1.KeySize, elements[0].KeySize, "elem[0].KeySize")
+	assert.Equal(t, elem1.ValueOffset, elements[0].ValueOffset, "elem[0].ValueOffset")
+	assert.Equal(t, elem1.ValueSize, elements[0].ValueSize, "elem[0].ValueSize")
 
-	if elements[1].KeyOffset != elem2.KeyOffset {
-		t.Errorf("elem[1].KeyOffset: got %d, want %d", elements[1].KeyOffset, elem2.KeyOffset)
-	}
-	if elements[1].KeySize != elem2.KeySize {
-		t.Errorf("elem[1].KeySize: got %d, want %d", elements[1].KeySize, elem2.KeySize)
-	}
+	assert.Equal(t, elem2.KeyOffset, elements[1].KeyOffset, "elem[1].KeyOffset")
+	assert.Equal(t, elem2.KeySize, elements[1].KeySize, "elem[1].KeySize")
 }
 
 func TestBranchElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	if size := unsafe.Sizeof(BranchElement{}); size != 16 {
-		t.Errorf("BranchElement size = %d bytes, expected 16", size)
-	}
+	assert.Equal(t, uintptr(16), unsafe.Sizeof(BranchElement{}), "BranchElement size")
 }
 
 func TestBranchElementByteLayout(t *testing.T) {
@@ -276,9 +228,7 @@ func TestBranchElementByteLayout(t *testing.T) {
 	}
 
 	for i, expectedByte := range expected {
-		if page.Data[offset+i] != expectedByte {
-			t.Errorf("byte[%d]: got 0x%02X, want 0x%02X", offset+i, page.Data[offset+i], expectedByte)
-		}
+		assert.Equal(t, expectedByte, page.Data[offset+i], "byte[%d]", offset+i)
 	}
 }
 
@@ -315,29 +265,15 @@ func TestBranchElementRoundTrip(t *testing.T) {
 	// Read back using unsafe pointer
 	elements := page.BranchElements()
 
-	if len(elements) != 2 {
-		t.Fatalf("got %d elements, want 2", len(elements))
-	}
+	require.Len(t, elements, 2)
 
-	if elements[0].KeyOffset != elem1.KeyOffset {
-		t.Errorf("elem[0].KeyOffset: got %d, want %d", elements[0].KeyOffset, elem1.KeyOffset)
-	}
-	if elements[0].KeySize != elem1.KeySize {
-		t.Errorf("elem[0].KeySize: got %d, want %d", elements[0].KeySize, elem1.KeySize)
-	}
-	if elements[0].ChildID != elem1.ChildID {
-		t.Errorf("elem[0].ChildID: got %d, want %d", elements[0].ChildID, elem1.ChildID)
-	}
+	assert.Equal(t, elem1.KeyOffset, elements[0].KeyOffset, "elem[0].KeyOffset")
+	assert.Equal(t, elem1.KeySize, elements[0].KeySize, "elem[0].KeySize")
+	assert.Equal(t, elem1.ChildID, elements[0].ChildID, "elem[0].ChildID")
 
-	if elements[1].KeyOffset != elem2.KeyOffset {
-		t.Errorf("elem[1].KeyOffset: got %d, want %d", elements[1].KeyOffset, elem2.KeyOffset)
-	}
-	if elements[1].KeySize != elem2.KeySize {
-		t.Errorf("elem[1].KeySize: got %d, want %d", elements[1].KeySize, elem2.KeySize)
-	}
-	if elements[1].ChildID != elem2.ChildID {
-		t.Errorf("elem[1].ChildID: got %d, want %d", elements[1].ChildID, elem2.ChildID)
-	}
+	assert.Equal(t, elem2.KeyOffset, elements[1].KeyOffset, "elem[1].KeyOffset")
+	assert.Equal(t, elem2.KeySize, elements[1].KeySize, "elem[1].KeySize")
+	assert.Equal(t, elem2.ChildID, elements[1].ChildID, "elem[1].ChildID")
 }
 
 func TestBranchFirstChildRoundTrip(t *testing.T) {
@@ -360,9 +296,7 @@ func TestBranchFirstChildRoundTrip(t *testing.T) {
 	// Read back
 	readChildID := page.ReadBranchFirstChild()
 
-	if readChildID != childID {
-		t.Errorf("ChildID: got %d, want %d", readChildID, childID)
-	}
+	assert.Equal(t, childID, readChildID, "ChildID")
 }
 
 func TestDataAreaStart(t *testing.T) {
@@ -411,9 +345,7 @@ func TestDataAreaStart(t *testing.T) {
 			page.WriteHeader(&header)
 
 			dataStart := page.dataAreaStart()
-			if dataStart != tt.expected {
-				t.Errorf("dataAreaStart() = %d, want %d", dataStart, tt.expected)
-			}
+			assert.Equal(t, tt.expected, dataStart, "dataAreaStart()")
 		})
 	}
 }
@@ -450,20 +382,12 @@ func TestGetKeyValue(t *testing.T) {
 
 	// Read back using getKey/getValue
 	readKey, err := page.GetKey(elem.KeyOffset, elem.KeySize)
-	if err != nil {
-		t.Fatalf("getKey() error = %v", err)
-	}
+	require.NoError(t, err, "getKey()")
 	readValue, err := page.GetValue(elem.ValueOffset, elem.ValueSize)
-	if err != nil {
-		t.Fatalf("getValue() error = %v", err)
-	}
+	require.NoError(t, err, "getValue()")
 
-	if string(readKey) != string(key) {
-		t.Errorf("getKey() = %q, want %q", readKey, key)
-	}
-	if string(readValue) != string(value) {
-		t.Errorf("getValue() = %q, want %q", readValue, value)
-	}
+	assert.Equal(t, string(key), string(readKey), "getKey()")
+	assert.Equal(t, string(value), string(readValue), "getValue()")
 }
 
 func TestGetKeyValueBoundsChecking(t *testing.T) {
@@ -516,8 +440,10 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := page.GetKey(tt.offset, tt.size)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("getKey() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				assert.Error(t, err, "getKey()")
+			} else {
+				assert.NoError(t, err, "getKey()")
 			}
 		})
 	}

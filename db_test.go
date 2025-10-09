@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"fredb/internal/base"
 )
 
@@ -22,9 +25,7 @@ func setupTestDB(t *testing.T) *DB {
 	_ = os.Remove(tmpfile + ".wal") // Also remove wal file
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	// Type assert to get concrete type for tests
 	t.Cleanup(func() {
@@ -46,9 +47,7 @@ func TestDBBasicOperations(t *testing.T) {
 	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	// Test Set and get
@@ -56,44 +55,28 @@ func TestDBBasicOperations(t *testing.T) {
 	value := []byte("test-value")
 
 	err = db.Set(key, value)
-	if err != nil {
-		t.Errorf("Failed to set key: %v", err)
-	}
+	assert.NoError(t, err, "Failed to set key")
 
 	retrieved, err := db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get key: %v", err)
-	}
-	if string(retrieved) != string(value) {
-		t.Errorf("Expected %s, got %s", string(value), string(retrieved))
-	}
+	assert.NoError(t, err, "Failed to get key")
+	assert.Equal(t, value, retrieved)
 
 	// Test Update
 	newValue := []byte("updated-value")
 	err = db.Set(key, newValue)
-	if err != nil {
-		t.Errorf("Failed to update key: %v", err)
-	}
+	assert.NoError(t, err, "Failed to update key")
 
 	retrieved, err = db.Get(key)
-	if err != nil {
-		t.Errorf("Failed to get updated key: %v", err)
-	}
-	if string(retrieved) != string(newValue) {
-		t.Errorf("Expected %s, got %s", string(newValue), string(retrieved))
-	}
+	assert.NoError(t, err, "Failed to get updated key")
+	assert.Equal(t, newValue, retrieved)
 
 	// Test Delete
 	err = db.Delete(key)
-	if err != nil {
-		t.Errorf("Failed to delete key: %v", err)
-	}
+	assert.NoError(t, err, "Failed to delete key")
 
 	// Verify key is deleted
 	_, err = db.Get(key)
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for deleted key, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrKeyNotFound)
 }
 
 func TestDBErrors(t *testing.T) {
@@ -103,22 +86,16 @@ func TestDBErrors(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	// get non-existent key
 	_, err = db.Get([]byte("non-existent"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for non-existent key, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrKeyNotFound)
 
 	// Delete non-existent key
 	err = db.Delete([]byte("non-existent"))
-	if err != ErrKeyNotFound {
-		t.Errorf("Expected ErrKeyNotFound for deleting non-existent key, got %v", err)
-	}
+	assert.ErrorIs(t, err, ErrKeyNotFound)
 }
 
 func TestDBClose(t *testing.T) {
@@ -128,21 +105,15 @@ func TestDBClose(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	// Set a key before closing
 	err = db.Set([]byte("key"), []byte("value"))
-	if err != nil {
-		t.Errorf("Failed to set key: %v", err)
-	}
+	assert.NoError(t, err, "Failed to set key")
 
 	// close the DB
 	err = db.Close()
-	if err != nil {
-		t.Errorf("Failed to close DB: %v", err)
-	}
+	assert.NoError(t, err, "Failed to close DB")
 
 	// Multiple close calls should not panic
 	err = db.Close()
@@ -167,9 +138,7 @@ func TestDBConcurrency(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	numGoroutines := 100
@@ -198,8 +167,8 @@ func TestDBConcurrency(t *testing.T) {
 						if err == ErrTxInProgress {
 							continue
 						}
+						assert.NoError(t, err, "Set failed")
 						if err != nil {
-							t.Errorf("Set failed: %v", err)
 							return
 						}
 						break
@@ -218,15 +187,14 @@ func TestDBConcurrency(t *testing.T) {
 					val, err := db.Get([]byte(key))
 					// It's OK if key not found (not written yet)
 					if err != nil && err != ErrKeyNotFound {
-						t.Errorf("get failed with unexpected error: %v", err)
+						assert.NoError(t, err, "get failed with unexpected error")
 						return
 					}
 
 					// If found, verify it matches expected pattern
 					if err == nil {
 						expectedPattern := fmt.Sprintf("value-%d-%d", readID, readJ)
-						if string(val) != expectedPattern {
-							t.Errorf("Value mismatch: got %s, expected pattern %s", string(val), expectedPattern)
+						if !assert.Equal(t, expectedPattern, string(val)) {
 							return
 						}
 					}
@@ -240,13 +208,10 @@ func TestDBConcurrency(t *testing.T) {
 	// Verify final state - all written Keys should be readable
 	for key, expectedValue := range expectedValues {
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Key should exist: %s, error: %v", key, err)
+		if !assert.NoError(t, err, "Key should exist: %s", key) {
 			continue
 		}
-		if string(val) != expectedValue {
-			t.Errorf("Value mismatch for key %s: got %s, expected %s", key, string(val), expectedValue)
-		}
+		assert.Equal(t, expectedValue, string(val), "Value mismatch for key %s", key)
 	}
 }
 
@@ -262,9 +227,7 @@ func TestDBConcurrentReads(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	// Insert test data
@@ -275,9 +238,7 @@ func TestDBConcurrentReads(t *testing.T) {
 		testData[key] = value
 
 		err = db.Set([]byte(key), []byte(value))
-		if err != nil {
-			t.Fatalf("Failed to insert test data: %v", err)
-		}
+		require.NoError(t, err, "Failed to insert test data")
 	}
 
 	// Launch concurrent readers
@@ -301,13 +262,11 @@ func TestDBConcurrentReads(t *testing.T) {
 				expectedValue := fmt.Sprintf("value-%d", (id*readsPerReader+j)%1000)
 
 				val, err := db.Get([]byte(key))
-				if err != nil {
-					t.Errorf("get failed for key %s: %v", key, err)
+				if !assert.NoError(t, err, "get failed for key %s", key) {
 					return
 				}
 
-				if string(val) != expectedValue {
-					t.Errorf("Value mismatch for key %s: got %s, expected %s", key, string(val), expectedValue)
+				if !assert.Equal(t, expectedValue, string(val), "Value mismatch for key %s", key) {
 					return
 				}
 			}
@@ -344,9 +303,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	numWriters := 20
@@ -374,8 +331,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 						// Another writer holds the lock, retry
 						continue
 					}
-					if err != nil {
-						t.Errorf("Set failed for writer %d: %v", id, err)
+					if !assert.NoError(t, err, "Set failed for writer %d", id) {
 						return
 					}
 					break
@@ -392,19 +348,14 @@ func TestDBConcurrentWrites(t *testing.T) {
 	wg.Wait()
 
 	// Verify all Keys are present and have correct Values
-	if len(writtenKeys) != numWriters*writesPerWriter {
-		t.Errorf("Expected %d Keys, got %d", numWriters*writesPerWriter, len(writtenKeys))
-	}
+	assert.Equal(t, numWriters*writesPerWriter, len(writtenKeys))
 
 	for key, expectedValue := range writtenKeys {
 		val, err := db.Get([]byte(key))
-		if err != nil {
-			t.Errorf("Key %s not found: %v", key, err)
+		if !assert.NoError(t, err, "Key %s not found", key) {
 			continue
 		}
-		if string(val) != expectedValue {
-			t.Errorf("Value mismatch for key %s: got %s, expected %s", key, string(val), expectedValue)
-		}
+		assert.Equal(t, expectedValue, string(val), "Value mismatch for key %s", key)
 	}
 
 	// Test concurrent updates to same Keys
@@ -424,8 +375,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 					// Another writer holds the lock, retry
 					continue
 				}
-				if err != nil {
-					t.Errorf("Update failed for updater %d: %v", id, err)
+				if !assert.NoError(t, err, "Update failed for updater %d", id) {
 					return
 				}
 				break
@@ -437,9 +387,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 
 	// Verify the key exists (value could be from any updater)
 	_, err = db.Get(updateKey)
-	if err != nil {
-		t.Errorf("Concurrent update key not found: %v", err)
-	}
+	assert.NoError(t, err, "Concurrent update key not found")
 }
 
 // TestTxSnapshotIsolation tests MVCC snapshot isolation.
@@ -451,63 +399,43 @@ func TestTxSnapshotIsolation(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	// Insert initial Values
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d-v1", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to set initial key: %v", err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to set initial key")
 	}
 
 	// Test 1: Simple snapshot isolation
 	// Start read transaction, capture value
 	readTx, err := db.Begin(false)
-	if err != nil {
-		t.Fatalf("Failed to begin read transaction: %v", err)
-	}
+	require.NoError(t, err, "Failed to begin read transaction")
 	defer readTx.Rollback()
 
 	oldValue, err := readTx.Get([]byte("key-0"))
-	if err != nil {
-		t.Fatalf("Failed to get value in read tx: %v", err)
-	}
-	if string(oldValue) != "value-0-v1" {
-		t.Errorf("Expected 'value-0-v1', got %s", string(oldValue))
-	}
+	require.NoError(t, err, "Failed to get value in read tx")
+	assert.Equal(t, "value-0-v1", string(oldValue))
 
 	// Start write transaction, modify value, commit
 	err = db.Update(func(writeTx *Tx) error {
 		return writeTx.Set([]byte("key-0"), []byte("value-0-v2"))
 	})
-	if err != nil {
-		t.Fatalf("Failed to commit write transaction: %v", err)
-	}
+	require.NoError(t, err, "Failed to commit write transaction")
 
 	// Verify read tx still sees old value (snapshot isolation)
 	stillOldValue, err := readTx.Get([]byte("key-0"))
-	if err != nil {
-		t.Fatalf("Failed to get value in read tx after write: %v", err)
-	}
-	if string(stillOldValue) != "value-0-v1" {
-		t.Errorf("Snapshot isolation broken: expected 'value-0-v1', got %s", string(stillOldValue))
-	}
+	require.NoError(t, err, "Failed to get value in read tx after write")
+	assert.Equal(t, "value-0-v1", string(stillOldValue), "Snapshot isolation broken")
 
 	readTx.Rollback()
 
 	// Verify new transaction sees new value
 	newValue, err := db.Get([]byte("key-0"))
-	if err != nil {
-		t.Fatalf("Failed to get value after commit: %v", err)
-	}
-	if string(newValue) != "value-0-v2" {
-		t.Errorf("Expected 'value-0-v2', got %s", string(newValue))
-	}
+	require.NoError(t, err, "Failed to get value after commit")
+	assert.Equal(t, "value-0-v2", string(newValue))
 
 	// Test 2: 10 concurrent readers + 1 writer
 	// All readers should see consistent snapshots
@@ -524,7 +452,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 			// Start read transaction
 			tx, err := db.Begin(false)
 			if err != nil {
-				readerErrors <- fmt.Errorf("reader %d: failed to begin: %v", readerID, err)
+				readerErrors <- fmt.Errorf("reader %d: failed to begin: %w", readerID, err)
 				return
 			}
 			defer tx.Rollback()
@@ -535,7 +463,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 				key := []byte(fmt.Sprintf("key-%d", j))
 				value, err := tx.Get(key)
 				if err != nil {
-					readerErrors <- fmt.Errorf("reader %d: failed to get key-%d: %v", readerID, j, err)
+					readerErrors <- fmt.Errorf("reader %d: failed to get key-%d: %w", readerID, j, err)
 					return
 				}
 				snapshot[string(key)] = string(value)
@@ -549,7 +477,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 				key := []byte(fmt.Sprintf("key-%d", j))
 				value, err := tx.Get(key)
 				if err != nil {
-					readerErrors <- fmt.Errorf("reader %d: failed to re-read key-%d: %v", readerID, j, err)
+					readerErrors <- fmt.Errorf("reader %d: failed to re-read key-%d: %w", readerID, j, err)
 					return
 				}
 				if snapshot[string(key)] != string(value) {
@@ -574,7 +502,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 			value := []byte(fmt.Sprintf("value-%d-v3", i))
 			err := db.Set(key, value)
 			if err != nil {
-				readerErrors <- fmt.Errorf("writer: failed to set key-%d: %v", i, err)
+				readerErrors <- fmt.Errorf("writer: failed to set key-%d: %w", i, err)
 				return
 			}
 		}
@@ -592,14 +520,11 @@ func TestTxSnapshotIsolation(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value, err := db.Get(key)
-		if err != nil {
-			t.Errorf("Failed to get final value for key-%d: %v", i, err)
+		if !assert.NoError(t, err, "Failed to get final value for key-%d", i) {
 			continue
 		}
 		expectedValue := fmt.Sprintf("value-%d-v3", i)
-		if string(value) != expectedValue {
-			t.Errorf("Final value for key-%d: expected %s, got %s", i, expectedValue, string(value))
-		}
+		assert.Equal(t, expectedValue, string(value), "Final value for key-%d", i)
 	}
 }
 
@@ -616,18 +541,14 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	// Insert 100 initial Keys
 	for i := 0; i < 100; i++ {
 		key := []byte(fmt.Sprintf("initial-key-%d", i))
 		value := []byte(fmt.Sprintf("initial-value-%d", i))
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to insert initial data: %v", err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to insert initial data")
 	}
 
 	// Track committed transactions
@@ -719,8 +640,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 							statsMu.Unlock()
 							continue
 						}
-						if err != nil {
-							t.Errorf("Failed to begin tx: %v", err)
+						if !assert.NoError(t, err, "Failed to begin tx") {
 							break
 						}
 
@@ -728,15 +648,11 @@ func TestTxRollbackUnderContention(t *testing.T) {
 						for k := 0; k < 5; k++ {
 							key := []byte(fmt.Sprintf("rollback-tx-%d-key-%d", opID, k))
 							value := []byte(fmt.Sprintf("rollback-tx-%d-value-%d", opID, k))
-							if err := tx.Set(key, value); err != nil {
-								t.Errorf("Set failed in rollback test: %v", err)
-							}
+							assert.NoError(t, tx.Set(key, value), "Set failed in rollback test")
 						}
 
 						// Explicit rollback
-						if err := tx.Rollback(); err != nil {
-							t.Errorf("Rollback failed: %v", err)
-						}
+						assert.NoError(t, tx.Rollback(), "Rollback failed")
 
 						statsMu.Lock()
 						explicitRollbacks++
@@ -790,21 +706,15 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		// Verify new Keys
 		for i := 0; i < 5; i++ {
 			val, err := db.Get([]byte(result.keys[i]))
-			if err != nil {
-				t.Errorf("Committed tx %d: key %s not found: %v", txIdx, result.keys[i], err)
+			if !assert.NoError(t, err, "Committed tx %d: key %s not found", txIdx, result.keys[i]) {
 				continue
 			}
-			if string(val) != result.values[i] {
-				t.Errorf("Committed tx %d: key %s value mismatch: got %s, expected %s",
-					txIdx, result.keys[i], string(val), result.values[i])
-			}
+			assert.Equal(t, result.values[i], string(val), "Committed tx %d: key %s value mismatch", txIdx, result.keys[i])
 		}
 
 		// Verify updated key
 		val, err := db.Get([]byte(result.update))
-		if err != nil {
-			t.Errorf("Committed tx %d: updated key %s not found: %v", txIdx, result.update, err)
-		} else {
+		if !assert.NoError(t, err, "Committed tx %d: updated key %s not found", txIdx, result.update) {
 			// Value should be from SOME committed transaction (last writer wins)
 			// Just verify it's not the original value
 			if string(val) == fmt.Sprintf("initial-value-%s", result.update[12:]) {
@@ -819,16 +729,12 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		// Check explicit rollback Keys
 		key := []byte(fmt.Sprintf("rollback-tx-%d-key-0", i*100))
 		_, err := db.Get(key)
-		if err != ErrKeyNotFound {
-			t.Errorf("Rolled-back key should not exist: %s, got error: %v", key, err)
-		}
+		assert.ErrorIs(t, err, ErrKeyNotFound, "Rolled-back key should not exist: %s", key)
 
 		// Check error rollback Keys
 		key = []byte(fmt.Sprintf("error-tx-%d-key-0", i*100))
 		_, err = db.Get(key)
-		if err != ErrKeyNotFound {
-			t.Errorf("Error-rolled-back key should not exist: %s, got error: %v", key, err)
-		}
+		assert.ErrorIs(t, err, ErrKeyNotFound, "Error-rolled-back key should not exist: %s", key)
 	}
 
 	// Heuristic active for Page leaks: file size should be reasonable
@@ -836,15 +742,10 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	// = ~100 + 3000-4500 = ~4000 Keys total
 	// At ~4KB per Page with branching, expect < 10MB
 	info, err := os.Stat(tmpfile)
-	if err != nil {
-		t.Errorf("Failed to stat DB file: %v", err)
-	} else {
-		sizeMB := float64(info.Size()) / (1024 * 1024)
-		t.Logf("Database file size: %.2f MB", sizeMB)
-		if sizeMB > 10.0 {
-			t.Errorf("File size suspiciously large (%.2f MB), possible Page leak", sizeMB)
-		}
-	}
+	require.NoError(t, err, "Failed to stat DB file")
+	sizeMB := float64(info.Size()) / (1024 * 1024)
+	t.Logf("Database file size: %.2f MB", sizeMB)
+	assert.LessOrEqual(t, sizeMB, 10.0, "File size suspiciously large (%.2f MB), possible Page leak", sizeMB)
 }
 
 // TestDBLargeKeysPerPage tests inserting large key-value pairs
@@ -856,9 +757,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	defer db.Close()
 
 	// Calculate key/value size for 2 pairs per Page
@@ -900,9 +799,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := makeKey(i)
 			value := makeValue(i)
-			if err := db.Set(key, value); err != nil {
-				t.Fatalf("Failed to insert large key %d: %v", i, err)
-			}
+			require.NoError(t, db.Set(key, value), "Failed to insert large key %d", i)
 		}
 	})
 
@@ -913,18 +810,12 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 			expectedValue := makeValue(i)
 
 			value, err := db.Get(key)
-			if err != nil {
-				t.Errorf("Failed to get large key %d: %v", i, err)
+			if !assert.NoError(t, err, "Failed to get large key %d", i) {
 				continue
 			}
 
-			if len(value) != valueSize {
-				t.Errorf("Key %d: value size mismatch: got %d, expected %d", i, len(value), valueSize)
-			}
-
-			if string(value) != string(expectedValue) {
-				t.Errorf("Key %d: value mismatch", i)
-			}
+			assert.Equal(t, valueSize, len(value), "Key %d: value size mismatch", i)
+			assert.Equal(t, string(expectedValue), string(value), "Key %d: value mismatch", i)
 		}
 	})
 
@@ -940,20 +831,15 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 				newValue[j] = byte('Z' - (j % 26))
 			}
 
-			if err := db.Set(key, newValue); err != nil {
-				t.Fatalf("Failed to update large key %d: %v", i, err)
-			}
+			require.NoError(t, db.Set(key, newValue), "Failed to update large key %d", i)
 
 			// Verify update
 			value, err := db.Get(key)
-			if err != nil {
-				t.Errorf("Failed to get updated key %d: %v", i, err)
+			if !assert.NoError(t, err, "Failed to get updated key %d", i) {
 				continue
 			}
 
-			if string(value) != string(newValue) {
-				t.Errorf("Key %d: updated value mismatch", i)
-			}
+			assert.Equal(t, string(newValue), string(value), "Key %d: updated value mismatch", i)
 		}
 	})
 
@@ -962,24 +848,18 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		// Delete every other key
 		for i := 0; i < 10; i += 2 {
 			key := makeKey(i)
-			if err := db.Delete(key); err != nil {
-				t.Errorf("Failed to delete large key %d: %v", i, err)
-			}
+			assert.NoError(t, db.Delete(key), "Failed to delete large key %d", i)
 
 			// Verify deleted
 			_, err := db.Get(key)
-			if err != ErrKeyNotFound {
-				t.Errorf("Key %d should be deleted, got error: %v", i, err)
-			}
+			assert.ErrorIs(t, err, ErrKeyNotFound, "Key %d should be deleted", i)
 		}
 
 		// Verify remaining Keys still exist
 		for i := 1; i < 10; i += 2 {
 			key := makeKey(i)
 			_, err := db.Get(key)
-			if err != nil {
-				t.Errorf("Remaining key %d should exist: %v", i, err)
-			}
+			assert.NoError(t, err, "Remaining key %d should exist", i)
 		}
 	})
 
@@ -1006,8 +886,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 							if err == ErrTxInProgress {
 								continue
 							}
-							if err != nil {
-								t.Errorf("Goroutine %d: Set failed: %v", id, err)
+							if !assert.NoError(t, err, "Goroutine %d: Set failed", id) {
 								return
 							}
 							break
@@ -1026,14 +905,11 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 					expectedValue := makeValue(keyID)
 
 					value, err := db.Get(key)
-					if err != nil {
-						t.Errorf("Concurrent key %d not found: %v", keyID, err)
+					if !assert.NoError(t, err, "Concurrent key %d not found", keyID) {
 						continue
 					}
 
-					if string(value) != string(expectedValue) {
-						t.Errorf("Concurrent key %d: value mismatch", keyID)
-					}
+					assert.Equal(t, string(expectedValue), string(value), "Concurrent key %d: value mismatch", keyID)
 				}
 			}
 		})
@@ -1045,9 +921,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		for i := 100; i < 200; i++ {
 			key := makeKey(i)
 			value := makeValue(i)
-			if err := db.Set(key, value); err != nil {
-				t.Fatalf("Failed to insert key %d in deep tree: %v", i, err)
-			}
+			require.NoError(t, db.Set(key, value), "Failed to insert key %d in deep tree", i)
 		}
 
 		// Spot active some Keys
@@ -1057,14 +931,11 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 			expectedValue := makeValue(i)
 
 			value, err := db.Get(key)
-			if err != nil {
-				t.Errorf("Key %d not found in deep tree: %v", i, err)
+			if !assert.NoError(t, err, "Key %d not found in deep tree", i) {
 				continue
 			}
 
-			if string(value) != string(expectedValue) {
-				t.Errorf("Key %d in deep tree: value mismatch", i)
-			}
+			assert.Equal(t, string(expectedValue), string(value), "Key %d in deep tree: value mismatch", i)
 		}
 	})
 }
@@ -1078,9 +949,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// Create DB and do a single commit
 	db1, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 	db1.Set([]byte("key1"), []byte("value1"))
 	db1.Close()
 
@@ -1090,9 +959,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// Check TxnIDs after second Set (before close)
 	file, err := os.Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 	page0 := &base.Page{}
 	file.Read(page0.Data[:])
 	page1 := &base.Page{}
@@ -1119,9 +986,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// Simulate crash: corrupt the newest meta Page
 	file, err = os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	page0 = &base.Page{}
 	file.ReadAt(page0.Data[:], 0)
@@ -1148,9 +1013,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// Reopen - should fall back to previous valid state
 	db3, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to reopen after simulated crash: %v", err)
-	}
+	require.NoError(t, err, "Failed to reopen after simulated crash")
 	defer db3.Close()
 
 	meta3 := db3.store.pager.GetMeta()
@@ -1159,12 +1022,8 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// key1 should always exist
 	v1, err := db3.Get([]byte("key1"))
-	if err != nil {
-		t.Errorf("key1 should exist after crash recovery: %v", err)
-	}
-	if string(v1) != "value1" {
-		t.Errorf("Wrong value for key1: got %s, expected value1", string(v1))
-	}
+	assert.NoError(t, err, "key1 should exist after crash recovery")
+	assert.Equal(t, "value1", string(v1))
 
 	// Verify we loaded the older state (key2 should match the older root's content)
 	// If we loaded olderRoot, active if it has key2 or not
@@ -1186,59 +1045,35 @@ func TestDiskPageManagerBasic(t *testing.T) {
 
 	// Create new database
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	// Insert some data
-	if err := db.Set([]byte("key1"), []byte("value1")); err != nil {
-		t.Fatalf("Failed to set key1: %v", err)
-	}
-	if err := db.Set([]byte("key2"), []byte("value2")); err != nil {
-		t.Fatalf("Failed to set key2: %v", err)
-	}
+	require.NoError(t, db.Set([]byte("key1"), []byte("value1")), "Failed to set key1")
+	require.NoError(t, db.Set([]byte("key2"), []byte("value2")), "Failed to set key2")
 
 	// Verify data
 	val, err := db.Get([]byte("key1"))
-	if err != nil {
-		t.Fatalf("Failed to get key1: %v", err)
-	}
-	if string(val) != "value1" {
-		t.Errorf("Expected value1, got %s", val)
-	}
+	require.NoError(t, err, "Failed to get key1")
+	assert.Equal(t, "value1", string(val))
 
 	// close (flushes to disk)
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, db.Close(), "Failed to close DB")
 
 	// Reopen database
 	db2, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to reopen DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to reopen DB")
 
 	// Verify data persisted
 	val, err = db2.Get([]byte("key1"))
-	if err != nil {
-		t.Fatalf("Failed to get key1 after reopen: %v", err)
-	}
-	if string(val) != "value1" {
-		t.Errorf("Expected value1 after reopen, got %s", val)
-	}
+	require.NoError(t, err, "Failed to get key1 after reopen")
+	assert.Equal(t, "value1", string(val))
 
 	val, err = db2.Get([]byte("key2"))
-	if err != nil {
-		t.Fatalf("Failed to get key2 after reopen: %v", err)
-	}
-	if string(val) != "value2" {
-		t.Errorf("Expected value2 after reopen, got %s", val)
-	}
+	require.NoError(t, err, "Failed to get key2 after reopen")
+	assert.Equal(t, "value2", string(val))
 
 	// Cleanup
-	if err := db2.Close(); err != nil {
-		t.Fatalf("Failed to close db2: %v", err)
-	}
+	require.NoError(t, db2.Close(), "Failed to close db2")
 }
 
 func TestDiskPageManagerPersistence(t *testing.T) {
@@ -1251,44 +1086,30 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 
 	// Create database and insert 100 Keys
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	for i := 0; i < 100; i++ {
 		key := []byte{byte(i)}
 		value := []byte{byte(i * 2)}
-		if err := db.Set(key, value); err != nil {
-			t.Fatalf("Failed to set key %d: %v", i, err)
-		}
+		require.NoError(t, db.Set(key, value), "Failed to set key %d", i)
 	}
 
-	if err := db.Close(); err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, db.Close(), "Failed to close DB")
 
 	// Reopen and verify all Keys
 	db2, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to reopen DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to reopen DB")
 
 	for i := 0; i < 100; i++ {
 		key := []byte{byte(i)}
 		expectedValue := []byte{byte(i * 2)}
 
 		value, err := db2.Get(key)
-		if err != nil {
-			t.Fatalf("Failed to get key %d after reopen: %v", i, err)
-		}
-		if len(value) != 1 || value[0] != expectedValue[0] {
-			t.Errorf("Key %d: expected %v, got %v", i, expectedValue, value)
-		}
+		require.NoError(t, err, "Failed to get key %d after reopen", i)
+		assert.Equal(t, expectedValue, value, "Key %d: value mismatch", i)
 	}
 
-	if err := db2.Close(); err != nil {
-		t.Fatalf("Failed to close db2: %v", err)
-	}
+	require.NoError(t, db2.Close(), "Failed to close db2")
 }
 
 func TestDiskPageManagerDelete(t *testing.T) {
@@ -1299,9 +1120,7 @@ func TestDiskPageManagerDelete(t *testing.T) {
 
 	// Create database
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	// Insert Keys
 	db.Set([]byte("a"), []byte("1"))
@@ -1309,9 +1128,7 @@ func TestDiskPageManagerDelete(t *testing.T) {
 	db.Set([]byte("c"), []byte("3"))
 
 	// Delete one
-	if err := db.Delete([]byte("b")); err != nil {
-		t.Fatalf("Failed to delete: %v", err)
-	}
+	require.NoError(t, db.Delete([]byte("b")), "Failed to delete")
 
 	// close
 	db.Close()
@@ -1320,17 +1137,14 @@ func TestDiskPageManagerDelete(t *testing.T) {
 	db2, _ := Open(tmpfile)
 
 	// Should still have a and c
-	if _, err := db2.Get([]byte("a")); err != nil {
-		t.Error("Key 'a' should exist")
-	}
-	if _, err := db2.Get([]byte("c")); err != nil {
-		t.Error("Key 'c' should exist")
-	}
+	_, err = db2.Get([]byte("a"))
+	assert.NoError(t, err, "Key 'a' should exist")
+	_, err = db2.Get([]byte("c"))
+	assert.NoError(t, err, "Key 'c' should exist")
 
 	// b should be gone
-	if _, err := db2.Get([]byte("b")); err == nil {
-		t.Error("Key 'b' should be deleted")
-	}
+	_, err = db2.Get([]byte("b"))
+	assert.Error(t, err, "Key 'b' should be deleted")
 
 	db2.Close()
 }
@@ -1344,61 +1158,39 @@ func TestDBFileFormat(t *testing.T) {
 
 	// Create DB and write some data
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// validate file exists and has correct structure
 	info, err := os.Stat(tmpfile)
-	if err != nil {
-		t.Fatalf("DB file not found: %v", err)
-	}
+	require.NoError(t, err, "DB file not found")
 
 	// File should be at least 3 pages (meta 0-1, freelist 2)
 	minSize := int64(base.PageSize * 3)
-	if info.Size() < minSize {
-		t.Errorf("File too small: got %d bytes, expected at least %d", info.Size(), minSize)
-	}
+	assert.GreaterOrEqual(t, info.Size(), minSize, "File too small")
 
 	// File size should be Page-aligned
-	if info.Size()%int64(base.PageSize) != 0 {
-		t.Errorf("File size not Page-aligned: %d bytes", info.Size())
-	}
+	assert.Equal(t, int64(0), info.Size()%int64(base.PageSize), "File size not Page-aligned")
 
 	// Read both meta pages
 	file, err := os.Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 	defer file.Close()
 
 	page0 := &base.Page{}
 	n, err := file.Read(page0.Data[:])
-	if err != nil {
-		t.Fatalf("Failed to read meta Page 0: %v", err)
-	}
-	if n != base.PageSize {
-		t.Fatalf("Short read: got %d bytes, expected %d", n, base.PageSize)
-	}
+	require.NoError(t, err, "Failed to read meta Page 0")
+	assert.Equal(t, base.PageSize, n, "Short read")
 
 	page1 := &base.Page{}
 	n, err = file.Read(page1.Data[:])
-	if err != nil {
-		t.Fatalf("Failed to read meta Page 1: %v", err)
-	}
-	if n != base.PageSize {
-		t.Fatalf("Short read: got %d bytes, expected %d", n, base.PageSize)
-	}
+	require.NoError(t, err, "Failed to read meta Page 1")
+	assert.Equal(t, base.PageSize, n, "Short read")
 
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
@@ -1417,34 +1209,22 @@ func TestDBFileFormat(t *testing.T) {
 	}
 
 	// validate magic number
-	if meta.Magic != base.MagicNumber {
-		t.Errorf("Invalid magic number: got 0x%08x, expected 0x%08x", meta.Magic, base.MagicNumber)
-	}
+	assert.Equal(t, base.MagicNumber, meta.Magic, "Invalid magic number")
 
 	// validate version
-	if meta.Version != base.FormatVersion {
-		t.Errorf("Invalid version: got %d, expected %d", meta.Version, base.FormatVersion)
-	}
+	assert.Equal(t, base.FormatVersion, meta.Version, "Invalid version")
 
 	// validate Page size
-	if meta.PageSize != base.PageSize {
-		t.Errorf("Invalid Page size: got %d, expected %d", meta.PageSize, base.PageSize)
-	}
+	assert.Equal(t, base.PageSize, meta.PageSize, "Invalid Page size")
 
 	// validate RootPageID is persisted after close
-	if meta.RootPageID == 0 {
-		t.Errorf("RootPageID is zero after close - should be persisted to meta")
-	}
+	assert.NotEqual(t, base.PageID(0), meta.RootPageID, "RootPageID is zero after close - should be persisted to meta")
 
 	// validate freelist location
-	if meta.FreelistID != 2 {
-		t.Errorf("Freelist ID: got %d, expected 2", meta.FreelistID)
-	}
+	assert.Equal(t, base.PageID(2), meta.FreelistID, "Freelist ID mismatch")
 
 	// validate checksum
-	if err := meta.Validate(); err != nil {
-		t.Errorf("Meta validation failed: %v", err)
-	}
+	assert.NoError(t, meta.Validate(), "Meta validation failed")
 
 	t.Logf("Meta Page validated successfully:")
 	t.Logf("  Magic: 0x%08x", meta.Magic)
@@ -1472,33 +1252,23 @@ func TestDBFileHexDump(t *testing.T) {
 
 	// Create DB with known data
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("testkey"), []byte("testvalue"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Read first 4 pages and dump them
 	file, err := os.Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 	defer file.Close()
 
 	// Read meta Page 0
 	page0 := make([]byte, base.PageSize)
 	_, err = file.Read(page0)
-	if err != nil {
-		t.Fatalf("Failed to read Page 0: %v", err)
-	}
+	require.NoError(t, err, "Failed to read Page 0")
 
 	t.Logf("\n=== Page 0 (Meta) - First 128 bytes ===")
 	t.Logf("%s", formatHexDump(page0[:128]))
@@ -1506,9 +1276,7 @@ func TestDBFileHexDump(t *testing.T) {
 	// Read meta Page 1
 	page1 := make([]byte, base.PageSize)
 	_, err = file.Read(page1)
-	if err != nil {
-		t.Fatalf("Failed to read Page 1: %v", err)
-	}
+	require.NoError(t, err, "Failed to read Page 1")
 
 	t.Logf("\n=== Page 1 (Meta backup) - First 128 bytes ===")
 	t.Logf("%s", formatHexDump(page1[:128]))
@@ -1516,9 +1284,7 @@ func TestDBFileHexDump(t *testing.T) {
 	// Read freelist Page 2
 	page2 := make([]byte, base.PageSize)
 	_, err = file.Read(page2)
-	if err != nil {
-		t.Fatalf("Failed to read Page 2: %v", err)
-	}
+	require.NoError(t, err, "Failed to read Page 2")
 
 	t.Logf("\n=== Page 2 (Freelist) - First 128 bytes ===")
 	t.Logf("%s", formatHexDump(page2[:128]))
@@ -1526,9 +1292,7 @@ func TestDBFileHexDump(t *testing.T) {
 	// Read root Page (Page 3 likely)
 	page3 := make([]byte, base.PageSize)
 	_, err = file.Read(page3)
-	if err != nil {
-		t.Fatalf("Failed to read Page 3: %v", err)
-	}
+	require.NoError(t, err, "Failed to read Page 3")
 
 	t.Logf("\n=== Page 3 (B-tree root) - First 256 bytes ===")
 	t.Logf("%s", formatHexDump(page3[:256]))
@@ -1578,48 +1342,32 @@ func TestDBCorruptionDetection(t *testing.T) {
 
 	// Create valid DB
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key"), []byte("value"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Corrupt Page 0's magic number
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
 	_, err = file.WriteAt(corruptData, 0) // Overwrite magic number
-	if err != nil {
-		t.Fatalf("Failed to corrupt file: %v", err)
-	}
+	require.NoError(t, err, "Failed to corrupt file")
 	file.Close()
 
 	// Try to reopen - should succeed because Page 1 is still valid
 	db2, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to reopen DB with one corrupted meta Page: %v", err)
-	}
+	require.NoError(t, err, "Failed to reopen DB with one corrupted meta Page")
 	defer db2.Close()
 
 	// Verify data still accessible (using Page 1)
 	v, err := db2.Get([]byte("key"))
-	if err != nil {
-		t.Errorf("Failed to get key from DB with corrupted Page 0: %v", err)
-	}
-	if string(v) != "value" {
-		t.Errorf("Wrong value: got %s, expected value", string(v))
-	}
+	assert.NoError(t, err, "Failed to get key from DB with corrupted Page 0")
+	assert.Equal(t, "value", string(v))
 
 	t.Logf("Successfully recovered from single meta Page corruption using backup")
 }
@@ -1639,36 +1387,24 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 
 	// Create valid DB
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key"), []byte("value"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Corrupt both meta pages (magic number)
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
 	// Corrupt Page 0 meta magic (at PageHeaderSize offset)
 	_, err = file.WriteAt(corruptData, int64(base.PageHeaderSize))
-	if err != nil {
-		t.Fatalf("Failed to corrupt Page 0: %v", err)
-	}
+	require.NoError(t, err, "Failed to corrupt Page 0")
 	// Corrupt Page 1 meta magic (at storage.PageSize + PageHeaderSize offset)
 	_, err = file.WriteAt(corruptData, int64(base.PageSize+base.PageHeaderSize))
-	if err != nil {
-		t.Fatalf("Failed to corrupt Page 1: %v", err)
-	}
+	require.NoError(t, err, "Failed to corrupt Page 1")
 	file.Sync() // Ensure corruption is written to disk
 	file.Close()
 
@@ -1691,10 +1427,8 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 
 	// Try to reopen - should FAIL because both pages corrupted
 	_, err = Open(tmpfile)
-	if err == nil {
-		t.Fatal("Expected error opening DB with both meta pages corrupted, got nil")
-	}
-	if err.Error() != "both meta pages corrupted: invalid magic number, invalid magic number" {
+	assert.Error(t, err, "Expected error opening DB with both meta pages corrupted")
+	if err != nil && err.Error() != "both meta pages corrupted: invalid magic number, invalid magic number" {
 		t.Logf("Got expected error: %v", err)
 	}
 }
@@ -1708,45 +1442,31 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 
 	// Create valid DB
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key"), []byte("value"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 	db.Close()
 
 	// Corrupt Page 0's checksum field (last 4 bytes of MetaPage header)
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	// Checksum is at offset 44 (after all other fields)
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
 	_, err = file.WriteAt(corruptData, 44)
-	if err != nil {
-		t.Fatalf("Failed to corrupt checksum: %v", err)
-	}
+	require.NoError(t, err, "Failed to corrupt checksum")
 	file.Close()
 
 	// Try to reopen - should succeed using Page 1
 	db2, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to reopen DB with corrupted checksum on Page 0: %v", err)
-	}
+	require.NoError(t, err, "Failed to reopen DB with corrupted checksum on Page 0")
 	defer db2.Close()
 
 	// Verify data still accessible (using Page 1)
 	v, err := db2.Get([]byte("key"))
-	if err != nil {
-		t.Errorf("Failed to get key: %v", err)
-	}
-	if string(v) != "value" {
-		t.Errorf("Wrong value: got %s, expected value", string(v))
-	}
+	assert.NoError(t, err, "Failed to get key")
+	assert.Equal(t, "value", string(v))
 
 	t.Logf("Successfully recovered from checksum corruption using backup meta Page")
 }
@@ -1761,9 +1481,7 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 
 	// Create DB
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	// TxnID starts at 0, so first commit writes to Page 0
 	// Do multiple commits and verify alternating pattern
@@ -1772,18 +1490,14 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 		value := []byte(fmt.Sprintf("value%d", i))
 
 		err = db.Set(key, value)
-		if err != nil {
-			t.Fatalf("Failed to set key%d: %v", i, err)
-		}
+		require.NoError(t, err, "Failed to set key%d", i)
 	}
 
 	db.Close()
 
 	// Reopen and read both meta pages
 	file, err := os.Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	page0 := &base.Page{}
 	file.Read(page0.Data[:])
@@ -1798,33 +1512,23 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	t.Logf("Page 1 TxnID: %d", meta1.TxnID)
 
 	// One should have higher TxnID than the other
-	if meta0.TxnID == meta1.TxnID {
-		t.Error("Both meta pages have same TxnID - alternating writes not working")
-	}
+	assert.NotEqual(t, meta0.TxnID, meta1.TxnID, "Both meta pages have same TxnID - alternating writes not working")
 
 	// The Page with higher TxnID should be the active one
 	var activeMeta *base.MetaPage
 	if meta0.TxnID > meta1.TxnID {
 		activeMeta = meta0
 		// TxnID should be even (written to Page 0)
-		if activeMeta.TxnID%2 != 0 {
-			t.Errorf("Page 0 has odd TxnID %d, expected even", activeMeta.TxnID)
-		}
+		assert.Equal(t, uint64(0), activeMeta.TxnID%2, "Page 0 has odd TxnID %d, expected even", activeMeta.TxnID)
 	} else {
 		activeMeta = meta1
 		// TxnID should be odd (written to Page 1)
-		if activeMeta.TxnID%2 != 1 {
-			t.Errorf("Page 1 has even TxnID %d, expected odd", activeMeta.TxnID)
-		}
+		assert.Equal(t, uint64(1), activeMeta.TxnID%2, "Page 1 has even TxnID %d, expected odd", activeMeta.TxnID)
 	}
 
 	// Both should be valid
-	if err := meta0.Validate(); err != nil {
-		t.Errorf("Page 0 invalid: %v", err)
-	}
-	if err := meta1.Validate(); err != nil {
-		t.Errorf("Page 1 invalid: %v", err)
-	}
+	assert.NoError(t, meta0.Validate(), "Page 0 invalid")
+	assert.NoError(t, meta1.Validate(), "Page 1 invalid")
 
 	t.Logf("Meta Page alternating writes validated successfully")
 }
@@ -1836,32 +1540,22 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Corrupt meta Page with valid checksum but wrong magic
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	// Write wrong magic number at Page 0
 	wrongMagic := []byte{0xDE, 0xAD, 0xBE, 0xEF}
 	_, err = file.WriteAt(wrongMagic, int64(base.PageHeaderSize))
-	if err != nil {
-		t.Fatalf("Failed to write wrong magic: %v", err)
-	}
+	require.NoError(t, err, "Failed to write wrong magic")
 	file.Sync()
 	file.Close()
 
@@ -1877,8 +1571,8 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 	val, err := db.Get([]byte("key1"))
 	if err != nil {
 		t.Logf("Failed to get key after wrong magic: %v", err)
-	} else if string(val) != "value1" {
-		t.Errorf("Expected value1, got %s", string(val))
+	} else {
+		assert.Equal(t, "value1", string(val))
 	}
 }
 
@@ -1889,32 +1583,22 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Corrupt meta Page: set RootPageID to 0 but keep valid TxnID
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	// Read current meta from Page 0
 	page := &base.Page{}
 	_, err = file.ReadAt(page.Data[:], 0)
-	if err != nil {
-		t.Fatalf("Failed to read meta: %v", err)
-	}
+	require.NoError(t, err, "Failed to read meta")
 
 	// Parse and modify
 	meta := page.ReadMeta()
@@ -1924,9 +1608,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	// Write back
 	page.WriteMeta(meta)
 	_, err = file.WriteAt(page.Data[:], 0)
-	if err != nil {
-		t.Fatalf("Failed to write modified meta: %v", err)
-	}
+	require.NoError(t, err, "Failed to write modified meta")
 	file.Sync()
 	file.Close()
 
@@ -1954,25 +1636,17 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Truncate file to only 1 Page (missing meta Page 1)
 	err = os.Truncate(tmpfile, base.PageSize)
-	if err != nil {
-		t.Fatalf("Failed to truncate file: %v", err)
-	}
+	require.NoError(t, err, "Failed to truncate file")
 
 	// Try to open
 	db, err = Open(tmpfile)
@@ -1993,40 +1667,28 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
-	if err != nil {
-		t.Fatalf("Failed to create DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to create DB")
 
 	err = db.Set([]byte("key1"), []byte("value1"))
-	if err != nil {
-		t.Fatalf("Failed to set key: %v", err)
-	}
+	require.NoError(t, err, "Failed to set key")
 
 	err = db.Close()
-	if err != nil {
-		t.Fatalf("Failed to close DB: %v", err)
-	}
+	require.NoError(t, err, "Failed to close DB")
 
 	// Create impossible state: both meta pages with same TxnID but different roots
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
-	}
+	require.NoError(t, err, "Failed to open file")
 
 	// Read meta from Page 0
 	page0 := &base.Page{}
 	_, err = file.ReadAt(page0.Data[:], 0)
-	if err != nil {
-		t.Fatalf("Failed to read meta 0: %v", err)
-	}
+	require.NoError(t, err, "Failed to read meta 0")
 	meta0 := page0.ReadMeta()
 
 	// Read meta from Page 1
 	page1 := &base.Page{}
 	_, err = file.ReadAt(page1.Data[:], base.PageSize)
-	if err != nil {
-		t.Fatalf("Failed to read meta 1: %v", err)
-	}
+	require.NoError(t, err, "Failed to read meta 1")
 	meta1 := page1.ReadMeta()
 
 	// Make both have same TxnID
@@ -2037,9 +1699,7 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	// Write back Page 1
 	page1.WriteMeta(meta1)
 	_, err = file.WriteAt(page1.Data[:], int64(base.PageSize))
-	if err != nil {
-		t.Fatalf("Failed to write meta 1: %v", err)
-	}
+	require.NoError(t, err, "Failed to write meta 1")
 	file.Sync()
 	file.Close()
 
