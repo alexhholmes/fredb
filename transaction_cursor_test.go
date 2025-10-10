@@ -13,7 +13,9 @@ import (
 
 // TestCursorAfterTxCommit tests that cursor becomes invalid after transaction commit
 func TestCursorAfterTxCommit(t *testing.T) {
-	db := setupTestDB(t)
+	t.Parallel()
+
+	db, _ := setup(t)
 
 	// Insert some test data
 	tx, err := db.Begin(true)
@@ -58,7 +60,9 @@ func TestCursorAfterTxCommit(t *testing.T) {
 
 // TestCursorAfterWriteTxCommit tests cursor behavior with write transaction
 func TestCursorAfterWriteTxCommit(t *testing.T) {
-	db := setupTestDB(t)
+	t.Parallel()
+
+	db, _ := setup(t)
 
 	// Create write transaction
 	tx, err := db.Begin(true)
@@ -91,7 +95,9 @@ func TestCursorAfterWriteTxCommit(t *testing.T) {
 
 // TestCursorSnapshotIsolation tests that cursors see consistent snapshots
 func TestCursorSnapshotIsolation(t *testing.T) {
-	db := setupTestDB(t)
+	t.Parallel()
+
+	db, _ := setup(t)
 
 	// Insert initial data
 	tx, err := db.Begin(true)
@@ -145,7 +151,9 @@ func TestCursorSnapshotIsolation(t *testing.T) {
 
 // TestCursorConcurrentModifications tests cursor with concurrent modifications
 func TestCursorConcurrentModifications(t *testing.T) {
-	db := setupTestDB(t)
+	t.Parallel()
+
+	db, _ := setup(t)
 
 	// Insert initial data
 	tx, err := db.Begin(true)
@@ -242,7 +250,9 @@ func TestCursorConcurrentModifications(t *testing.T) {
 
 // TestCursorWithDeletedKeys tests cursor behavior when Keys are deleted
 func TestCursorWithDeletedKeys(t *testing.T) {
-	db := setupTestDB(t)
+	t.Parallel()
+
+	db, _ := setup(t)
 
 	// Insert initial data
 	tx, err := db.Begin(true)

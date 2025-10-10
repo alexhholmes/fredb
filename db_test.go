@@ -1,7 +1,7 @@
 package fredb
 
 import (
-	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,8 +19,8 @@ import (
 var slow = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a temporary test database
-func setupTestDB(t *testing.T) *DB {
-	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
+func setup(t *testing.T) (*DB, string) {
+	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.db", t.Name())
 	_ = os.Remove(tmpfile)
 	_ = os.Remove(tmpfile + ".wal") // Also remove wal file
 
@@ -34,27 +34,19 @@ func setupTestDB(t *testing.T) *DB {
 		_ = os.Remove(tmpfile + ".wal") // Cleanup wal file
 	})
 
-	return db
+	return db, tmpfile
 }
 
 func TestDBBasicOperations(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_basic.DB"
-	os.Remove(tmpfile)
-	os.Remove(tmpfile + ".wal")
-	defer os.Remove(tmpfile)
-	defer os.Remove(tmpfile + ".wal")
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Test Set and get
 	key := []byte("test-key")
 	value := []byte("test-value")
 
-	err = db.Set(key, value)
+	err := db.Set(key, value)
 	assert.NoError(t, err, "Failed to set key")
 
 	retrieved, err := db.Get(key)
@@ -82,15 +74,10 @@ func TestDBBasicOperations(t *testing.T) {
 func TestDBErrors(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_errors.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	// get non-existent key
-	_, err = db.Get([]byte("non-existent"))
+	_, err := db.Get([]byte("non-existent"))
 	assert.ErrorIs(t, err, ErrKeyNotFound)
 
 	// Delete non-existent key
@@ -102,7 +89,10 @@ func TestDBClose(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_db_close.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
@@ -134,12 +124,8 @@ func TestDBConcurrency(t *testing.T) {
 	// - Mix of get/Set operations
 	// - Verify no races or corruption
 	// - Check final state consistency
-	tmpfile := "/tmp/test_db_concurrency.DB"
-	defer os.Remove(tmpfile)
 
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	numGoroutines := 100
 	opsPerGoroutine := 100
@@ -222,13 +208,8 @@ func TestDBConcurrentReads(t *testing.T) {
 	// - Insert test data
 	// - Launch multiple reader goroutines
 	// - Verify all complete successfully
-	tmpfile := "/tmp/test_db_concurrent_reads.DB"
-	os.Remove(tmpfile) // Clean up any old test file
-	defer os.Remove(tmpfile)
 
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Insert test data
 	testData := make(map[string]string)
@@ -237,7 +218,7 @@ func TestDBConcurrentReads(t *testing.T) {
 		value := fmt.Sprintf("value-%d", i)
 		testData[key] = value
 
-		err = db.Set([]byte(key), []byte(value))
+		err := db.Set([]byte(key), []byte(value))
 		require.NoError(t, err, "Failed to insert test data")
 	}
 
@@ -299,12 +280,8 @@ func TestDBConcurrentWrites(t *testing.T) {
 	// - Launch multiple writer goroutines
 	// - Each writes unique Keys
 	// - Verify all Keys present at end
-	tmpfile := "/tmp/test_db_concurrent_writes.DB"
-	defer os.Remove(tmpfile)
 
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	numWriters := 20
 	writesPerWriter := 50
@@ -327,7 +304,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 				// Retry on write transaction conflict
 				for {
 					err := db.Set([]byte(key), []byte(value))
-					if err == ErrTxInProgress {
+					if errors.Is(err, ErrTxInProgress) {
 						// Another writer holds the lock, retry
 						continue
 					}
@@ -386,7 +363,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 	wg.Wait()
 
 	// Verify the key exists (value could be from any updater)
-	_, err = db.Get(updateKey)
+	_, err := db.Get(updateKey)
 	assert.NoError(t, err, "Concurrent update key not found")
 }
 
@@ -395,12 +372,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 func TestTxSnapshotIsolation(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_snapshot_isolation.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Insert initial Values
 	for i := 0; i < 10; i++ {
@@ -537,12 +509,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 		t.Skip("Skipping slow rollback test; use -slow to enable")
 	}
 
-	tmpfile := "/tmp/test_tx_rollback_contention.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, tmpfile := setup(t)
 
 	// Insert 100 initial Keys
 	for i := 0; i < 100; i++ {
@@ -753,12 +720,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 func TestDBLargeKeysPerPage(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_db_large_keys.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err, "Failed to create DB")
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Calculate key/value size for 2 pairs per Page
 	// storage.PageSize = 4096, PageHeaderSize = 40, LeafElementSize = 16
@@ -945,7 +907,10 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_last_committed.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create DB and do a single commit
 	db1, err := Open(tmpfile)
@@ -1041,7 +1006,10 @@ func TestDiskPageManagerBasic(t *testing.T) {
 
 	// Create temp file
 	tmpfile := "/tmp/test_disk.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create new database
 	db, err := Open(tmpfile)
@@ -1081,8 +1049,10 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 
 	// Use unique filename per test to avoid parallel test collisions
 	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
-	_ = os.Remove(tmpfile)
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create database and insert 100 Keys
 	db, err := Open(tmpfile)
@@ -1116,7 +1086,10 @@ func TestDiskPageManagerDelete(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_delete.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create database
 	db, err := Open(tmpfile)
@@ -1154,7 +1127,10 @@ func TestDBFileFormat(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_db_format.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create DB and write some data
 	db, err := Open(tmpfile)
@@ -1248,7 +1224,10 @@ func TestDBFileHexDump(t *testing.T) {
 	}
 
 	tmpfile := "/tmp/test_db_hexdump.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create DB with known data
 	db, err := Open(tmpfile)
@@ -1338,7 +1317,10 @@ func TestDBCorruptionDetection(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_db_corruption.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create valid DB
 	db, err := Open(tmpfile)
@@ -1372,18 +1354,15 @@ func TestDBCorruptionDetection(t *testing.T) {
 	t.Logf("Successfully recovered from single meta Page corruption using backup")
 }
 
-// Helper to inspect raw bytes as hex
-func dumpBytes(label string, data []byte) string {
-	return fmt.Sprintf("%s: %s", label, hex.EncodeToString(data))
-}
-
 // TestCrashRecoveryBothMetaCorrupted tests that DB fails to open when both meta pages are invalid
 func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := fmt.Sprintf("/tmp/test_both_meta_corrupt_%d.DB", os.Getpid())
-	os.Remove(tmpfile) // Clean up any previous test file
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create valid DB
 	db, err := Open(tmpfile)
@@ -1438,7 +1417,10 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_checksum_corrupt.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create valid DB
 	db, err := Open(tmpfile)
@@ -1476,8 +1458,10 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := fmt.Sprintf("/tmp/test_btree_%s.DB", t.Name())
-	_ = os.Remove(tmpfile)
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Create DB
 	db, err := Open(tmpfile)
@@ -1537,7 +1521,10 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_crash_recovery_wrong_magic.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
@@ -1580,7 +1567,10 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_crash_recovery_root_zero.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
@@ -1633,7 +1623,10 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_crash_recovery_truncated.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
@@ -1664,7 +1657,10 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	t.Parallel()
 
 	tmpfile := "/tmp/test_crash_recovery_same_txnid.DB"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")

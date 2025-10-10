@@ -13,15 +13,10 @@ import (
 func TestTxBasicOperations(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_basic.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Test Update (write transaction)
-	err = db.Update(func(tx *Tx) error {
+	err := db.Update(func(tx *Tx) error {
 		err := tx.Set([]byte("key1"), []byte("value1"))
 		if err != nil {
 			return err
@@ -55,13 +50,7 @@ func TestTxBasicOperations(t *testing.T) {
 func TestTxCommitRollback(t *testing.T) {
 	t.Parallel()
 
-	// COW now implemented for simple leaf modifications
-	tmpfile := "/tmp/test_tx_commit_rollback.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Test commit
 	tx, err := db.Begin(true)
@@ -102,12 +91,7 @@ func TestTxCommitRollback(t *testing.T) {
 func TestTxSingleWriter(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_single_writer.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Start first write transaction
 	tx1, err := db.Begin(true)
@@ -131,15 +115,10 @@ func TestTxSingleWriter(t *testing.T) {
 func TestTxMultipleReaders(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_multiple_readers.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Insert test data
-	err = db.Update(func(tx *Tx) error {
+	err := db.Update(func(tx *Tx) error {
 		return tx.Set([]byte("key"), []byte("value"))
 	})
 	require.NoError(t, err)
@@ -174,7 +153,7 @@ func TestTxMultipleReaders(t *testing.T) {
 func TestTxWriteOnReadOnly(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_write_readonly.DB"
+	tmpfile := "/tmp/test_tx_write_readonly.db"
 	defer os.Remove(tmpfile)
 
 	db, err := Open(tmpfile)
@@ -197,12 +176,7 @@ func TestTxWriteOnReadOnly(t *testing.T) {
 func TestTxDoneCheck(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_done.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Test operations after commit
 	tx, err := db.Begin(true)
@@ -230,16 +204,10 @@ func TestTxDoneCheck(t *testing.T) {
 func TestTxAutoRollback(t *testing.T) {
 	t.Parallel()
 
-	// COW now implemented for simple leaf modifications
-	tmpfile := "/tmp/test_tx_auto_rollback.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Update with error should auto-rollback
-	err = db.Update(func(tx *Tx) error {
+	err := db.Update(func(tx *Tx) error {
 		err := tx.Set([]byte("key"), []byte("value"))
 		if err != nil {
 			return err
@@ -261,12 +229,7 @@ func TestTxAutoRollback(t *testing.T) {
 func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_multiple_begin.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Begin first write transaction
 	tx1, err := db.Begin(true)
@@ -301,14 +264,10 @@ func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 func TestTxOperationsAfterClose(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_after_close.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
+	db, _ := setup(t)
 
 	// Insert some data
-	err = db.Set([]byte("key1"), []byte("value1"))
+	err := db.Set([]byte("key1"), []byte("value1"))
 	require.NoError(t, err)
 
 	// Begin transaction before close
@@ -342,12 +301,7 @@ func TestTxOperationsAfterClose(t *testing.T) {
 func TestTxConcurrentWriteBegin(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_concurrent_write_begin.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Begin first write transaction
 	tx1, err := db.Begin(true)
@@ -411,15 +365,10 @@ func TestTxConcurrentWriteBegin(t *testing.T) {
 func TestTxWriteThenReadMultiple(t *testing.T) {
 	t.Parallel()
 
-	tmpfile := "/tmp/test_tx_write_then_read.DB"
-	defer os.Remove(tmpfile)
-
-	db, err := Open(tmpfile)
-	require.NoError(t, err)
-	defer db.Close()
+	db, _ := setup(t)
 
 	// Write some data
-	err = db.Set([]byte("initial"), []byte("data"))
+	err := db.Set([]byte("initial"), []byte("data"))
 	require.NoError(t, err)
 
 	// Begin write transaction

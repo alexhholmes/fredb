@@ -12,7 +12,7 @@ import (
 func TestCursorSequentialScan(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys 1-100
 	for i := 1; i <= 100; i++ {
@@ -49,7 +49,7 @@ func TestCursorSequentialScan(t *testing.T) {
 func TestCursorReverseScan(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys 1-50
 	for i := 1; i <= 50; i++ {
@@ -98,7 +98,7 @@ func TestCursorReverseScan(t *testing.T) {
 func TestCursorRangeScan(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
@@ -132,7 +132,7 @@ func TestCursorRangeScan(t *testing.T) {
 func TestCursorEmptyTree(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Empty tree - cursor should be invalid
 	tx, err := db.Begin(false)
@@ -152,7 +152,7 @@ func TestCursorEmptyTree(t *testing.T) {
 func TestCursorSeekNotFound(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys: key001, key003, key005, key007, key009
 	for i := 1; i <= 9; i += 2 {
@@ -187,7 +187,7 @@ func TestCursorSeekNotFound(t *testing.T) {
 func TestCursorAcrossSplits(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert enough Keys to trigger splits (200 Keys)
 	// This should create multiple leaf nodes
@@ -227,7 +227,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 func TestCursorAfterMerges(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert 100 Keys to create multiple nodes
 	for i := 1; i <= 100; i++ {
@@ -270,7 +270,7 @@ func TestCursorAfterMerges(t *testing.T) {
 func TestCursorSeekSTART(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
@@ -304,7 +304,7 @@ func TestCursorSeekSTART(t *testing.T) {
 func TestCursorSeekEND(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys 10, 20, 30, ..., 100
 	for i := 1; i <= 10; i++ {
@@ -333,7 +333,7 @@ func TestCursorSeekEND(t *testing.T) {
 func TestCursorSeekSTARTEmptyTree(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	tx, err := db.Begin(false)
 	require.NoError(t, err)
@@ -350,7 +350,7 @@ func TestCursorSeekSTARTEmptyTree(t *testing.T) {
 func TestCursorSeekENDEmptyTree(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	tx, err := db.Begin(false)
 	require.NoError(t, err)
@@ -367,7 +367,7 @@ func TestCursorSeekENDEmptyTree(t *testing.T) {
 func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys 1-100
 	for i := 1; i <= 100; i++ {
@@ -397,7 +397,7 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 func TestCursorSeekFirstFunction(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys
 	for i := 10; i <= 50; i += 10 {
@@ -423,7 +423,7 @@ func TestCursorSeekFirstFunction(t *testing.T) {
 func TestCursorSeekLastFunction(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys
 	for i := 10; i <= 50; i += 10 {
@@ -454,7 +454,7 @@ func TestCursorSeekLastFunction(t *testing.T) {
 func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	tx, err := db.Begin(false)
 	require.NoError(t, err, "Failed to begin transaction")
@@ -476,7 +476,7 @@ func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 func TestCursorSeekENDComparison(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Create Keys near the maximum size (MaxKeySize = 1024)
 	// END is 1024 bytes of 0xFF, so any valid key should compare less than END

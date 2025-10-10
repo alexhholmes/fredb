@@ -16,7 +16,7 @@ func TestBTreeBasicOps(t *testing.T) {
 	t.Parallel()
 
 	// Test basic get/Set operations
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert key-value pair
 	err := db.Set([]byte("key1"), []byte("value1"))
@@ -44,7 +44,7 @@ func TestBTreeUpdate(t *testing.T) {
 	t.Parallel()
 
 	// Test that Set updates existing Keys rather than duplicating
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert key with value1
 	err := db.Set([]byte("testkey"), []byte("value1"))
@@ -81,7 +81,7 @@ func TestBTreeSplitting(t *testing.T) {
 	t.Parallel()
 
 	// Test Node splitting when exceeding MaxKeysPerNode
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert MaxKeysPerNode + 1 Keys to force a split
 	keys := make(map[string]string)
@@ -113,7 +113,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	t.Parallel()
 
 	// Test multiple levels of splitting
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert enough Keys to cause multiple splits (3x MaxKeysPerNode should cause multiple levels)
 	numKeys := base.MaxKeysPerNode * 3
@@ -159,7 +159,7 @@ func TestSequentialInsert(t *testing.T) {
 	t.Parallel()
 
 	// Test inserting Keys in sequential order
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert 1000 sequential Keys
 	numKeys := 1000
@@ -195,7 +195,7 @@ func TestRandomInsert(t *testing.T) {
 	t.Parallel()
 
 	// Test inserting Keys in random order
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Generate random Keys (using deterministic seed for reproducibility)
 	numKeys := 1000
@@ -247,7 +247,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 	t.Parallel()
 
 	// Test inserting Keys in reverse order
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert 1000 Keys in descending order
 	numKeys := 1000
@@ -290,7 +290,7 @@ func TestBTreeDelete(t *testing.T) {
 	t.Parallel()
 
 	// Test basic delete operations
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert some Keys
 	keys := []string{"key1", "key2", "key3", "key4", "key5"}
@@ -340,7 +340,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 	t.Parallel()
 
 	// Test deleting all Keys from tree
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert and then delete Keys one by one
 	numKeys := 100
@@ -384,7 +384,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	t.Parallel()
 
 	// Test sequential deletion pattern with tree structure checks
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert enough Keys to create a multi-level tree
 	numKeys := base.MaxKeysPerNode * 2 // Enough to cause splits
@@ -431,7 +431,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		// Test random deletion pattern with tree structure checks
-		db := setupTestDB(t)
+		db, _ := setup(t)
 
 		// Insert Keys
 		numKeys := base.MaxKeysPerNode * 2
@@ -507,7 +507,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	t.Parallel()
 
 	// Test reverse sequential deletion pattern
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert Keys
 	numKeys := base.MaxKeysPerNode * 2
@@ -595,7 +595,7 @@ func TestEmptyTree(t *testing.T) {
 	t.Parallel()
 
 	// Test operations on empty tree
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// get from empty tree (should return ErrKeyNotFound)
 	_, err := db.Get([]byte("nonexistent"))
@@ -619,7 +619,7 @@ func TestSingleKey(t *testing.T) {
 	t.Parallel()
 
 	// Test tree with single key
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert one key
 	testKey := []byte("single_key")
@@ -655,7 +655,7 @@ func TestDuplicateKeys(t *testing.T) {
 	t.Parallel()
 
 	// Test handling of duplicate key insertions
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	key := []byte("duplicate_test")
 	value1 := []byte("value1")
@@ -700,7 +700,7 @@ func TestBinaryKeys(t *testing.T) {
 	t.Parallel()
 
 	// Test with non-string binary Keys
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Test data with various binary patterns
 	testData := []struct {
@@ -754,7 +754,7 @@ func TestZeroLengthKeys(t *testing.T) {
 	t.Parallel()
 
 	// Test with zero-length Keys
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert empty key
 	emptyKey := []byte{}
@@ -802,7 +802,7 @@ func TestZeroLengthValues(t *testing.T) {
 	t.Parallel()
 
 	// Test with zero-length Values
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert key with empty value
 	key := []byte("key_with_empty_value")
@@ -860,7 +860,7 @@ func TestZeroLengthValues(t *testing.T) {
 func TestPageOverflowLargeKey(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Key that exceeds MaxKeySize = 1024
 	largeKey := make([]byte, 2000)
@@ -876,7 +876,7 @@ func TestPageOverflowLargeKey(t *testing.T) {
 func TestPageOverflowLargeValue(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	key := []byte("small_key")
 	// Value that's too large to fit in a Page
@@ -893,7 +893,7 @@ func TestPageOverflowLargeValue(t *testing.T) {
 func TestPageOverflowCombinedSize(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Key + value that combined exceed PageSize
 	// Key within MaxKeySize = 1024, but combined size > Page limit
@@ -913,7 +913,7 @@ func TestPageOverflowCombinedSize(t *testing.T) {
 func TestPageOverflowBoundary(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Test key+value that exactly fits (should succeed)
 	// PageSize = 4096
@@ -945,7 +945,7 @@ func TestPageOverflowBoundary(t *testing.T) {
 func TestPageOverflowMaxKeyValue(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Test with key at MaxKeySize = 1024 and large value
 	// Should fit: PageSize - PageHeaderSize - LeafElementSize = 4048
@@ -971,7 +971,7 @@ func TestPageOverflowMaxKeyValue(t *testing.T) {
 func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert enough Keys to create multi-level tree
 	numKeys := base.MaxKeysPerNode * 2
@@ -1007,7 +1007,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	numKeys := base.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
@@ -1041,7 +1041,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	// Insert MaxKeysPerNode Keys (0 to 63 = 64 Keys)
 	for i := 0; i < base.MaxKeysPerNode; i++ {
@@ -1076,7 +1076,7 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	numKeys := base.MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
@@ -1109,7 +1109,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 	t.Parallel()
 
-	db := setupTestDB(t)
+	db, _ := setup(t)
 
 	numKeys := base.MaxKeysPerNode * 3
 	for i := 0; i < numKeys; i++ {

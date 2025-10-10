@@ -7,8 +7,11 @@ import (
 )
 
 func BenchmarkDBGet(b *testing.B) {
-	tmpfile := "/tmp/bench_db_get.DB"
+	tmpfile := "/tmp/bench_db_get.db"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
@@ -59,8 +62,11 @@ func BenchmarkDBGet(b *testing.B) {
 }
 
 func BenchmarkDBSet(b *testing.B) {
-	tmpfile := "/tmp/bench_db_set.DB"
+	tmpfile := "/tmp/bench_db_set.db"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
@@ -81,8 +87,11 @@ func BenchmarkDBSet(b *testing.B) {
 }
 
 func BenchmarkDBMixed(b *testing.B) {
-	tmpfile := "/tmp/bench_db_mixed.DB"
+	tmpfile := "/tmp/bench_db_mixed.db"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	// Use WALSyncBytes mode for better throughput during pre-population
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
@@ -151,8 +160,11 @@ func BenchmarkDBMixed(b *testing.B) {
 }
 
 func BenchmarkDBConcurrentReads(b *testing.B) {
-	tmpfile := "/tmp/bench_db_concurrent_reads.DB"
+	tmpfile := "/tmp/bench_db_concurrent_reads.db"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
 	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {
@@ -205,8 +217,11 @@ func BenchmarkBTreeMixed(b *testing.B) {
 	// Benchmark mixed workload (80% reads, 20% writes)
 	// - Pre-populate tree
 	// - Run mixed operations
-	tmpfile := "/tmp/bench_mixed.DB"
-	_ = os.Remove(tmpfile)
+	tmpfile := "/tmp/bench_mixed.db"
+	os.Remove(tmpfile)
+	os.Remove(tmpfile + ".wal")
+	defer os.Remove(tmpfile)
+	defer os.Remove(tmpfile + ".wal")
 
 	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
 	if err != nil {

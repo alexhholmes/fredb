@@ -5,14 +5,17 @@ import (
 	"testing"
 	"time"
 
-	"fredb/internal/base"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"fredb/internal/base"
 )
 
 // TestWALRecoveryBasic tests that uncommitted wal entries are recovered after restart
 func TestWALRecoveryBasic(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_basic.DB"
+	dbPath := "/tmp/test_wal_recovery_basic.db"
+	os.Remove(dbPath)
+	os.Remove(dbPath + ".wal")
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -50,7 +53,9 @@ func TestWALRecoveryBasic(t *testing.T) {
 
 // TestWALRecoveryUncommitted tests that uncommitted transactions are discarded
 func TestWALRecoveryUncommitted(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_uncommitted.DB"
+	dbPath := "/tmp/test_wal_recovery_uncommitted.db"
+	os.Remove(dbPath)
+	os.Remove(dbPath + ".wal")
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -101,7 +106,9 @@ func TestWALRecoveryUncommitted(t *testing.T) {
 
 // TestCheckpointIdempotency tests that checkpoint replay is idempotent
 func TestCheckpointIdempotency(t *testing.T) {
-	dbPath := "/tmp/test_checkpoint_idempotency.DB"
+	dbPath := "/tmp/test_checkpoint_idempotency.db"
+	os.Remove(dbPath)
+	os.Remove(dbPath + ".wal")
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -175,7 +182,9 @@ func TestCheckpointIdempotency(t *testing.T) {
 
 // TestWALRecoveryMultipleTransactions tests recovery of multiple transactions
 func TestWALRecoveryMultipleTransactions(t *testing.T) {
-	dbPath := "/tmp/test_wal_recovery_multi.DB"
+	dbPath := "/tmp/test_wal_recovery_multi.db"
+	os.Remove(dbPath)
+	os.Remove(dbPath + ".wal")
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
@@ -232,7 +241,9 @@ func TestWALRecoveryMultipleTransactions(t *testing.T) {
 
 // TestWALTruncateSafety tests that wal cannot be truncated before checkpoint
 func TestWALTruncateSafety(t *testing.T) {
-	dbPath := "/tmp/test_wal_truncate_safety.DB"
+	dbPath := "/tmp/test_wal_truncate_safety.db"
+	os.Remove(dbPath)
+	os.Remove(dbPath + ".wal")
 	defer os.Remove(dbPath)
 	defer os.Remove(dbPath + ".wal")
 
