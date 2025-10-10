@@ -63,8 +63,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	// Open newWAL (DB owns newWAL lifecycle)
-	walPath := path + ".newWAL"
+	// Open WAL (DB owns WAL lifecycle)
+	walPath := path + ".wal"
 	newWAL, err := wal.NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
 	if err != nil {
 		return nil, err
