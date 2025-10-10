@@ -242,13 +242,9 @@ func (tx *Tx) Commit() error {
 	// Capture old root for rollback if commit fails
 	oldRoot := tx.db.store.root
 
-	// Apply transaction-local root to DB.store.root
-	// This makes all COW changes visible to future transactions
-	if tx.root != nil {
-		tx.db.store.root = tx.root
-	}
-
 	// Write all TX-local pages to wal (not disk!)
+	// IMPORTANT: Populate cache BEFORE updating root to prevent race condition
+	// where concurrent readers capture new root but pages aren't available yet
 	for pageID, node := range tx.pages {
 		// Serialize Node to a Page with this transaction's ID
 		page, err := node.Serialize(tx.txnID)
@@ -271,6 +267,13 @@ func (tx *Tx) Commit() error {
 		// Flush to global versioned cache with this transaction's ID
 		// This makes the new version visible to future transactions
 		tx.db.store.cache.Put(pageID, tx.txnID, node)
+	}
+
+	// Apply transaction-local root to DB.store.root
+	// This makes all COW changes visible to future transactions
+	// CRITICAL: Done AFTER cache population to ensure pages are available
+	if tx.root != nil {
+		tx.db.store.root = tx.root
 	}
 
 	// Append commit marker to wal
@@ -390,75 +393,6 @@ func (tx *Tx) check() error {
 	return nil
 }
 
-// Loads a Node using hybrid cache: tx.pages → versioned global cache → disk
-func (tx *Tx) loadNode(id base.PageID) (*base.Node, error) {
-	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
-	if tx.writable && tx.pages != nil {
-		if node, exists := tx.pages[id]; exists {
-			return node, nil
-		}
-	}
-
-	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.store.cache.GetOrLoad(id, tx.txnID, func() (*base.Node, uint64, error) {
-		// Load from disk (called by at most one thread per id)
-		page, err := tx.db.store.pager.ReadPage(id)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		// Create Node and Deserialize
-		node := &base.Node{
-			PageID: id,
-			Dirty:  false,
-		}
-
-		// Try to Deserialize - if Page is empty (new Page), header.NumKeys will be 0
-		header := page.Header()
-		if header.NumKeys > 0 {
-			if err := node.Deserialize(page); err != nil {
-				return nil, 0, err
-			}
-		} else {
-			// New/empty Page - initialize as empty leaf
-			node.PageID = id
-			node.IsLeaf = true
-			node.NumKeys = 0
-			node.Keys = make([][]byte, 0)
-			node.Values = make([][]byte, 0)
-			node.Children = make([]base.PageID, 0)
-		}
-
-		// Cycle detection: check if deserialized Node references itself
-		if !node.IsLeaf {
-			for _, childID := range node.Children {
-				if childID == id {
-					return nil, 0, ErrCorruption // Self-reference detected
-				}
-			}
-		}
-
-		// Return Node and its TxnID from disk header
-		return node, header.TxnID, nil
-	})
-
-	if !found {
-		// Version not visible or load failed
-		return nil, ErrKeyNotFound
-	}
-
-	// Cycle detection on cached Node (fast path)
-	if !node.IsLeaf {
-		for _, childID := range node.Children {
-			if childID == id {
-				return nil, ErrCorruption // Self-reference detected
-			}
-		}
-	}
-
-	return node, nil
-}
-
 // EnsureWritable ensures a Node is safe to modify in this transaction.
 // Performs COW only if the Node doesn't already belong to this transaction.
 // Returns a writable Node (either the original if already owned, or a Clone).
@@ -472,6 +406,8 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// If its PageID is in tx.pending, it was allocated in this transaction
 	if _, inPending := tx.pending[node.PageID]; inPending {
 		// Node already owned by this transaction, no COW needed
+		// But we still need to add it to tx.pages so it gets committed
+		tx.pages[node.PageID] = node
 		return node, nil
 	}
 
@@ -535,7 +471,7 @@ retryLoop:
 		// Track in pending pages (for COW)
 		tx.pending[pageID] = struct{}{}
 
-		// invalidate any stale cache entries for this reused PageID
+		// Invalidate any stale cache entries for this reused PageID
 		// When a Page is freed and reallocated, old versions must be removed
 		tx.db.store.cache.Invalidate(pageID)
 
