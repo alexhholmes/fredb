@@ -1215,7 +1215,7 @@ func TestDBFileFormat(t *testing.T) {
 	assert.Equal(t, base.FormatVersion, meta.Version, "Invalid version")
 
 	// validate Page size
-	assert.Equal(t, base.PageSize, meta.PageSize, "Invalid Page size")
+	assert.Equal(t, uint16(base.PageSize), meta.PageSize, "Invalid Page size")
 
 	// validate RootPageID is persisted after close
 	assert.NotEqual(t, base.PageID(0), meta.RootPageID, "RootPageID is zero after close - should be persisted to meta")
