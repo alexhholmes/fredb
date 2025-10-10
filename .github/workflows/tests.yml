@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.22'
+        cache: true
+
+    - name: Install Task
+      uses: arduino/setup-task@v2
+      with:
+        version: '3.x'
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Run tests
+      run: task test-full
