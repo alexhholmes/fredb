@@ -36,8 +36,8 @@ const (
 
 // WAL implements Write-Ahead Logging for crash recovery and batched commits
 type WAL struct {
-	file   *os.File
 	mu     sync.Mutex
+	file   *os.File
 	offset int64 // Current write position
 
 	// Sync configuration

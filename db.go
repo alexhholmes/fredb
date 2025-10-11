@@ -32,8 +32,8 @@ type DB struct {
 	closed atomic.Bool               // Database closed flag
 
 	// Transaction state
-	writerTx  atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readerTxs sync.Map           // Active read transactions (map[*Tx]struct{})
+	writer    atomic.Pointer[Tx] // Current write transaction (nil if none)
+	readers   sync.Map           // Active read transactions (map[*Tx]struct{})
 	nextTxnID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	// Background releaser
@@ -160,7 +160,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// CRITICAL: Sync pager to persist the initial allocations
-		// This ensures pages 3 and 4 (root and leaf) are not returned by future AllocatePage() calls
+		// This ensures root and leaf are not returned by future AllocatePage() calls
 		if err := pager.Sync(); err != nil {
 			_ = newWAL.Close()
 			_ = pager.Close()
@@ -179,7 +179,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	db.nextTxnID.Store(meta.TxnID) // Resume from last committed TxnID
 
 	// Recover uncommitted newWAL entries into cache
-	if err := db.recoverFromWAL(); err != nil {
+	if err = db.recoverFromWAL(); err != nil {
 		return nil, err
 	}
 
@@ -257,7 +257,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		}
 
 		// Enforce single writer rule
-		if db.writerTx.Load() != nil {
+		if db.writer.Load() != nil {
 			return nil, ErrTxInProgress
 		}
 
@@ -277,7 +277,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		}
 
 		// Register writer (atomic store)
-		db.writerTx.Store(tx)
+		db.writer.Store(tx)
 
 		return tx, nil
 	}
@@ -299,7 +299,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	}
 
 	// Register reader (lock-free via sync.Map)
-	db.readerTxs.Store(tx, struct{}{})
+	db.readers.Store(tx, struct{}{})
 
 	return tx, nil
 }
@@ -420,7 +420,7 @@ func (db *DB) checkpoint() error {
 
 	// Skip checkpoint if there's an active write transaction
 	// This prevents corruption from checkpoint allocating pages that are being freed
-	if db.writerTx.Load() != nil {
+	if db.writer.Load() != nil {
 		return nil
 	}
 
@@ -549,14 +549,14 @@ func (db *DB) minReaderTxn() uint64 {
 	minTxnID := db.nextTxnID.Load()
 
 	// Consider active write transaction (atomic load)
-	if writerTx := db.writerTx.Load(); writerTx != nil {
+	if writerTx := db.writer.Load(); writerTx != nil {
 		if writerTx.txnID < minTxnID {
 			minTxnID = writerTx.txnID
 		}
 	}
 
 	// Consider all active read transactions (lock-free via sync.Map)
-	db.readerTxs.Range(func(key, value interface{}) bool {
+	db.readers.Range(func(key, value interface{}) bool {
 		tx := key.(*Tx)
 		if tx.txnID < minTxnID {
 			minTxnID = tx.txnID
@@ -576,7 +576,7 @@ func (db *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	minTxnID := lastCommittedTxn
 
 	// Consider active write transaction (should not exist during checkpoint, but be safe)
-	if writerTx := db.writerTx.Load(); writerTx != nil {
+	if writerTx := db.writer.Load(); writerTx != nil {
 		if writerTx.txnID < minTxnID {
 			minTxnID = writerTx.txnID
 		}
@@ -584,7 +584,7 @@ func (db *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 
 	// Consider all active read transactions (lock-free via sync.Map)
 	// Now that readers use committed txnID as their snapshot, txnID == snapshot version
-	db.readerTxs.Range(func(key, value interface{}) bool {
+	db.readers.Range(func(key, value interface{}) bool {
 		tx := key.(*Tx)
 		if tx.txnID < minTxnID {
 			minTxnID = tx.txnID

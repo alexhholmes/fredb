@@ -333,7 +333,7 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
-	tx.db.writerTx.Store(nil)
+	tx.db.writer.Store(nil)
 
 	// Mark transaction as done ONLY after all writes succeed
 	// This ensures Rollback can clean up if any write fails
@@ -374,10 +374,10 @@ func (tx *Tx) Rollback() error {
 			}
 		}
 
-		tx.db.writerTx.Store(nil)
+		tx.db.writer.Store(nil)
 	} else {
 		// Readers: lock-free removal from sync.Map
-		tx.db.readerTxs.Delete(tx)
+		tx.db.readers.Delete(tx)
 
 		// Trigger release - non-blocking send
 		// The background goroutine will calculate the new minimum
@@ -678,8 +678,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 			oldValue := make([]byte, len(node.Values[pos]))
 			copy(oldValue, node.Values[pos])
 
-			node.Values[pos] = value
-			node.Dirty = true
+			algo.ApplyLeafUpdate(node, pos, value)
 
 			// Try to serialize after update
 			_, err = node.Serialize(tx.txnID)
@@ -692,10 +691,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		}
 
 		// Insert new key-value using algo
-		node.Keys = algo.InsertAt(node.Keys, pos, key)
-		node.Values = algo.InsertAt(node.Values, pos, value)
-		node.NumKeys++
-		node.Dirty = true
+		algo.ApplyLeafInsert(node, pos, key, value)
 
 		// Try to serialize after insertion
 		_, err = node.Serialize(tx.txnID)
@@ -925,10 +921,7 @@ func (tx *Tx) deleteFromLeaf(node *base.Node, idx int) (*base.Node, error) {
 	}
 
 	// Remove key and value using algo
-	node.Keys = algo.RemoveAt(node.Keys, idx)
-	node.Values = algo.RemoveAt(node.Values, idx)
-	node.NumKeys--
-	node.Dirty = true
+	algo.ApplyLeafDelete(node, idx)
 
 	return node, nil
 }
@@ -1018,46 +1011,7 @@ func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx 
 		return nil, nil, nil, err
 	}
 
-	if node.IsLeaf {
-		// Extract last from left sibling using algo
-		borrowed := algo.ExtractLastFromSibling(leftSibling)
-
-		// Insert at beginning of node
-		node.Keys = algo.InsertAt(node.Keys, 0, borrowed.Key)
-		node.Values = algo.InsertAt(node.Values, 0, borrowed.Value)
-		node.NumKeys++
-
-		// Remove borrowed key from left sibling
-		lastIdx := int(leftSibling.NumKeys) - 1
-		leftSibling.Keys = algo.RemoveAt(leftSibling.Keys, lastIdx)
-		leftSibling.Values = algo.RemoveAt(leftSibling.Values, lastIdx)
-		leftSibling.NumKeys--
-
-		// Update parent separator to be the first key of right node
-		parent.Keys[parentKeyIdx] = node.Keys[0]
-	} else {
-		// Branch borrow: traditional B-tree style
-		borrowed := algo.ExtractLastFromSibling(leftSibling)
-
-		// Move parent key to node (at beginning)
-		node.Keys = algo.InsertAt(node.Keys, 0, parent.Keys[parentKeyIdx])
-		node.Children = append([]base.PageID{borrowed.Child}, node.Children...)
-		node.NumKeys++
-
-		// Remove borrowed key and child from left sibling
-		lastIdx := int(leftSibling.NumKeys) - 1
-		leftSibling.Keys = algo.RemoveAt(leftSibling.Keys, lastIdx)
-		leftSibling.Children = algo.RemoveChildAt(leftSibling.Children, len(leftSibling.Children)-1)
-		leftSibling.NumKeys--
-
-		// Move last key from left sibling to parent
-		parent.Keys[parentKeyIdx] = borrowed.Key
-	}
-
-	// Mark all as dirty
-	node.Dirty = true
-	leftSibling.Dirty = true
-	parent.Dirty = true
+	algo.BorrowFromLeft(node, leftSibling, parent, parentKeyIdx)
 
 	// Update parent's children pointers to COW'd nodes
 	parent.Children[parentKeyIdx] = leftSibling.PageID
@@ -1084,44 +1038,7 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 		return nil, nil, nil, err
 	}
 
-	if node.IsLeaf {
-		// Extract first from right sibling using algo
-		borrowed := algo.ExtractFirstFromSibling(rightSibling)
-
-		// Append to end of node
-		node.Keys = append(node.Keys, borrowed.Key)
-		node.Values = append(node.Values, borrowed.Value)
-		node.NumKeys++
-
-		// Remove borrowed key from right sibling
-		rightSibling.Keys = algo.RemoveAt(rightSibling.Keys, 0)
-		rightSibling.Values = algo.RemoveAt(rightSibling.Values, 0)
-		rightSibling.NumKeys--
-
-		// Update parent separator to be the first key of right sibling
-		parent.Keys[parentKeyIdx] = rightSibling.Keys[0]
-	} else {
-		// Branch borrow: traditional B-tree style
-		borrowed := algo.ExtractFirstFromSibling(rightSibling)
-
-		// Move parent key to node (at end)
-		node.Keys = append(node.Keys, parent.Keys[parentKeyIdx])
-		node.Children = append(node.Children, borrowed.Child)
-		node.NumKeys++
-
-		// Remove borrowed key and child from right sibling
-		rightSibling.Keys = algo.RemoveAt(rightSibling.Keys, 0)
-		rightSibling.Children = algo.RemoveChildAt(rightSibling.Children, 0)
-		rightSibling.NumKeys--
-
-		// Move first key from right sibling to parent
-		parent.Keys[parentKeyIdx] = borrowed.Key
-	}
-
-	// Mark all as dirty
-	node.Dirty = true
-	rightSibling.Dirty = true
-	parent.Dirty = true
+	algo.BorrowFromRight(node, rightSibling, parent, parentKeyIdx)
 
 	// Update parent's children pointers to COW'd nodes
 	parent.Children[parentKeyIdx] = node.PageID
@@ -1144,36 +1061,10 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 		return nil, err
 	}
 
-	// B+ tree: only pull down separator for branch nodes
-	if !leftNode.IsLeaf {
-		leftNode.Keys = append(leftNode.Keys, parent.Keys[parentKeyIdx])
-	}
+	algo.MergeNodes(leftNode, rightNode, parent.Keys[parentKeyIdx])
 
-	// Add all keys from right node to left node
-	leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
-
-	// Add values for leaf nodes only
-	if leftNode.IsLeaf {
-		leftNode.Values = append(leftNode.Values, rightNode.Values...)
-	}
-
-	// Copy children pointers for branch nodes
-	if !leftNode.IsLeaf {
-		leftNode.Children = append(leftNode.Children, rightNode.Children...)
-	}
-
-	// Update left node's key count
-	leftNode.NumKeys = uint16(len(leftNode.Keys))
-	leftNode.Dirty = true
-
-	// Remove the separator key from parent using algo
-	parent.Keys = algo.RemoveAt(parent.Keys, parentKeyIdx)
-	if parent.IsLeaf {
-		parent.Values = algo.RemoveAt(parent.Values, parentKeyIdx)
-	}
-	parent.Children = algo.RemoveChildAt(parent.Children, parentKeyIdx+1)
-	parent.NumKeys--
-	parent.Dirty = true
+	// Remove separator from parent using algo
+	algo.ApplyBranchRemoveSeparator(parent, parentKeyIdx)
 
 	// Update parent's child pointer to merged node
 	parent.Children[parentKeyIdx] = leftNode.PageID
