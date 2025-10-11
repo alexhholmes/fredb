@@ -25,17 +25,17 @@ const (
 )
 
 type DB struct {
-	mu     sync.RWMutex
+	mu     sync.Mutex // Lock only for writers
 	pager  *storage.PageManager
 	cache  *cache.PageCache
-	root   *base.Node
-	wal    *wal.WAL // Write-ahead log for durability
-	closed bool     // Database closed flag
+	root   atomic.Pointer[base.Node] // Atomic root pointer for lock-free readers
+	wal    *wal.WAL                  // Write-ahead log for durability
+	closed atomic.Bool               // Database closed flag
 
 	// Transaction state
-	writerTx  *Tx           // Current write transaction (nil if none)
-	readerTxs []*Tx         // Active read transactions
-	nextTxnID atomic.Uint64 // Monotonic transaction ID counter (incremented for each write Tx)
+	writerTx  atomic.Pointer[Tx] // Current write transaction (nil if none)
+	readerTxs sync.Map           // Active read transactions (map[*Tx]struct{})
+	nextTxnID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	// Background releaser
 	releaseC chan uint64    // Trigger release (unbuffered)
@@ -172,11 +172,11 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	db := &DB{
 		pager:    pager,
 		cache:    c,
-		root:     root,
 		wal:      newWAL,
 		releaseC: make(chan uint64),
 		stopC:    make(chan struct{}),
 	}
+	db.root.Store(root)            // Atomic store of initial root
 	db.nextTxnID.Store(meta.TxnID) // Resume from last committed TxnID
 
 	// Recover uncommitted newWAL entries into cache
@@ -246,55 +246,65 @@ func (db *DB) Delete(key []byte) error {
 }
 
 func (db *DB) Begin(writable bool) (*Tx, error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	// Check if database is closed
-	if db.closed {
+	// Check if database is closed (lock-free atomic check)
+	if db.closed.Load() {
 		return nil, ErrDatabaseClosed
 	}
 
-	// Enforce single writer rule
-	if writable && db.writerTx != nil {
-		return nil, ErrTxInProgress
+	if writable {
+		// Writers need exclusive lock
+		db.mu.Lock()
+		defer db.mu.Unlock()
+
+		// Recheck closed flag after acquiring lock
+		if db.closed.Load() {
+			return nil, ErrDatabaseClosed
+		}
+
+		// Enforce single writer rule
+		if db.writerTx.Load() != nil {
+			return nil, ErrTxInProgress
+		}
+
+		// Writers get a new unique txnID (atomic increment)
+		txnID := db.nextTxnID.Add(1)
+
+		// Create write transaction
+		tx := &Tx{
+			db:       db,
+			txnID:    txnID,
+			writable: true,
+			root:     db.root.Load(), // Atomic load of current root
+			pages:    make(map[base.PageID]*base.Node),
+			pending:  make(map[base.PageID]struct{}),
+			freed:    make(map[base.PageID]struct{}),
+			done:     false,
+		}
+
+		// Register writer (atomic store)
+		db.writerTx.Store(tx)
+
+		return tx, nil
 	}
 
+	// READERS: NO LOCK - completely lock-free path
 	// Capture the current committed txnID from metadata
 	meta := db.pager.GetMeta()
 	committedTxnID := meta.TxnID
 
-	var txnID uint64
-	if writable {
-		// Writers get a new unique txnID (atomic increment)
-		txnID = db.nextTxnID.Add(1)
-	} else {
-		// Readers use the committed txnID as their snapshot
-		// No need to increment - they don't create new versions
-		txnID = committedTxnID
-	}
-
-	// Create transaction
+	// Create read transaction
 	tx := &Tx{
 		db:       db,
-		txnID:    txnID, // For writers: new unique ID; for readers: snapshot version
-		writable: writable,
-		root:     db.root, // Capture snapshot for MVCC isolation
+		txnID:    committedTxnID, // Readers use committed txnID as snapshot
+		writable: false,
+		root:     db.root.Load(), // Atomic load of current root
 		pending:  make(map[base.PageID]struct{}),
 		freed:    make(map[base.PageID]struct{}),
 		done:     false,
 	}
 
-	// Initialize TX-local cache for write transactions
-	if writable {
-		tx.pages = make(map[base.PageID]*base.Node)
-	}
-
-	// Track active transaction
-	if writable {
-		db.writerTx = tx
-	} else {
-		db.readerTxs = append(db.readerTxs, tx)
-	}
+	// Register reader (lock-free via sync.Map)
+	db.readerTxs.Store(tx, struct{}{})
 
 	return tx, nil
 }
@@ -357,19 +367,20 @@ func (db *DB) Close() error {
 	defer db.mu.Unlock()
 
 	// Mark database as closed
-	db.closed = true
+	db.closed.Store(true)
 
 	// Flush root if dirty (was algo.close logic)
-	if db.root != nil && db.root.Dirty {
+	root := db.root.Load()
+	if root != nil && root.Dirty {
 		meta := db.pager.GetMeta()
-		page, err := db.root.Serialize(meta.TxnID)
+		page, err := root.Serialize(meta.TxnID)
 		if err != nil {
 			return err
 		}
-		if err := db.pager.WritePage(db.root.PageID, page); err != nil {
+		if err := db.pager.WritePage(root.PageID, page); err != nil {
 			return err
 		}
-		db.root.Dirty = false
+		root.Dirty = false
 	}
 
 	// Flush cache
@@ -448,7 +459,7 @@ func (db *DB) checkpoint() error {
 
 	// Skip checkpoint if there's an active write transaction
 	// This prevents corruption from checkpoint allocating pages that are being freed
-	if db.writerTx != nil {
+	if db.writerTx.Load() != nil {
 		return nil
 	}
 
@@ -573,23 +584,24 @@ func (db *DB) checkpoint() error {
 // minReaderTxn returns the minimum transaction ID across all active transactions (readers + writer).
 // This determines which pending pages can be safely released to the freelist.
 func (db *DB) minReaderTxn() uint64 {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
 	// Start with current next transaction ID
 	minTxnID := db.nextTxnID.Load()
 
-	// Consider active write transaction
-	if db.writerTx != nil {
-		minTxnID = db.writerTx.txnID
+	// Consider active write transaction (atomic load)
+	if writerTx := db.writerTx.Load(); writerTx != nil {
+		if writerTx.txnID < minTxnID {
+			minTxnID = writerTx.txnID
+		}
 	}
 
-	// Consider all active read transactions
-	for _, tx := range db.readerTxs {
+	// Consider all active read transactions (lock-free via sync.Map)
+	db.readerTxs.Range(func(key, value interface{}) bool {
+		tx := key.(*Tx)
 		if tx.txnID < minTxnID {
 			minTxnID = tx.txnID
 		}
-	}
+		return true // continue iteration
+	})
 
 	return minTxnID
 }
@@ -603,19 +615,21 @@ func (db *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	minTxnID := lastCommittedTxn
 
 	// Consider active write transaction (should not exist during checkpoint, but be safe)
-	if db.writerTx != nil {
-		if db.writerTx.txnID < minTxnID {
-			minTxnID = db.writerTx.txnID
+	if writerTx := db.writerTx.Load(); writerTx != nil {
+		if writerTx.txnID < minTxnID {
+			minTxnID = writerTx.txnID
 		}
 	}
 
-	// Consider all active read transactions
+	// Consider all active read transactions (lock-free via sync.Map)
 	// Now that readers use committed txnID as their snapshot, txnID == snapshot version
-	for _, tx := range db.readerTxs {
+	db.readerTxs.Range(func(key, value interface{}) bool {
+		tx := key.(*Tx)
 		if tx.txnID < minTxnID {
 			minTxnID = tx.txnID
 		}
-	}
+		return true // continue iteration
+	})
 
 	return minTxnID
 }

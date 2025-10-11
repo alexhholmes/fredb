@@ -75,7 +75,7 @@ func (it *Cursor) Seek(key []byte) error {
 	if it.tx != nil && it.tx.root != nil {
 		node = it.tx.root
 	} else {
-		node = it.tx.db.root
+		node = it.tx.db.root.Load()
 	}
 	for !node.IsLeaf {
 		// Find which child to descend to

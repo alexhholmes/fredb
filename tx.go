@@ -111,7 +111,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Use tx.root if set, otherwise start from DB.root
 	root := tx.root
 	if root == nil {
-		root = tx.db.root
+		root = tx.db.root.Load()
 	}
 
 	// Handle root split with COW
@@ -213,7 +213,7 @@ func (tx *Tx) Delete(key []byte) error {
 	// Use tx.root if set, otherwise start from DB.root
 	root := tx.root
 	if root == nil {
-		root = tx.db.root
+		root = tx.db.root.Load()
 	}
 
 	// Root is always a branch node (never nil, never leaf)
@@ -253,12 +253,12 @@ func (tx *Tx) Commit() error {
 		return ErrTxNotWritable
 	}
 
-	// Apply transaction changes to database
+	// Apply transaction changes to database (writers only need mu)
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
-	// Capture old root for rollback if commit fails
-	oldRoot := tx.db.root
+	// Capture old root for rollback if commit fails (atomic load)
+	oldRoot := tx.db.root.Load()
 
 	// Write all TX-local pages to wal (not disk!)
 	// IMPORTANT: Populate cache BEFORE updating root to prevent race condition
@@ -267,15 +267,15 @@ func (tx *Tx) Commit() error {
 		// Serialize Node to a Page with this transaction's ID
 		page, err := node.Serialize(tx.txnID)
 		if err != nil {
-			// Restore old root on failure
-			tx.db.root = oldRoot
+			// Restore old root on failure (atomic store)
+			tx.db.root.Store(oldRoot)
 			return err
 		}
 
 		// Write to wal instead of disk
 		if err := tx.db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
-			// Restore old root on failure
-			tx.db.root = oldRoot
+			// Restore old root on failure (atomic store)
+			tx.db.root.Store(oldRoot)
 			return err
 		}
 
@@ -287,22 +287,22 @@ func (tx *Tx) Commit() error {
 		tx.db.cache.Put(pageID, tx.txnID, node)
 	}
 
-	// Apply transaction-local root to DB.root
+	// Apply transaction-local root to DB.root (atomic swap)
 	// This makes all COW changes visible to future transactions
 	// CRITICAL: Done AFTER cache population to ensure pages are available
 	if tx.root != nil {
-		tx.db.root = tx.root
+		tx.db.root.Store(tx.root)
 	}
 
 	// Append commit marker to wal
 	if err := tx.db.wal.AppendCommit(tx.txnID); err != nil {
-		tx.db.root = oldRoot
+		tx.db.root.Store(oldRoot)
 		return err
 	}
 
 	// Conditionally fsync wal based on sync mode (this is the commit point!)
 	if err := tx.db.wal.Sync(); err != nil {
-		tx.db.root = oldRoot
+		tx.db.root.Store(oldRoot)
 		return err
 	}
 
@@ -338,7 +338,7 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
-	tx.db.writerTx = nil
+	tx.db.writerTx.Store(nil)
 
 	// Mark transaction as done ONLY after all writes succeed
 	// This ensures Rollback can clean up if any write fails
@@ -357,10 +357,11 @@ func (tx *Tx) Rollback() error {
 	tx.done = true
 
 	// Remove from DB tracking
-	tx.db.mu.Lock()
-	defer tx.db.mu.Unlock()
-
 	if tx.writable {
+		// Writers need lock to clean up
+		tx.db.mu.Lock()
+		defer tx.db.mu.Unlock()
+
 		// Clear TX-local cache - discard all uncommitted changes
 		tx.pages = nil
 
@@ -378,17 +379,10 @@ func (tx *Tx) Rollback() error {
 			}
 		}
 
-		tx.db.writerTx = nil
+		tx.db.writerTx.Store(nil)
 	} else {
-		// Remove from readers slice
-		for i, rtx := range tx.db.readerTxs {
-			if rtx == tx {
-				// Swap with last pathElement and truncate
-				tx.db.readerTxs[i] = tx.db.readerTxs[len(tx.db.readerTxs)-1]
-				tx.db.readerTxs = tx.db.readerTxs[:len(tx.db.readerTxs)-1]
-				break
-			}
-		}
+		// Readers: lock-free removal from sync.Map
+		tx.db.readerTxs.Delete(tx)
 
 		// Trigger release - non-blocking send
 		// The background goroutine will calculate the new minimum
@@ -474,13 +468,13 @@ retryLoop:
 
 		// CRITICAL: Never allocate a PageID that's currently in use by the root
 		// This can happen on fresh databases where the freelist hasn't been properly persisted
-		if tx.db.root != nil && pageID == tx.db.root.PageID {
+		if root := tx.db.root.Load(); root != nil && pageID == root.PageID {
 			continue retryLoop
 		}
 
 		// Also check if PageID collides with any child of the root
-		if tx.db.root != nil && !tx.db.root.IsLeaf {
-			for _, childID := range tx.db.root.Children {
+		if root := tx.db.root.Load(); root != nil {
+			for _, childID := range root.Children {
 				if pageID == childID {
 					continue retryLoop
 				}
