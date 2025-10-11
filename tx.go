@@ -3,7 +3,6 @@ package fredb
 import (
 	"bytes"
 	"errors"
-	"fmt"
 
 	"fredb/internal/algo"
 	"fredb/internal/base"
@@ -18,7 +17,7 @@ var (
 // Tx represents a transaction on the database.
 //
 // CONCURRENCY: Transactions are NOT thread-safe and must only be used by a single
-// goroutine at a time. Calling Set/get/Delete/Commit/Rollback concurrently from
+// goroutine at a time. Calling Set/Get/Delete/Commit/Rollback concurrently from
 // multiple goroutines will cause panics and data corruption.
 //
 // Transactions provide a consistent view of the database at the point they were created.
@@ -32,6 +31,9 @@ type Tx struct {
 	pending  map[base.PageID]struct{}   // Pages allocated in this transaction (for COW)
 	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
 	done     bool                       // Has Commit() or Rollback() been called?
+
+	// Virtual page ID allocation for deferred real allocation
+	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
 }
 
 // Get retrieves the value for a key.
@@ -230,27 +232,75 @@ func (tx *Tx) Commit() error {
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
+	// NEW: Allocate real page IDs for all virtual pages
+	// Temporary map for remapping (local to this function, stack-allocated)
+	virtualToReal := make(map[base.PageID]base.PageID)
+
+	// Pass 1: Allocate real page IDs for all virtual pages (identified by map key)
+	for pageID := range tx.pages {
+		if int64(pageID) < 0 { // Virtual page ID (map key) - PageID is uint64, virtual IDs are negative
+			// NOW allocate from PageManager (at commit time)
+			realPageID, err := tx.db.pager.AllocatePage()
+			if err != nil {
+				// Rollback partial allocation - return already-allocated real pages
+				for _, allocated := range virtualToReal {
+					_ = tx.db.pager.FreePage(allocated)
+				}
+				return err
+			}
+
+			// Track mapping for remapping pass
+			virtualToReal[pageID] = realPageID
+		}
+	}
+
+	// Pass 2: Update all nodes' PageID fields and remap child pointers
+	for pageID, node := range tx.pages {
+		// Update this node's PageID if it was virtual
+		if int64(pageID) < 0 {
+			node.PageID = virtualToReal[pageID]
+		}
+
+		// Remap child pointers in branch nodes
+		if !node.IsLeaf {
+			for i, childID := range node.Children {
+				if realID, isVirtual := virtualToReal[childID]; isVirtual {
+					node.Children[i] = realID
+				}
+			}
+		}
+	}
+
+	// Pass 3: Update root pointer if it was virtual
+	if tx.root != nil {
+		if realID, exists := virtualToReal[tx.root.PageID]; exists {
+			tx.root.PageID = realID
+		}
+	}
+
 	// Write all TX-local pages directly to disk
 	// IMPORTANT: Populate cache BEFORE updating root to prevent race condition
 	// where concurrent readers capture new root but pages aren't available yet
-	for pageID, node := range tx.pages {
+	for _, node := range tx.pages {
+		// Use node.PageID (already remapped to real page ID)
+
 		// Serialize Node to a Page with this transaction's ID
 		page, err := node.Serialize(tx.txnID)
 		if err != nil {
 			return err
 		}
 
-		// Write directly to pager (disk)
-		if err := tx.db.pager.WritePage(pageID, page); err != nil {
+		// Write directly to pager (disk) using real page ID
+		if err := tx.db.pager.WritePage(node.PageID, page); err != nil {
 			return err
 		}
 
 		// Clear Dirty flag after successful write
 		node.Dirty = false
 
-		// Flush to global versioned cache with this transaction's ID
+		// Flush to global versioned cache with this transaction's ID using real page ID
 		// This makes the new version visible to future transactions
-		tx.db.cache.Put(pageID, tx.txnID, node)
+		tx.db.cache.Put(node.PageID, tx.txnID, node)
 	}
 
 	// Add freed pages to pending at this transaction ID
@@ -299,6 +349,13 @@ func (tx *Tx) Commit() error {
 
 	tx.db.writer.Store(nil)
 
+	// Trigger background releaser to reclaim pending pages
+	// Non-blocking send - if channel is full, next trigger will handle it
+	select {
+	case tx.db.releaseC <- 0:
+	default:
+	}
+
 	// Mark transaction as done ONLY after all writes succeed
 	// This ensures Rollback can clean up if any write fails
 	tx.done = true
@@ -321,22 +378,10 @@ func (tx *Tx) Rollback() error {
 		tx.db.mu.Lock()
 		defer tx.db.mu.Unlock()
 
-		// Clear TX-local cache - discard all uncommitted changes
+		// Discard all transaction-local state
+		// Virtual pages were never allocated from PageManager, so nothing to free
 		tx.pages = nil
-
-		// Return allocated but uncommitted pages to the freelist
-		// These pages were allocated during the transaction but never used
-		if len(tx.pending) > 0 {
-			dm := tx.db.pager
-			// Add directly to free list, not pending - these can be reused immediately
-			// since they were never part of any committed state
-			for pageID := range tx.pending {
-				err := dm.FreePage(pageID)
-				if err != nil {
-					// TODO
-				}
-			}
-		}
+		tx.pending = nil
 
 		tx.db.writer.Store(nil)
 	} else {
@@ -411,67 +456,19 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 }
 
 // Allocates a new Page for this transaction.
-// The allocated Page is tracked in tx.pending for COW semantics
+// Returns a virtual page ID (negative) that will be mapped to a real page at commit time.
+// The allocated Page is tracked in tx.pending for COW semantics.
 func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
-	// Retry allocation if we get a Page that's in tx.freed
-	// This can happen when background releaser moves pages from pending to free
-	const maxRetries = 10
-retryLoop:
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Allocate from storage (uses freelist or grows file)
-		// PageManager.allocatePage() is thread-safe via mutex
-		pageID, err := tx.db.pager.AllocatePage()
-		if err != nil {
-			return 0, nil, err
-		}
+	// Generate virtual page ID (negative number)
+	// These are transaction-local and never touch PageManager until commit
+	virtualID := base.PageID(tx.nextVirtualID)
+	tx.nextVirtualID--
 
-		// CRITICAL: Never allocate a PageID that's currently in use by the root
-		// This can happen on fresh databases where the freelist hasn't been properly persisted
-		if tx.root != nil && pageID == tx.root.PageID {
-			continue retryLoop
-		}
+	// Track as allocated in this transaction
+	tx.pending[virtualID] = struct{}{}
 
-		// Also check if PageID collides with any child of the root
-		if tx.root != nil {
-			for _, childID := range tx.root.Children {
-				if pageID == childID {
-					continue retryLoop
-				}
-			}
-		}
-
-		// Check for duplicate in tx.pending (should never happen)
-		if _, inPending := tx.pending[pageID]; inPending {
-			return 0, nil, fmt.Errorf("FATAL: freelist returned PageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
-				pageID, tx.txnID, tx.pending, tx.freed)
-		}
-
-		// Check if Page is in tx.freed (race with background releaser)
-		// If so, skip and retry WITHOUT returning to freelist
-		// Returning it would cause the freelist to give it back immediately, creating a loop
-		// Instead, just skip - the freelist will eventually exhaust and grow the file
-		if _, inFreed := tx.freed[pageID]; inFreed {
-			continue retryLoop // Skip this Page, try allocating again
-		}
-
-		// Track in pending pages (for COW)
-		tx.pending[pageID] = struct{}{}
-
-		// Invalidate any stale cache entries for this reused PageID
-		// When a Page is freed and reallocated, old versions must be removed
-		tx.db.cache.Invalidate(pageID)
-
-		// Read the freshly allocated Page
-		page, err := tx.db.pager.ReadPage(pageID)
-		if err != nil {
-			return 0, nil, err
-		}
-
-		return pageID, page, nil
-	}
-
-	return 0, nil, fmt.Errorf("FATAL: failed to allocate Page after %d retries (txnID=%d, pending=%v, freed=%v)",
-		maxRetries, tx.txnID, tx.pending, tx.freed)
+	// Return empty page (will be written at commit time with real page ID)
+	return virtualID, &base.Page{}, nil
 }
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.

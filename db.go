@@ -228,14 +228,15 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 
 		// Create write transaction
 		tx := &Tx{
-			db:       db,
-			txnID:    txnID,
-			writable: true,
-			root:     snapshot.Root, // Atomic snapshot of root
-			pages:    make(map[base.PageID]*base.Node),
-			pending:  make(map[base.PageID]struct{}),
-			freed:    make(map[base.PageID]struct{}),
-			done:     false,
+			db:            db,
+			txnID:         txnID,
+			writable:      true,
+			root:          snapshot.Root, // Atomic snapshot of root
+			pages:         make(map[base.PageID]*base.Node),
+			pending:       make(map[base.PageID]struct{}),
+			freed:         make(map[base.PageID]struct{}),
+			done:          false,
+			nextVirtualID: -1, // Start virtual page IDs at -1
 		}
 
 		// Register writer (atomic store)

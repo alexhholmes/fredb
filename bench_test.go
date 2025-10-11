@@ -13,7 +13,7 @@ func BenchmarkDBGet(b *testing.B) {
 	defer os.Remove(tmpfile)
 	defer os.Remove(tmpfile + ".wal")
 
-	db, err := Open(tmpfile, WithSyncEveryCommit())
+	db, err := Open(tmpfile, WithSyncOff())
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
