@@ -1,0 +1,1233 @@
+package fredb
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+
+	"fredb/internal/algo"
+	"fredb/internal/base"
+)
+
+var (
+	ErrTxNotWritable = errors.New("transaction is read-only")
+	ErrTxInProgress  = errors.New("write transaction already in progress")
+	ErrTxDone        = errors.New("transaction has been committed or rolled back")
+)
+
+// Tx represents a transaction on the database.
+//
+// CONCURRENCY: Transactions are NOT thread-safe and must only be used by a single
+// goroutine at a time. Calling Set/get/Delete/Commit/Rollback concurrently from
+// multiple goroutines will cause panics and data corruption.
+//
+// Transactions provide a consistent view of the database at the point they were created.
+// Read transactions can run concurrently, but only one write transaction can be active at a time.
+type Tx struct {
+	txnID    uint64                     // Unique transaction ID
+	writable bool                       // Is this a read-write transaction?
+	db       *DB                        // Database this transaction belongs to (concrete type for internal access)
+	root     *base.Node                 // Root Node at transaction start
+	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pending  map[base.PageID]struct{}   // Pages allocated in this transaction (for COW)
+	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+	done     bool                       // Has Commit() or Rollback() been called?
+}
+
+// Get retrieves the value for a key.
+// Returns ErrKeyNotFound if the key does not exist.
+func (tx *Tx) Get(key []byte) ([]byte, error) {
+	if err := tx.check(); err != nil {
+		return nil, err
+	}
+
+	// Use transaction's snapshot root for MVCC isolation
+	// tx.root is captured at Begin() time and provides snapshot isolation
+	if tx.root == nil {
+		return nil, ErrKeyNotFound
+	}
+
+	// Search from transaction's root (pass tx for versioned cache access)
+	return tx.search(tx.root, key)
+}
+
+// search recursively searches for a key using algo functions
+func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
+	// Find position in current node
+	i := 0
+	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
+		i++
+	}
+	// After loop: i points to first key > search_key (or NumKeys if all keys <= search_key)
+
+	// If leaf node, check if key found
+	if node.IsLeaf {
+		// In leaf, we need to check the previous position (since loop went past equal keys)
+		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
+			return node.Values[i-1], nil
+		}
+		// Not found in leaf
+		return nil, ErrKeyNotFound
+	}
+
+	// Branch node: continue descending
+	// i is the correct child index (first child with keys >= search_key)
+	child, err := tx.loadNode(node.Children[i])
+	if err != nil {
+		return nil, err
+	}
+
+	return tx.search(child, key)
+}
+
+// Set stores a key-value pair.
+// Returns ErrTxNotWritable if called on a read-only transaction.
+func (tx *Tx) Set(key, value []byte) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	// validate key/value size before insertion
+	if len(key) > MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > MaxValueSize {
+		return ErrValueTooLarge
+	}
+
+	// Also active practical limit based on Page size
+	// At minimum, a leaf Page must hold at least one key-value pair
+	maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+	if len(key)+len(value) > maxSize {
+		return ErrPageOverflow
+	}
+
+	// Use COW-aware insertion with splits
+	// Keep changes in tx.root (transaction-local), not DB.root
+
+	// Use tx.root if set, otherwise start from DB.root
+	root := tx.root
+	if root == nil {
+		root = tx.db.root
+	}
+
+	// Handle root split with COW
+	if root.IsFull() {
+		// Split root using COW
+		leftChild, rightChild, midKey, midVal, err := tx.splitChild(root)
+		if err != nil {
+			return err
+		}
+
+		// Create new root using tx.allocatePage()
+		newRootID, _, err := tx.allocatePage()
+		if err != nil {
+			return err
+		}
+
+		newRoot := &base.Node{
+			PageID:   newRootID,
+			Dirty:    true,
+			IsLeaf:   false,
+			NumKeys:  1,
+			Keys:     [][]byte{midKey},
+			Values:   [][]byte{midVal},
+			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
+		}
+
+		// store the new root in TX-local cache
+		// The split Children were already stored in splitChild()
+		tx.pages[newRootID] = newRoot
+
+		root = newRoot
+	}
+
+	// Insert with recursive COW - retry until success or non-overflow error
+	// This handles cascading splits when parent nodes also overflow
+	maxRetries := 20 // Prevent infinite loops
+	var err error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		newRoot, err := tx.insertNonFull(root, key, value)
+		if !errors.Is(err, ErrPageOverflow) {
+			// Either success or non-recoverable error
+			if err == nil {
+				root = newRoot // Only update root on success
+			}
+			break
+		}
+
+		// Root couldn't fit the new entry - split it
+		leftChild, rightChild, midKey, midVal, err := tx.splitChild(root)
+		if err != nil {
+			return err
+		}
+
+		// Create new root
+		newRootID, _, err := tx.allocatePage()
+		if err != nil {
+			return err
+		}
+
+		root = &base.Node{
+			PageID:   newRootID,
+			Dirty:    true,
+			IsLeaf:   false,
+			NumKeys:  1,
+			Keys:     [][]byte{midKey},
+			Values:   [][]byte{midVal},
+			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
+		}
+
+		tx.pages[newRootID] = root
+		// Use new root for next retry (already assigned to root)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Update transaction-local root (NOT DB.root)
+	// Changes become visible only on Commit()
+	tx.root = root
+
+	return nil
+}
+
+// Delete removes a key.
+// Returns ErrTxNotWritable if called on a read-only transaction.
+func (tx *Tx) Delete(key []byte) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	// Full COW-aware deletion with merge/borrow support
+	// Keep changes in tx.root (transaction-local), not DB.root
+
+	// Use tx.root if set, otherwise start from DB.root
+	root := tx.root
+	if root == nil {
+		root = tx.db.root
+	}
+
+	if root == nil || root.NumKeys == 0 {
+		return ErrKeyNotFound
+	}
+
+	// Perform COW-aware recursive deletion - capture returned root
+	root, err := tx.deleteFromNode(root, key)
+	if err != nil {
+		return err
+	}
+
+	// Handle root collapse: if root is non-leaf and has no Keys, promote its only child
+	if !root.IsLeaf && root.NumKeys == 0 {
+		if len(root.Children) > 0 {
+			// Track old root as freed
+			tx.addFreed(root.PageID)
+
+			// Load the only child as new root
+			root, err = tx.loadNode(root.Children[0])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Update transaction-local root (NOT DB.root)
+	// Changes become visible only on Commit()
+	tx.root = root
+
+	return nil
+}
+
+// Cursor creates a new cursor for iterating over Keys.
+// The cursor is bound to this transaction's snapshot.
+func (tx *Tx) Cursor() *Cursor {
+	// Pass transaction to cursor for snapshot isolation
+	return &Cursor{
+		tx:    tx,
+		valid: false,
+	}
+}
+
+// Commit writes all changes and makes them visible to future transactions.
+// Returns ErrTxNotWritable if called on a read-only transaction.
+// Returns ErrTxDone if transaction has already been committed or rolled back.
+func (tx *Tx) Commit() error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	// Apply transaction changes to database
+	tx.db.mu.Lock()
+	defer tx.db.mu.Unlock()
+
+	// Capture old root for rollback if commit fails
+	oldRoot := tx.db.root
+
+	// Write all TX-local pages to wal (not disk!)
+	// IMPORTANT: Populate cache BEFORE updating root to prevent race condition
+	// where concurrent readers capture new root but pages aren't available yet
+	for pageID, node := range tx.pages {
+		// Serialize Node to a Page with this transaction's ID
+		page, err := node.Serialize(tx.txnID)
+		if err != nil {
+			// Restore old root on failure
+			tx.db.root = oldRoot
+			return err
+		}
+
+		// Write to wal instead of disk
+		if err := tx.db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
+			// Restore old root on failure
+			tx.db.root = oldRoot
+			return err
+		}
+
+		// Clear Dirty flag after successful write
+		node.Dirty = false
+
+		// Flush to global versioned cache with this transaction's ID
+		// This makes the new version visible to future transactions
+		tx.db.cache.Put(pageID, tx.txnID, node)
+	}
+
+	// Apply transaction-local root to DB.root
+	// This makes all COW changes visible to future transactions
+	// CRITICAL: Done AFTER cache population to ensure pages are available
+	if tx.root != nil {
+		tx.db.root = tx.root
+	}
+
+	// Append commit marker to wal
+	if err := tx.db.wal.AppendCommit(tx.txnID); err != nil {
+		tx.db.root = oldRoot
+		return err
+	}
+
+	// Conditionally fsync wal based on sync mode (this is the commit point!)
+	if err := tx.db.wal.Sync(); err != nil {
+		tx.db.root = oldRoot
+		return err
+	}
+
+	// Add freed pages to pending at this transaction ID
+	// These pages were part of the previous version and can be reclaimed
+	// when all readers that might reference them have finished.
+	if len(tx.freed) > 0 {
+		dm := tx.db.pager
+		// Convert map to slice for FreePending
+		freedSlice := make([]base.PageID, 0, len(tx.freed))
+		for pageID := range tx.freed {
+			freedSlice = append(freedSlice, pageID)
+		}
+		err := dm.FreePending(tx.txnID, freedSlice)
+		if err != nil {
+			// TODO
+		}
+	}
+
+	// Write meta Page to disk for persistence
+	// get current meta from storage
+	meta := tx.db.pager.GetMeta()
+
+	// Build new meta Page with updated root and incremented TxnID
+	if tx.root != nil {
+		meta.RootPageID = tx.root.PageID
+	}
+	meta.TxnID = tx.txnID
+	meta.Checksum = meta.CalculateChecksum()
+
+	// Update storage's in-memory meta
+	if err := tx.db.pager.PutMeta(meta); err != nil {
+		return err
+	}
+
+	tx.db.writerTx = nil
+
+	// Mark transaction as done ONLY after all writes succeed
+	// This ensures Rollback can clean up if any write fails
+	tx.done = true
+
+	return nil
+}
+
+// Rollback discards all changes made in the transaction.
+// Safe to call after Commit() (becomes a no-op).
+// Safe to call multiple times (idempotent).
+func (tx *Tx) Rollback() error {
+	if tx.done {
+		return nil // Already committed or rolled back
+	}
+	tx.done = true
+
+	// Remove from DB tracking
+	tx.db.mu.Lock()
+	defer tx.db.mu.Unlock()
+
+	if tx.writable {
+		// Clear TX-local cache - discard all uncommitted changes
+		tx.pages = nil
+
+		// Return allocated but uncommitted pages to the freelist
+		// These pages were allocated during the transaction but never used
+		if len(tx.pending) > 0 {
+			dm := tx.db.pager
+			// Add directly to free list, not pending - these can be reused immediately
+			// since they were never part of any committed state
+			for pageID := range tx.pending {
+				err := dm.FreePage(pageID)
+				if err != nil {
+					// TODO
+				}
+			}
+		}
+
+		tx.db.writerTx = nil
+	} else {
+		// Remove from readers slice
+		for i, rtx := range tx.db.readerTxs {
+			if rtx == tx {
+				// Swap with last pathElement and truncate
+				tx.db.readerTxs[i] = tx.db.readerTxs[len(tx.db.readerTxs)-1]
+				tx.db.readerTxs = tx.db.readerTxs[:len(tx.db.readerTxs)-1]
+				break
+			}
+		}
+
+		// Trigger release - non-blocking send
+		// The background goroutine will calculate the new minimum
+		select {
+		case tx.db.releaseC <- 0: // Value doesn't matter, it's just a trigger
+		default:
+			// Channel blocked, ticker will handle it
+		}
+	}
+
+	return nil
+}
+
+// check verifies the transaction is still active.
+// Returns ErrTxDone if the transaction has been committed or rolled back.
+func (tx *Tx) check() error {
+	if tx.done {
+		return ErrTxDone
+	}
+	return nil
+}
+
+// EnsureWritable ensures a Node is safe to modify in this transaction.
+// Performs COW only if the Node doesn't already belong to this transaction.
+// Returns a writable Node (either the original if already owned, or a Clone).
+func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
+	// 1. Check TX-local cache first - if already COW'd in this transaction
+	if cloned, exists := tx.pages[node.PageID]; exists {
+		return cloned, nil
+	}
+
+	// 2. Check if this Node already belongs to this transaction (pending allocations)
+	// If its PageID is in tx.pending, it was allocated in this transaction
+	if _, inPending := tx.pending[node.PageID]; inPending {
+		// Node already owned by this transaction, no COW needed
+		// But we still need to add it to tx.pages so it gets committed
+		tx.pages[node.PageID] = node
+		return node, nil
+	}
+
+	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
+	cloned := node.Clone()
+
+	// Allocate new Page for cloned Node
+	pageID, _, err := tx.allocatePage()
+	if err != nil {
+		return nil, err
+	}
+
+	// Set up cloned Node with new Page
+	cloned.PageID = pageID
+	cloned.Dirty = true
+
+	// Don't Serialize here - let the caller modify the Node first
+	// The caller will Serialize after modifications
+
+	// Track old Page as freed
+	// These pages will be added to freelist's pending list on commit
+	// and reclaimed when all readers that might reference them have finished
+	tx.addFreed(node.PageID)
+
+	// store in TX-LOCAL cache (NOT global cache yet)
+	// Will be flushed to global cache on Commit()
+	tx.pages[pageID] = cloned
+
+	return cloned, nil
+}
+
+// Allocates a new Page for this transaction.
+// The allocated Page is tracked in tx.pending for COW semantics
+func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
+	// Retry allocation if we get a Page that's in tx.freed
+	// This can happen when background releaser moves pages from pending to free
+	const maxRetries = 10
+retryLoop:
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Allocate from storage (uses freelist or grows file)
+		// PageManager.allocatePage() is thread-safe via mutex
+		pageID, err := tx.db.pager.AllocatePage()
+		if err != nil {
+			return 0, nil, err
+		}
+
+		// Check for duplicate in tx.pending (should never happen)
+		if _, inPending := tx.pending[pageID]; inPending {
+			return 0, nil, fmt.Errorf("FATAL: freelist returned PageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
+				pageID, tx.txnID, tx.pending, tx.freed)
+		}
+
+		// Check if Page is in tx.freed (race with background releaser)
+		// If so, skip and retry WITHOUT returning to freelist
+		// Returning it would cause the freelist to give it back immediately, creating a loop
+		// Instead, just skip - the freelist will eventually exhaust and grow the file
+		if _, inFreed := tx.freed[pageID]; inFreed {
+			continue retryLoop // Skip this Page, try allocating again
+		}
+
+		// Track in pending pages (for COW)
+		tx.pending[pageID] = struct{}{}
+
+		// Invalidate any stale cache entries for this reused PageID
+		// When a Page is freed and reallocated, old versions must be removed
+		tx.db.cache.Invalidate(pageID)
+
+		// Read the freshly allocated Page
+		page, err := tx.db.pager.ReadPage(pageID)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		return pageID, page, nil
+	}
+
+	return 0, nil, fmt.Errorf("FATAL: failed to allocate Page after %d retries (txnID=%d, pending=%v, freed=%v)",
+		maxRetries, tx.txnID, tx.pending, tx.freed)
+}
+
+// AddFreed adds a Page to the freed list, checking for duplicates first.
+// This prevents the same Page from being freed multiple times in a transaction.
+func (tx *Tx) addFreed(pageID base.PageID) {
+	if pageID == 0 {
+		return
+	}
+	// Add to map (automatically handles duplicates)
+	tx.freed[pageID] = struct{}{}
+}
+
+// splitChild performs COW on the child being split and allocates the new sibling
+func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []byte, error) {
+	// I/O: COW BEFORE any computation
+	child, err := tx.ensureWritable(child)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	// Pure: calculate split point
+	sp := algo.CalculateSplitPoint(child)
+
+	// Pure: extract right portion (read-only)
+	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
+
+	// I/O: allocate page for right node
+	newNodeID, _, err := tx.allocatePage()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	// State: construct right node
+	newNode := &base.Node{
+		PageID:   newNodeID,
+		Dirty:    true,
+		IsLeaf:   child.IsLeaf,
+		NumKeys:  uint16(sp.RightCount),
+		Keys:     rightKeys,
+		Values:   rightVals,
+		Children: rightChildren,
+	}
+
+	// State: truncate left (child already COW'd, safe to mutate)
+	leftKeys := make([][]byte, sp.LeftCount)
+	copy(leftKeys, child.Keys[:sp.LeftCount])
+	child.Keys = leftKeys
+
+	if child.IsLeaf {
+		leftVals := make([][]byte, sp.LeftCount)
+		copy(leftVals, child.Values[:sp.LeftCount])
+		child.Values = leftVals
+	} else {
+		child.Values = nil
+		leftChildren := make([]base.PageID, sp.Mid+1)
+		copy(leftChildren, child.Children[:sp.Mid+1])
+		child.Children = leftChildren
+	}
+
+	child.NumKeys = uint16(sp.LeftCount)
+	child.Dirty = true
+
+	// I/O: store right node in tx cache
+	tx.pages[newNodeID] = newNode
+
+	return child, newNode, sp.SeparatorKey, []byte{}, nil
+}
+
+// loadFromDisk loads a node from disk with relocation support
+func (tx *Tx) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
+	// Check if a relocated version exists that's visible to this transaction
+	relocPageID, relocTxnID := tx.db.pager.GetLatestVisible(pageID, tx.txnID)
+	if relocPageID != 0 {
+		// Found relocated version - read from relocated location
+		page, err := tx.db.pager.ReadPage(relocPageID)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		// Deserialize relocated page
+		node := &base.Node{
+			PageID: pageID, // Use original PageID, not relocated
+			Dirty:  false,
+		}
+
+		header := page.Header()
+		if header.NumKeys > 0 {
+			if err := node.Deserialize(page); err != nil {
+				return nil, 0, err
+			}
+		} else {
+			// Empty page - initialize as empty leaf
+			node.IsLeaf = true
+			node.NumKeys = 0
+			node.Keys = make([][]byte, 0)
+			node.Values = make([][]byte, 0)
+			node.Children = make([]base.PageID, 0)
+		}
+
+		return node, relocTxnID, nil
+	}
+
+	// No relocated version - read from original location
+	page, err := tx.db.pager.ReadPage(pageID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Deserialize page
+	node := &base.Node{
+		PageID: pageID,
+		Dirty:  false,
+	}
+
+	header := page.Header()
+	if header.NumKeys > 0 {
+		if err := node.Deserialize(page); err != nil {
+			return nil, 0, err
+		}
+	} else {
+		// Empty page - initialize as empty leaf
+		node.IsLeaf = true
+		node.NumKeys = 0
+		node.Keys = make([][]byte, 0)
+		node.Values = make([][]byte, 0)
+		node.Children = make([]base.PageID, 0)
+	}
+
+	// Cycle detection
+	if !node.IsLeaf {
+		for _, childID := range node.Children {
+			if childID == pageID {
+				return nil, 0, ErrCorruption
+			}
+		}
+	}
+
+	return node, header.TxnID, nil
+}
+
+// loadNode loads a node using hybrid cache: tx.pages → versioned global cache → disk
+func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
+	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
+	if tx.writable && tx.pages != nil {
+		if node, exists := tx.pages[pageID]; exists {
+			return node, nil
+		}
+	}
+
+	// 2. GetOrLoad atomically checks cache or coordinates disk load
+	node, found := tx.db.cache.GetOrLoad(pageID, tx.txnID, func() (*base.Node, uint64, error) {
+		return tx.loadFromDisk(pageID)
+	})
+
+	if !found {
+		return nil, ErrKeyNotFound
+	}
+
+	// 3. Cycle detection on cached node
+	if !node.IsLeaf {
+		for _, childID := range node.Children {
+			if childID == pageID {
+				return nil, ErrCorruption
+			}
+		}
+	}
+
+	return node, nil
+}
+
+// insertNonFull inserts into a non-full node with COW
+// Returns the (possibly new) root node after COW
+func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
+	if node.IsLeaf {
+		// COW before modifying leaf
+		node, err := tx.ensureWritable(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Pure: find insert position
+		pos := algo.FindInsertPosition(node, key)
+
+		// Check for update
+		if pos < int(node.NumKeys) && bytes.Equal(node.Keys[pos], key) {
+			// Save old value for rollback
+			oldValue := make([]byte, len(node.Values[pos]))
+			copy(oldValue, node.Values[pos])
+
+			node.Values[pos] = value
+			node.Dirty = true
+
+			// Try to serialize after update
+			_, err = node.Serialize(tx.txnID)
+			if err != nil {
+				// Rollback: restore old value
+				node.Values[pos] = oldValue
+				return nil, err
+			}
+			return node, nil
+		}
+
+		// Insert new key-value using algo
+		node.Keys = algo.InsertAt(node.Keys, pos, key)
+		node.Values = algo.InsertAt(node.Values, pos, value)
+		node.NumKeys++
+		node.Dirty = true
+
+		// Try to serialize after insertion
+		_, err = node.Serialize(tx.txnID)
+		if err != nil {
+			// Rollback: remove the inserted key/value
+			node.Keys = algo.RemoveAt(node.Keys, pos)
+			node.Values = algo.RemoveAt(node.Values, pos)
+			node.NumKeys--
+			return nil, err
+		}
+
+		return node, nil
+	}
+
+	// Branch node - recursive COW
+	// Find child to insert into
+	i := algo.FindChildIndex(node, key)
+
+	// Load child
+	child, err := tx.loadNode(node.Children[i])
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle full child with COW-aware split
+	if child.IsFull() {
+		// Split child using COW
+		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child)
+		if err != nil {
+			return nil, err
+		}
+
+		// COW parent to insert middle key and update pointers
+		node, err = tx.ensureWritable(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Save old state for rollback
+		oldKeys := node.Keys
+		oldValues := node.Values
+		oldChildren := node.Children
+		oldNumKeys := node.NumKeys
+
+		// Insert middle key into parent using algo
+		node.Keys = algo.InsertAt(node.Keys, i, midKey)
+		if node.IsLeaf {
+			node.Values = algo.InsertAt(node.Values, i, midVal)
+		}
+
+		// Build new children array
+		newChildren := make([]base.PageID, len(node.Children)+1)
+		copy(newChildren[:i], node.Children[:i])
+		newChildren[i] = leftChild.PageID
+		newChildren[i+1] = rightChild.PageID
+		copy(newChildren[i+2:], node.Children[i+1:])
+
+		node.Children = newChildren
+		node.NumKeys++
+		node.Dirty = true
+
+		// Serialize parent after modification
+		_, err = node.Serialize(tx.txnID)
+		if err != nil {
+			// Rollback: restore old state
+			node.Keys = oldKeys
+			node.Values = oldValues
+			node.Children = oldChildren
+			node.NumKeys = oldNumKeys
+			return nil, err
+		}
+
+		// Determine which child to use after split
+		if bytes.Compare(key, midKey) >= 0 {
+			i++
+			child = rightChild
+		} else {
+			child = leftChild
+		}
+	}
+
+	// Store original child PageID to detect COW
+	oldChildID := child.PageID
+
+	// Recursive insert (may COW child)
+	newChild, err := tx.insertNonFull(child, key, value)
+	if errors.Is(err, ErrPageOverflow) {
+		// Child couldn't fit the key/value - split it (use original child, not nil from error)
+		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child)
+		if err != nil {
+			return nil, err
+		}
+
+		// COW parent to insert middle key and update pointers
+		node, err = tx.ensureWritable(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Save old state for rollback
+		oldKeys := node.Keys
+		oldValues := node.Values
+		oldChildren := node.Children
+		oldNumKeys := node.NumKeys
+
+		// Insert middle key into parent using algo
+		node.Keys = algo.InsertAt(node.Keys, i, midKey)
+		if node.IsLeaf {
+			node.Values = algo.InsertAt(node.Values, i, midVal)
+		}
+
+		// Build new children array
+		newChildren := make([]base.PageID, len(node.Children)+1)
+		copy(newChildren[:i], node.Children[:i])
+		newChildren[i] = leftChild.PageID
+		newChildren[i+1] = rightChild.PageID
+		copy(newChildren[i+2:], node.Children[i+1:])
+
+		node.Children = newChildren
+		node.NumKeys++
+		node.Dirty = true
+
+		// Serialize parent after modification
+		_, err = node.Serialize(tx.txnID)
+		if err != nil {
+			// Rollback: restore old state
+			node.Keys = oldKeys
+			node.Values = oldValues
+			node.Children = oldChildren
+			node.NumKeys = oldNumKeys
+			return nil, err
+		}
+
+		// Retry insert into correct child
+		if bytes.Compare(key, midKey) >= 0 {
+			i++
+			rightChild, err = tx.insertNonFull(rightChild, key, value)
+		} else {
+			leftChild, err = tx.insertNonFull(leftChild, key, value)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		return node, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	// Success - update child with returned value
+	child = newChild
+
+	// If child was COW'd, update parent pointer
+	if child.PageID != oldChildID {
+		// COW parent to update child pointer
+		node, err = tx.ensureWritable(node)
+		if err != nil {
+			return nil, err
+		}
+
+		node.Children[i] = child.PageID
+		node.Dirty = true
+		_, err = node.Serialize(tx.txnID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return node, nil
+}
+
+// deleteFromNode recursively deletes a key from the subtree rooted at node with COW
+// Returns the (possibly new) node after COW
+func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
+	// B+ tree: if this is a leaf, check if key exists and delete
+	if node.IsLeaf {
+		idx := algo.FindKeyInLeaf(node, key)
+		if idx >= 0 {
+			return tx.deleteFromLeaf(node, idx)
+		}
+		return nil, ErrKeyNotFound
+	}
+
+	// Branch node: descend to child (never delete from branch)
+	// Find child where key might be using algo
+	childIdx := algo.FindDeleteChildIndex(node, key)
+
+	child, err := tx.loadNode(node.Children[childIdx])
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if child will underflow
+	shouldCheckUnderflow := child.NumKeys == base.MinKeysPerNode
+
+	// Delete from child - CRITICAL: capture returned child to get new PageID after COW
+	child, err = tx.deleteFromNode(child, key)
+	if err != nil {
+		return nil, err
+	}
+
+	// COW parent to update child pointer
+	node, err = tx.ensureWritable(node)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update child pointer (child may have been COW'd)
+	node.Children[childIdx] = child.PageID
+
+	// Handle underflow if necessary
+	if shouldCheckUnderflow && child.IsUnderflow() && node != tx.root {
+		// CRITICAL: capture both returned parent and child
+		node, child, err = tx.fixUnderflow(node, childIdx, child)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return node, nil
+}
+
+// deleteFromLeaf performs COW on the leaf before deleting
+func (tx *Tx) deleteFromLeaf(node *base.Node, idx int) (*base.Node, error) {
+	// COW before modifying leaf
+	node, err := tx.ensureWritable(node)
+	if err != nil {
+		return nil, err
+	}
+
+	// Remove key and value using algo
+	node.Keys = algo.RemoveAt(node.Keys, idx)
+	node.Values = algo.RemoveAt(node.Values, idx)
+	node.NumKeys--
+	node.Dirty = true
+
+	return node, nil
+}
+
+// fixUnderflow fixes underflow in child at childIdx with COW semantics
+// Returns (updatedParent, updatedChild, error)
+func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*base.Node, *base.Node, error) {
+	// Try to borrow from left sibling
+	if childIdx > 0 {
+		leftSibling, err := tx.loadNode(parent.Children[childIdx-1])
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if algo.CanBorrowFrom(leftSibling) {
+			child, leftSibling, parent, err = tx.borrowFromLeft(child, leftSibling, parent, childIdx-1)
+			if err != nil {
+				return nil, nil, err
+			}
+			// Update parent's child pointer for borrowed child
+			parent.Children[childIdx] = child.PageID
+			return parent, child, nil
+		}
+	}
+
+	// Try to borrow from right sibling
+	if childIdx < len(parent.Children)-1 {
+		rightSibling, err := tx.loadNode(parent.Children[childIdx+1])
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if algo.CanBorrowFrom(rightSibling) {
+			child, rightSibling, parent, err = tx.borrowFromRight(child, rightSibling, parent, childIdx)
+			if err != nil {
+				return nil, nil, err
+			}
+			// Update parent's child pointer for borrowed child
+			parent.Children[childIdx] = child.PageID
+			return parent, child, nil
+		}
+	}
+
+	// Merge with a sibling
+	if childIdx > 0 {
+		// Merge with left sibling
+		leftSibling, err := tx.loadNode(parent.Children[childIdx-1])
+		if err != nil {
+			return nil, nil, err
+		}
+		parent, err = tx.mergeNodes(leftSibling, child, parent, childIdx-1)
+		if err != nil {
+			return nil, nil, err
+		}
+		// After merge, child is absorbed into leftSibling, so return leftSibling as the "child"
+		return parent, leftSibling, nil
+	}
+
+	// Merge with right sibling
+	rightSibling, err := tx.loadNode(parent.Children[childIdx+1])
+	if err != nil {
+		return nil, nil, err
+	}
+	parent, err = tx.mergeNodes(child, rightSibling, parent, childIdx)
+	if err != nil {
+		return nil, nil, err
+	}
+	// After merge, rightSibling is absorbed into child, child remains
+	return parent, child, nil
+}
+
+// borrowFromLeft borrows a key from left sibling through parent (COW)
+func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
+	// COW all three nodes being modified
+	node, err := tx.ensureWritable(node)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	leftSibling, err = tx.ensureWritable(leftSibling)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	parent, err = tx.ensureWritable(parent)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if node.IsLeaf {
+		// Extract last from left sibling using algo
+		borrowed := algo.ExtractLastFromSibling(leftSibling)
+
+		// Insert at beginning of node
+		node.Keys = algo.InsertAt(node.Keys, 0, borrowed.Key)
+		node.Values = algo.InsertAt(node.Values, 0, borrowed.Value)
+		node.NumKeys++
+
+		// Update parent separator to be the first key of right node
+		parent.Keys[parentKeyIdx] = node.Keys[0]
+	} else {
+		// Branch borrow: traditional B-tree style
+		borrowed := algo.ExtractLastFromSibling(leftSibling)
+
+		// Move parent key to node (at beginning)
+		node.Keys = algo.InsertAt(node.Keys, 0, parent.Keys[parentKeyIdx])
+		node.Children = append([]base.PageID{borrowed.Child}, node.Children...)
+		node.NumKeys++
+
+		// Move last key from left sibling to parent
+		parent.Keys[parentKeyIdx] = borrowed.Key
+	}
+
+	// Mark all as dirty
+	node.Dirty = true
+	leftSibling.Dirty = true
+	parent.Dirty = true
+
+	// Update parent's children pointers to COW'd nodes
+	parent.Children[parentKeyIdx] = leftSibling.PageID
+	parent.Children[parentKeyIdx+1] = node.PageID
+
+	return node, leftSibling, parent, nil
+}
+
+// borrowFromRight borrows a key from right sibling through parent (COW)
+func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
+	// COW all three nodes being modified
+	node, err := tx.ensureWritable(node)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	rightSibling, err = tx.ensureWritable(rightSibling)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	parent, err = tx.ensureWritable(parent)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if node.IsLeaf {
+		// Extract first from right sibling using algo
+		borrowed := algo.ExtractFirstFromSibling(rightSibling)
+
+		// Append to end of node
+		node.Keys = append(node.Keys, borrowed.Key)
+		node.Values = append(node.Values, borrowed.Value)
+		node.NumKeys++
+
+		// Update parent separator to be the first key of right sibling
+		parent.Keys[parentKeyIdx] = rightSibling.Keys[0]
+	} else {
+		// Branch borrow: traditional B-tree style
+		borrowed := algo.ExtractFirstFromSibling(rightSibling)
+
+		// Move parent key to node (at end)
+		node.Keys = append(node.Keys, parent.Keys[parentKeyIdx])
+		node.Children = append(node.Children, borrowed.Child)
+		node.NumKeys++
+
+		// Move first key from right sibling to parent
+		parent.Keys[parentKeyIdx] = borrowed.Key
+	}
+
+	// Mark all as dirty
+	node.Dirty = true
+	rightSibling.Dirty = true
+	parent.Dirty = true
+
+	// Update parent's children pointers to COW'd nodes
+	parent.Children[parentKeyIdx] = node.PageID
+	parent.Children[parentKeyIdx+1] = rightSibling.PageID
+
+	return node, rightSibling, parent, nil
+}
+
+// mergeNodes merges two nodes with COW semantics
+func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, error) {
+	// COW left node (will receive merged content)
+	leftNode, err := tx.ensureWritable(leftNode)
+	if err != nil {
+		return nil, err
+	}
+
+	// COW parent (will have separator removed)
+	parent, err = tx.ensureWritable(parent)
+	if err != nil {
+		return nil, err
+	}
+
+	// B+ tree: only pull down separator for branch nodes
+	if !leftNode.IsLeaf {
+		leftNode.Keys = append(leftNode.Keys, parent.Keys[parentKeyIdx])
+	}
+
+	// Add all keys from right node to left node
+	leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
+
+	// Add values for leaf nodes only
+	if leftNode.IsLeaf {
+		leftNode.Values = append(leftNode.Values, rightNode.Values...)
+	}
+
+	// Copy children pointers for branch nodes
+	if !leftNode.IsLeaf {
+		leftNode.Children = append(leftNode.Children, rightNode.Children...)
+	}
+
+	// Update left node's key count
+	leftNode.NumKeys = uint16(len(leftNode.Keys))
+	leftNode.Dirty = true
+
+	// Remove the separator key from parent using algo
+	parent.Keys = algo.RemoveAt(parent.Keys, parentKeyIdx)
+	if parent.IsLeaf {
+		parent.Values = algo.RemoveAt(parent.Values, parentKeyIdx)
+	}
+	parent.Children = algo.RemoveChildAt(parent.Children, parentKeyIdx+1)
+	parent.NumKeys--
+	parent.Dirty = true
+
+	// Update parent's child pointer to merged node
+	parent.Children[parentKeyIdx] = leftNode.PageID
+
+	// Track right node as freed
+	tx.addFreed(rightNode.PageID)
+
+	return parent, nil
+}
+
+// findPredecessor finds the predecessor key/value in the subtree rooted at node
+func (tx *Tx) findPredecessor(current *base.Node) ([]byte, []byte, error) {
+	// Keep going right until we reach a leaf
+	for !current.IsLeaf {
+		lastChildIdx := len(current.Children) - 1
+		child, err := tx.loadNode(current.Children[lastChildIdx])
+		if err != nil {
+			return nil, nil, err
+		}
+		current = child
+	}
+
+	// Return the last key/value in the leaf
+	if current.NumKeys == 0 {
+		return nil, nil, ErrKeyNotFound
+	}
+	lastIdx := current.NumKeys - 1
+	return current.Keys[lastIdx], current.Values[lastIdx], nil
+}
+
+// findSuccessor finds the successor key/value in the subtree rooted at node
+func (tx *Tx) findSuccessor(current *base.Node) ([]byte, []byte, error) {
+	// Keep going left until we reach a leaf
+	for !current.IsLeaf {
+		child, err := tx.loadNode(current.Children[0])
+		if err != nil {
+			return nil, nil, err
+		}
+		current = child
+	}
+
+	// Return the first key/value in the leaf
+	if current.NumKeys == 0 {
+		return nil, nil, ErrKeyNotFound
+	}
+	return current.Keys[0], current.Values[0], nil
+}

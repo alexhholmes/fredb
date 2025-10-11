@@ -981,7 +981,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	require.NoError(t, err, "Failed to reopen after simulated crash")
 	defer db3.Close()
 
-	meta3 := db3.store.pager.GetMeta()
+	meta3 := db3.pager.GetMeta()
 	t.Logf("After reopen: loaded meta with TxnID %d, RootPageID %d", meta3.TxnID, meta3.RootPageID)
 	t.Logf("Expected to recover to TxnID %d (previous valid state)", olderTxn)
 

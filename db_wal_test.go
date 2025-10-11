@@ -127,7 +127,7 @@ func TestCheckpointIdempotency(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Get current meta to simulate partial checkpoint
-	dm := db.store.pager
+	dm := db.pager
 	meta := dm.GetMeta()
 	checkpointTxnID := meta.CheckpointTxnID
 
@@ -261,7 +261,7 @@ func TestWALTruncateSafety(t *testing.T) {
 	require.NoError(t, db.Set([]byte("key2"), []byte("value2")))
 
 	// Get current meta
-	meta := db.store.pager.GetMeta()
+	meta := db.pager.GetMeta()
 
 	// wal truncation is now managed by DB layer via checkpoint
 	// The safety check (preventing truncation beyond checkpoint) is enforced

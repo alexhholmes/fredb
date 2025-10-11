@@ -35,7 +35,6 @@ type pathElement struct {
 
 // Cursor provides ordered iteration over B-tree Keys
 type Cursor struct {
-	btree *btree
 	tx    *Tx           // Transaction this cursor belongs to
 	stack []pathElement // Navigation path from root to current leaf
 	key   []byte        // Cached current key
@@ -71,12 +70,12 @@ func (it *Cursor) Seek(key []byte) error {
 	it.stack = it.stack[:0] // Clear stack
 
 	// get root from transaction for snapshot isolation
-	// Use tx.root if set (modified in this tx), otherwise use btree.root
+	// Use tx.root if set (modified in this tx), otherwise use db.root
 	var node *base.Node
 	if it.tx != nil && it.tx.root != nil {
 		node = it.tx.root
 	} else {
-		node = it.btree.root
+		node = it.tx.db.root
 	}
 	for !node.IsLeaf {
 		// Find which child to descend to
@@ -89,7 +88,7 @@ func (it *Cursor) Seek(key []byte) error {
 		it.stack = append(it.stack, pathElement{node: node, childIndex: i})
 
 		// Descend to child
-		child, err := it.btree.loadNode(it.tx, node.Children[i])
+		child, err := it.tx.loadNode(node.Children[i])
 		if err != nil {
 			return err
 		}
@@ -262,7 +261,7 @@ func (it *Cursor) prevLeaf() error {
 // descendToFirstLeaf descends to the leftmost leaf from current stack top
 func (it *Cursor) descendToFirstLeaf() error {
 	parent := it.stack[len(it.stack)-1]
-	node, err := it.btree.loadNode(it.tx, parent.node.Children[parent.childIndex])
+	node, err := it.tx.loadNode(parent.node.Children[parent.childIndex])
 	if err != nil {
 		it.valid = false
 		return err
@@ -271,7 +270,7 @@ func (it *Cursor) descendToFirstLeaf() error {
 	// Keep descending to leftmost child
 	for !node.IsLeaf {
 		it.stack = append(it.stack, pathElement{node: node, childIndex: 0})
-		child, err := it.btree.loadNode(it.tx, node.Children[0])
+		child, err := it.tx.loadNode(node.Children[0])
 		if err != nil {
 			it.valid = false
 			return err
@@ -296,7 +295,7 @@ func (it *Cursor) descendToFirstLeaf() error {
 // descendToLastLeaf descends to the rightmost leaf from current stack top
 func (it *Cursor) descendToLastLeaf() error {
 	parent := it.stack[len(it.stack)-1]
-	node, err := it.btree.loadNode(it.tx, parent.node.Children[parent.childIndex])
+	node, err := it.tx.loadNode(parent.node.Children[parent.childIndex])
 	if err != nil {
 		it.valid = false
 		return err
@@ -306,7 +305,7 @@ func (it *Cursor) descendToLastLeaf() error {
 	for !node.IsLeaf {
 		lastChild := len(node.Children) - 1
 		it.stack = append(it.stack, pathElement{node: node, childIndex: lastChild})
-		child, err := it.btree.loadNode(it.tx, node.Children[lastChild])
+		child, err := it.tx.loadNode(node.Children[lastChild])
 		if err != nil {
 			it.valid = false
 			return err
