@@ -164,3 +164,60 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 	leftNode.NumKeys = uint16(len(leftNode.Keys))
 	leftNode.Dirty = true
 }
+
+// NewBranchRoot creates a new branch root node from two children after split
+func NewBranchRoot(leftChild, rightChild *base.Node, midKey, midVal []byte, pageID base.PageID) *base.Node {
+	return &base.Node{
+		PageID:   pageID,
+		Dirty:    true,
+		IsLeaf:   false,
+		NumKeys:  1,
+		Keys:     [][]byte{midKey},
+		Values:   [][]byte{midVal},
+		Children: []base.PageID{leftChild.PageID, rightChild.PageID},
+	}
+}
+
+// ApplyChildSplit updates parent after splitting child at childIdx
+// Inserts separator key and updates children pointers
+// Assumes parent is already writable (COW'd by caller)
+func ApplyChildSplit(parent *base.Node, childIdx int, leftChild, rightChild *base.Node, midKey, midVal []byte) {
+	// Insert middle key into parent
+	parent.Keys = InsertAt(parent.Keys, childIdx, midKey)
+	if parent.IsLeaf {
+		parent.Values = InsertAt(parent.Values, childIdx, midVal)
+	}
+
+	// Update children array
+	newChildren := make([]base.PageID, len(parent.Children)+1)
+	copy(newChildren[:childIdx], parent.Children[:childIdx])
+	newChildren[childIdx] = leftChild.PageID
+	newChildren[childIdx+1] = rightChild.PageID
+	copy(newChildren[childIdx+2:], parent.Children[childIdx+1:])
+
+	parent.Children = newChildren
+	parent.NumKeys++
+	parent.Dirty = true
+}
+
+// TruncateLeft modifies node to keep only left portion after split
+// Assumes node is already writable (COW'd by caller)
+func TruncateLeft(node *base.Node, sp SplitPoint) {
+	leftKeys := make([][]byte, sp.LeftCount)
+	copy(leftKeys, node.Keys[:sp.LeftCount])
+	node.Keys = leftKeys
+
+	if node.IsLeaf {
+		leftVals := make([][]byte, sp.LeftCount)
+		copy(leftVals, node.Values[:sp.LeftCount])
+		node.Values = leftVals
+	} else {
+		node.Values = nil
+		leftChildren := make([]base.PageID, sp.Mid+1)
+		copy(leftChildren, node.Children[:sp.Mid+1])
+		node.Children = leftChildren
+	}
+
+	node.NumKeys = uint16(sp.LeftCount)
+	node.Dirty = true
+}

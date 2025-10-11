@@ -128,15 +128,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot := &base.Node{
-			PageID:   newRootID,
-			Dirty:    true,
-			IsLeaf:   false,
-			NumKeys:  1,
-			Keys:     [][]byte{midKey},
-			Values:   [][]byte{midVal},
-			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
-		}
+		newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, midVal, newRootID)
 
 		// store the new root in TX-local cache
 		// The split Children were already stored in splitChild()
@@ -171,15 +163,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		root = &base.Node{
-			PageID:   newRootID,
-			Dirty:    true,
-			IsLeaf:   false,
-			NumKeys:  1,
-			Keys:     [][]byte{midKey},
-			Values:   [][]byte{midVal},
-			Children: []base.PageID{leftChild.PageID, rightChild.PageID},
-		}
+		root = algo.NewBranchRoot(leftChild, rightChild, midKey, midVal, newRootID)
 
 		tx.pages[newRootID] = root
 		// Use new root for next retry (already assigned to root)
@@ -552,23 +536,7 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	}
 
 	// State: truncate left (child already COW'd, safe to mutate)
-	leftKeys := make([][]byte, sp.LeftCount)
-	copy(leftKeys, child.Keys[:sp.LeftCount])
-	child.Keys = leftKeys
-
-	if child.IsLeaf {
-		leftVals := make([][]byte, sp.LeftCount)
-		copy(leftVals, child.Values[:sp.LeftCount])
-		child.Values = leftVals
-	} else {
-		child.Values = nil
-		leftChildren := make([]base.PageID, sp.Mid+1)
-		copy(leftChildren, child.Children[:sp.Mid+1])
-		child.Children = leftChildren
-	}
-
-	child.NumKeys = uint16(sp.LeftCount)
-	child.Dirty = true
+	algo.TruncateLeft(child, sp)
 
 	// I/O: store right node in tx cache
 	tx.pages[newNodeID] = newNode
@@ -736,22 +704,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		oldChildren := node.Children
 		oldNumKeys := node.NumKeys
 
-		// Insert middle key into parent using algo
-		node.Keys = algo.InsertAt(node.Keys, i, midKey)
-		if node.IsLeaf {
-			node.Values = algo.InsertAt(node.Values, i, midVal)
-		}
-
-		// Build new children array
-		newChildren := make([]base.PageID, len(node.Children)+1)
-		copy(newChildren[:i], node.Children[:i])
-		newChildren[i] = leftChild.PageID
-		newChildren[i+1] = rightChild.PageID
-		copy(newChildren[i+2:], node.Children[i+1:])
-
-		node.Children = newChildren
-		node.NumKeys++
-		node.Dirty = true
+		// Apply split to parent using algo
+		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
 
 		// Serialize parent after modification
 		_, err = node.Serialize(tx.txnID)
@@ -797,22 +751,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		oldChildren := node.Children
 		oldNumKeys := node.NumKeys
 
-		// Insert middle key into parent using algo
-		node.Keys = algo.InsertAt(node.Keys, i, midKey)
-		if node.IsLeaf {
-			node.Values = algo.InsertAt(node.Values, i, midVal)
-		}
-
-		// Build new children array
-		newChildren := make([]base.PageID, len(node.Children)+1)
-		copy(newChildren[:i], node.Children[:i])
-		newChildren[i] = leftChild.PageID
-		newChildren[i+1] = rightChild.PageID
-		copy(newChildren[i+2:], node.Children[i+1:])
-
-		node.Children = newChildren
-		node.NumKeys++
-		node.Dirty = true
+		// Apply split to parent using algo
+		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
 
 		// Serialize parent after modification
 		_, err = node.Serialize(tx.txnID)
