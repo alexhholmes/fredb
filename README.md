@@ -77,7 +77,6 @@ SyncBytes Mode
 - ✅ High throughput
 - ⚠️ Data loss window: last bytesPerSync bytes
 - ⚠️ tx.Commit() returns before durable
-- Recovery: WAL replay stops at first invalid/incomplete record 
 
 SyncOff Mode
 
