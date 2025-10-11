@@ -148,7 +148,6 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Insert with recursive COW - retry until success or non-overflow error
 	// This handles cascading splits when parent nodes also overflow
 	maxRetries := 20 // Prevent infinite loops
-	var err error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		newRoot, err := tx.insertNonFull(root, key, value)
@@ -184,10 +183,6 @@ func (tx *Tx) Set(key, value []byte) error {
 
 		tx.pages[newRootID] = root
 		// Use new root for next retry (already assigned to root)
-	}
-
-	if err != nil {
-		return err
 	}
 
 	// Update transaction-local root (NOT DB.root)
@@ -1187,42 +1182,4 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	tx.addFreed(rightNode.PageID)
 
 	return parent, nil
-}
-
-// findPredecessor finds the predecessor key/value in the subtree rooted at node
-func (tx *Tx) findPredecessor(current *base.Node) ([]byte, []byte, error) {
-	// Keep going right until we reach a leaf
-	for !current.IsLeaf {
-		lastChildIdx := len(current.Children) - 1
-		child, err := tx.loadNode(current.Children[lastChildIdx])
-		if err != nil {
-			return nil, nil, err
-		}
-		current = child
-	}
-
-	// Return the last key/value in the leaf
-	if current.NumKeys == 0 {
-		return nil, nil, ErrKeyNotFound
-	}
-	lastIdx := current.NumKeys - 1
-	return current.Keys[lastIdx], current.Values[lastIdx], nil
-}
-
-// findSuccessor finds the successor key/value in the subtree rooted at node
-func (tx *Tx) findSuccessor(current *base.Node) ([]byte, []byte, error) {
-	// Keep going left until we reach a leaf
-	for !current.IsLeaf {
-		child, err := tx.loadNode(current.Children[0])
-		if err != nil {
-			return nil, nil, err
-		}
-		current = child
-	}
-
-	// Return the first key/value in the leaf
-	if current.NumKeys == 0 {
-		return nil, nil, ErrKeyNotFound
-	}
-	return current.Keys[0], current.Values[0], nil
 }
