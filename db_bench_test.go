@@ -19,15 +19,20 @@ func BenchmarkDBGet(b *testing.B) {
 	}
 	defer db.Close()
 
-	// Pre-populate with 10k Keys
-	numKeys := 10000
-	for i := 0; i < numKeys; i++ {
-		key := fmt.Sprintf("key%08d", i)
-		value := fmt.Sprintf("value%08d", i)
-		err := db.Set([]byte(key), []byte(value))
-		if err != nil {
-			b.Fatalf("Failed to populate DB: %v", err)
+	// Pre-populate with 10M Keys
+	numKeys := 10000000
+	err = db.Update(func(tx *Tx) error {
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("key%08d", i)
+			value := fmt.Sprintf("value%08d", i)
+			if err = tx.Set([]byte(key), []byte(value)); err != nil {
+				return err
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		b.Fatalf("Failed to populate DB in transaction: %v", err)
 	}
 
 	// Reset cache and disk I/O stats before benchmark

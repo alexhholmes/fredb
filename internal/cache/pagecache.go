@@ -265,8 +265,7 @@ func (c *PageCache) GetOrLoad(pageID base.PageID, txnID uint64,
 		return node, true
 	}
 
-	// Cache miss - check if ANY visible relocated version exists
-	// Do this BEFORE loading from disk, because disk might have a newer version
+	// Check for relocated versions (MVCC), may hit disk
 	if node, hit := c.loadRelocatedVersion(pageID, txnID); hit {
 		return node, true
 	}
@@ -550,25 +549,48 @@ func (c *PageCache) evictToWaterMark() {
 		entry := elem.Value.(*versionEntry)
 		attempts++
 
-		// Only evict checkpointed versions (on disk)
-		if !c.canEvict(entry.txnID) {
-			c.lruList.MoveToFront(elem)
-			continue
-		}
-
-		// Flush if Dirty
+		// Flush if Dirty - write to disk before evicting from memory
 		if !c.flushDirtyPage(entry) {
 			c.lruList.MoveToFront(elem)
 			continue
 		}
 
-		// Relocate if needed for MVCC
-		if !c.relocateVersion(entry) {
-			c.lruList.MoveToFront(elem)
-			continue
+		// Check if page has been checkpointed to disk
+		// Pages only in WAL (not checkpointed) MUST be relocated so they're readable from disk
+		isCheckpointed := c.canEvict(entry.txnID)
+
+		if !isCheckpointed {
+			// Page only exists in WAL, not at final disk location
+			// Force relocation: write to new location so it's readable even after eviction
+			page, err := entry.node.Serialize(entry.txnID)
+			if err != nil {
+				c.lruList.MoveToFront(elem)
+				continue
+			}
+
+			relocatedPageID, err := c.pager.AllocatePage()
+			if err != nil {
+				c.lruList.MoveToFront(elem)
+				continue
+			}
+
+			if err := c.pager.WritePage(relocatedPageID, page); err != nil {
+				_ = c.pager.FreePage(relocatedPageID)
+				c.lruList.MoveToFront(elem)
+				continue
+			}
+
+			// Track relocation mapping (originalPageID -> relocatedPageID at txnID)
+			c.pager.TrackRelocation(entry.pageID, entry.txnID, relocatedPageID)
+		} else {
+			// Already checkpointed - relocate only if needed for MVCC
+			if !c.relocateVersion(entry) {
+				c.lruList.MoveToFront(elem)
+				continue
+			}
 		}
 
-		// Evict (removeEntry decrements totalEntries atomically)
+		// Evict from memory cache (removeEntry decrements totalEntries atomically)
 		c.removeEntry(entry)
 	}
 }

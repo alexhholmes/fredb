@@ -24,7 +24,7 @@ func setup(t *testing.T) (*DB, string) {
 	_ = os.Remove(tmpfile)
 	_ = os.Remove(tmpfile + ".wal") // Also remove wal file
 
-	db, err := Open(tmpfile)
+	db, err := Open(tmpfile, WithMaxCacheSizeMB(0))
 	require.NoError(t, err, "Failed to create DB")
 
 	// Type assert to get concrete type for tests
