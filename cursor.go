@@ -70,12 +70,12 @@ func (it *Cursor) Seek(key []byte) error {
 	it.stack = it.stack[:0] // Clear stack
 
 	// get root from transaction for snapshot isolation
-	// Use tx.root if set (modified in this tx), otherwise use db.root
-	var node *base.Node
-	if it.tx != nil && it.tx.root != nil {
-		node = it.tx.root
-	} else {
-		node = it.tx.db.root.Load()
+	// tx.root is always set from atomic snapshot in Begin()
+	node := it.tx.root
+	if node == nil {
+		// Empty database
+		it.valid = false
+		return nil
 	}
 	for !node.IsLeaf {
 		// Find which child to descend to

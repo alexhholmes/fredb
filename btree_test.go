@@ -95,10 +95,10 @@ func TestBTreeSplitting(t *testing.T) {
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	assert.False(t, db.root.Load().IsLeaf, "Root should not be a leaf after splitting")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should not be a leaf after splitting")
 
 	// Check tree height increases (root should have Children)
-	assert.NotEmpty(t, db.root.Load().Children, "Root should have Children after splitting")
+	assert.NotEmpty(t, db.pager.GetSnapshot().Root.Children, "Root should have Children after splitting")
 
 	// Verify all Keys still retrievable
 	for key, expectedValue := range keys {
@@ -129,10 +129,10 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	}
 
 	// Verify tree structure remains valid (root is not a leaf for large tree)
-	assert.False(t, db.root.Load().IsLeaf, "Root should not be a leaf after multiple splits")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should not be a leaf after multiple splits")
 
 	// Verify root has multiple Children
-	assert.GreaterOrEqual(t, len(db.root.Load().Children), 2, "Root should have multiple Children after multiple splits")
+	assert.GreaterOrEqual(t, len(db.pager.GetSnapshot().Root.Children), 2, "Root should have multiple Children after multiple splits")
 
 	// All Keys retrievable
 	for key, expectedValue := range keys {
@@ -183,11 +183,11 @@ func TestSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely right-heavy due to sequential insert)
-	if db.root.Load().IsLeaf {
+	if db.pager.GetSnapshot().Root.IsLeaf {
 		t.Logf("Tree has single leaf root after %d sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d sequential inserts",
-			db.root.Load().NumKeys, len(db.root.Load().Children), numKeys)
+			db.pager.GetSnapshot().Root.NumKeys, len(db.pager.GetSnapshot().Root.Children), numKeys)
 	}
 }
 
@@ -232,13 +232,13 @@ func TestRandomInsert(t *testing.T) {
 	}
 
 	// Check tree balance (random insertion typically produces more balanced trees)
-	if !db.root.Load().IsLeaf {
+	if !db.pager.GetSnapshot().Root.IsLeaf {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d random inserts",
-			db.root.Load().NumKeys, len(db.root.Load().Children), numKeys)
+			db.pager.GetSnapshot().Root.NumKeys, len(db.pager.GetSnapshot().Root.Children), numKeys)
 
 		// Check if root has reasonable number of Children (indicating some balance)
-		if len(db.root.Load().Children) > 1 && len(db.root.Load().Children) < 10 {
-			t.Logf("Tree appears relatively balanced with %d root Children", len(db.root.Load().Children))
+		if len(db.pager.GetSnapshot().Root.Children) > 1 && len(db.pager.GetSnapshot().Root.Children) < 10 {
+			t.Logf("Tree appears relatively balanced with %d root Children", len(db.pager.GetSnapshot().Root.Children))
 		}
 	}
 }
@@ -271,14 +271,14 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely left-heavy due to reverse sequential insert)
-	if db.root.Load().IsLeaf {
+	if db.pager.GetSnapshot().Root.IsLeaf {
 		t.Logf("Tree has single leaf root after %d reverse sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d reverse sequential inserts",
-			db.root.Load().NumKeys, len(db.root.Load().Children), numKeys)
+			db.pager.GetSnapshot().Root.NumKeys, len(db.pager.GetSnapshot().Root.Children), numKeys)
 
 		// With reverse insertion, we expect most activity on the left side of the tree
-		if len(db.root.Load().Children) > 0 {
+		if len(db.pager.GetSnapshot().Root.Children) > 0 {
 			t.Logf("First child likely contains lower Keys due to reverse insertion pattern")
 		}
 	}
@@ -396,8 +396,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := db.root.Load().IsLeaf
-	initialRootKeys := int(db.root.Load().NumKeys)
+	initialIsLeaf := db.pager.GetSnapshot().Root.IsLeaf
+	initialRootKeys := int(db.pager.GetSnapshot().Root.NumKeys)
 	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 	// Delete Keys sequentially and monitor tree structure
@@ -409,7 +409,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 			t.Logf("After %d deletions: root IsLeaf=%v, NumKeys=%d",
-				i+1, db.root.Load().IsLeaf, db.root.Load().NumKeys)
+				i+1, db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -418,8 +418,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	assert.Equal(t, uint16(0), db.root.Load().NumKeys, "Tree should be empty")
-	assert.False(t, db.root.Load().IsLeaf, "Empty tree root should be branch")
+	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Empty tree root should be branch")
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
@@ -445,8 +445,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Check initial tree structure
-		initialIsLeaf := db.root.Load().IsLeaf
-		initialRootKeys := int(db.root.Load().NumKeys)
+		initialIsLeaf := db.pager.GetSnapshot().Root.IsLeaf
+		initialRootKeys := int(db.pager.GetSnapshot().Root.NumKeys)
 		t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 		// Create random deletion order
@@ -473,7 +473,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 			// Log tree structure changes at key points
 			if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 				t.Logf("After %d random deletions: root IsLeaf=%v, NumKeys=%d",
-					i+1, db.root.Load().IsLeaf, db.root.Load().NumKeys)
+					i+1, db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 			}
 
 			// Verify deleted key is gone
@@ -495,8 +495,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Final tree should be empty
-		assert.Equal(t, uint16(0), db.root.Load().NumKeys, "Tree should be empty")
-		assert.False(t, db.root.Load().IsLeaf, "Empty tree root should be branch")
+		assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
+		assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Empty tree root should be branch")
 
 		// close database after each iteration
 		db.Close()
@@ -519,7 +519,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.root.Load().IsLeaf, db.root.Load().NumKeys)
+	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 
 	// Delete Keys in reverse order
 	for i := numKeys - 1; i >= 0; i-- {
@@ -531,7 +531,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 		deletedCount := numKeys - i
 		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
 			t.Logf("After %d reverse deletions: root IsLeaf=%v, NumKeys=%d",
-				deletedCount, db.root.Load().IsLeaf, db.root.Load().NumKeys)
+				deletedCount, db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -540,7 +540,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	assert.Equal(t, uint16(0), db.root.Load().NumKeys, "Tree should be empty")
+	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
 }
 
 // Stress Tests
@@ -647,15 +647,15 @@ func TestSingleKey(t *testing.T) {
 	assert.Equal(t, string(newValue), string(val))
 
 	// Verify tree structure: root is always a branch (never leaf)
-	assert.False(t, db.root.Load().IsLeaf, "Root should always be a branch node")
-	assert.Equal(t, 1, len(db.root.Load().Children), "Root should have 1 child")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should always be a branch node")
+	assert.Equal(t, 1, len(db.pager.GetSnapshot().Root.Children), "Root should have 1 child")
 
 	// Load the child and verify it has the key
 	tx, err := db.Begin(false)
 	require.NoError(t, err)
 	defer tx.Rollback()
 
-	child, err := tx.loadNode(db.root.Load().Children[0])
+	child, err := tx.loadNode(db.pager.GetSnapshot().Root.Children[0])
 	assert.NoError(t, err)
 	assert.True(t, child.IsLeaf, "Child should be a leaf")
 	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
@@ -1011,7 +1011,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.root.Load().IsLeaf, db.root.Load().NumKeys)
+	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 }
 
 func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
@@ -1062,13 +1062,13 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	}
 
 	// Root is always a branch (constraint), check child is full
-	assert.False(t, db.root.Load().IsLeaf, "Root should always be a branch node")
-	assert.Equal(t, 1, len(db.root.Load().Children), "Root should have 1 child before split")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should always be a branch node")
+	assert.Equal(t, 1, len(db.pager.GetSnapshot().Root.Children), "Root should have 1 child before split")
 
 	// Load child and verify it's full
 	tx, err := db.Begin(false)
 	require.NoError(t, err)
-	child, err := tx.loadNode(db.root.Load().Children[0])
+	child, err := tx.loadNode(db.pager.GetSnapshot().Root.Children[0])
 	require.NoError(t, err)
 	tx.Rollback()
 
@@ -1082,8 +1082,8 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	require.NoError(t, err)
 
 	// After inserting MaxKeysPerNode+1 Keys, root should be branch
-	assert.False(t, db.root.Load().IsLeaf, "Root should be branch after split")
-	assert.GreaterOrEqual(t, len(db.root.Load().Children), 2, "Root should have at least 2 Children after split")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should be branch after split")
+	assert.GreaterOrEqual(t, len(db.pager.GetSnapshot().Root.Children), 2, "Root should have at least 2 Children after split")
 
 	// Verify all Keys retrievable
 	for i := 0; i <= base.MaxKeysPerNode; i++ {
@@ -1106,9 +1106,9 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.False(t, db.root.Load().IsLeaf, "Root should be branch Node")
+	require.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should be branch Node")
 
-	initialRootKeys := db.root.Load().NumKeys
+	initialRootKeys := db.pager.GetSnapshot().Root.NumKeys
 	t.Logf("Initial root Keys: %d", initialRootKeys)
 
 	for i := 0; i < numKeys; i++ {
@@ -1118,12 +1118,12 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 
 		if i%(numKeys/4) == 0 {
 			t.Logf("After %d deletions: root.IsLeaf=%v, root.NumKeys=%d",
-				i+1, db.root.Load().IsLeaf, db.root.Load().NumKeys)
+				i+1, db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 		}
 	}
 
-	assert.False(t, db.root.Load().IsLeaf, "Final root should be branch")
-	assert.Equal(t, uint16(0), db.root.Load().NumKeys, "Final root should have 0 Keys")
+	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Final root should be branch")
+	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Final root should have 0 Keys")
 }
 
 func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
@@ -1139,10 +1139,10 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.False(t, db.root.Load().IsLeaf, "Root should not be leaf for this test")
+	require.False(t, db.pager.GetSnapshot().Root.IsLeaf, "Root should not be leaf for this test")
 
 	t.Logf("Tree structure: root.NumKeys=%d, root.Children=%d",
-		db.root.Load().NumKeys, len(db.root.Load().Children))
+		db.pager.GetSnapshot().Root.NumKeys, len(db.pager.GetSnapshot().Root.Children))
 
 	deleteCount := numKeys / 2
 	for i := 0; i < deleteCount; i++ {
@@ -1158,5 +1158,5 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 	}
 
 	t.Logf("After deletions: root.IsLeaf=%v, root.NumKeys=%d",
-		db.root.Load().IsLeaf, db.root.Load().NumKeys)
+		db.pager.GetSnapshot().Root.IsLeaf, db.pager.GetSnapshot().Root.NumKeys)
 }

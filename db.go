@@ -8,7 +8,6 @@ import (
 	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/storage"
-	"fredb/internal/wal"
 )
 
 const (
@@ -24,12 +23,11 @@ const (
 )
 
 type DB struct {
-	mu     sync.Mutex // Lock only for writers
-	pager  *storage.PageManager
-	cache  *cache.PageCache
-	root   atomic.Pointer[base.Node] // Atomic root pointer for lock-free readers
-	wal    *wal.WAL                  // Write-ahead log for durability
-	closed atomic.Bool               // Database closed flag
+	mu       sync.Mutex // Lock only for writers
+	pager    *storage.PageManager
+	cache    *cache.PageCache
+	syncMode SyncMode    // Fsync control: SyncEveryCommit or SyncOff
+	closed   atomic.Bool // Database closed flag
 
 	// Transaction state
 	writer    atomic.Pointer[Tx] // Current write transaction (nil if none)
@@ -49,16 +47,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	// Open WAL (DB owns WAL lifecycle)
-	walPath := path + ".wal"
-	newWAL, err := wal.NewWAL(walPath, opts.walSyncMode, opts.walBytesPerSync)
-	if err != nil {
-		return nil, err
-	}
-
 	pager, err := storage.NewPageManager(path)
 	if err != nil {
-		_ = newWAL.Close()
 		return nil, err
 	}
 
@@ -73,7 +63,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// Load existing root
 		rootPage, err := pager.ReadPage(meta.RootPageID)
 		if err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
@@ -84,15 +73,20 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		if err := root.Deserialize(rootPage); err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
+
+		// Bundle root with metadata and make visible atomically
+		if err := pager.PutSnapshot(meta, root); err != nil {
+			_ = pager.Close()
+			return nil, err
+		}
+		pager.CommitSnapshot()
 	} else {
 		// Create new root - always a branch node, even when empty
 		rootPageID, err := pager.AllocatePage()
 		if err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
@@ -100,7 +94,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// Create initial empty leaf
 		leafPageID, err := pager.AllocatePage()
 		if err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
@@ -118,12 +111,10 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// Serialize and write the leaf
 		leafPage, err := leaf.Serialize(0)
 		if err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
 		if err := pager.WritePage(leafPageID, leafPage); err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
@@ -142,19 +133,16 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// Serialize and write the root
 		rootPage, err := root.Serialize(0)
 		if err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
 		if err := pager.WritePage(rootPageID, rootPage); err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
 
 		meta.RootPageID = rootPageID
-		if err := pager.PutMeta(meta); err != nil {
-			_ = newWAL.Close()
+		if err := pager.PutSnapshot(meta, root); err != nil {
 			_ = pager.Close()
 			return nil, err
 		}
@@ -162,57 +150,28 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// CRITICAL: Sync pager to persist the initial allocations
 		// This ensures root and leaf are not returned by future AllocatePage() calls
 		if err := pager.Sync(); err != nil {
-			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err
 		}
+
+		// Make metapage AND root visible to readers atomically
+		pager.CommitSnapshot()
 	}
 
 	db := &DB{
 		pager:    pager,
 		cache:    c,
-		wal:      newWAL,
+		syncMode: opts.syncMode,
 		releaseC: make(chan uint64),
 		stopC:    make(chan struct{}),
 	}
-	db.root.Store(root)            // Atomic store of initial root
 	db.nextTxnID.Store(meta.TxnID) // Resume from last committed TxnID
-
-	// Recover uncommitted newWAL entries into cache
-	if err = db.recoverFromWAL(); err != nil {
-		return nil, err
-	}
 
 	// Start background releaser goroutine
 	db.wg.Add(1)
 	go db.backgroundReleaser()
 
 	return db, nil
-}
-
-// recoverFromWAL replays uncommitted wal entries into cache after startup.
-// This recovers transactions that were committed to wal but not yet checkpointed to disk.
-func (db *DB) recoverFromWAL() error {
-	meta := db.pager.GetMeta()
-	checkpointTxn := meta.CheckpointTxnID
-
-	return db.wal.Replay(checkpointTxn, func(pageID base.PageID, page *base.Page) error {
-		// Create empty node and Deserialize pages data into it
-		node := &base.Node{}
-		if err := node.Deserialize(page); err != nil {
-			return err
-		}
-
-		header := page.Header()
-
-		// Load into cache as hot version (ready for next reader)
-		db.cache.Put(pageID, header.TxnID, node)
-
-		// Rebuild wal latch to prevent stale disk reads
-		db.wal.Pages.Store(pageID, header.TxnID)
-
-		return nil
-	})
 }
 
 func (db *DB) Get(key []byte) ([]byte, error) {
@@ -264,12 +223,15 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		// Writers get a new unique txnID (atomic increment)
 		txnID := db.nextTxnID.Add(1)
 
+		// Atomically load current snapshot (meta + root)
+		snapshot := db.pager.GetSnapshot()
+
 		// Create write transaction
 		tx := &Tx{
 			db:       db,
 			txnID:    txnID,
 			writable: true,
-			root:     db.root.Load(), // Atomic load of current root
+			root:     snapshot.Root, // Atomic snapshot of root
 			pages:    make(map[base.PageID]*base.Node),
 			pending:  make(map[base.PageID]struct{}),
 			freed:    make(map[base.PageID]struct{}),
@@ -283,16 +245,15 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	}
 
 	// READERS: NO LOCK - completely lock-free path
-	// Capture the current committed txnID from metadata
-	meta := db.pager.GetMeta()
-	committedTxnID := meta.TxnID
+	// Atomically capture current snapshot (meta + root)
+	snapshot := db.pager.GetSnapshot()
 
 	// Create read transaction
 	tx := &Tx{
 		db:       db,
-		txnID:    committedTxnID, // Readers use committed txnID as snapshot
+		txnID:    snapshot.Meta.TxnID, // Readers use committed txnID as snapshot
 		writable: false,
-		root:     db.root.Load(), // Atomic load of current root
+		root:     snapshot.Root, // Atomic snapshot of root
 		pending:  make(map[base.PageID]struct{}),
 		freed:    make(map[base.PageID]struct{}),
 		done:     false,
@@ -348,16 +309,6 @@ func (db *DB) Close() error {
 		db.wg.Wait()
 	}
 
-	// Force sync wal before checkpoint to ensure all data is durable
-	if err := db.wal.ForceSync(); err != nil {
-		return err
-	}
-
-	// Final checkpoint to flush wal
-	if err := db.checkpoint(); err != nil {
-		return err
-	}
-
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -365,17 +316,16 @@ func (db *DB) Close() error {
 	db.closed.Store(true)
 
 	// Flush root if dirty (was algo.close logic)
-	root := db.root.Load()
-	if root != nil && root.Dirty {
-		meta := db.pager.GetMeta()
-		page, err := root.Serialize(meta.TxnID)
+	snapshot := db.pager.GetSnapshot()
+	if snapshot.Root != nil && snapshot.Root.Dirty {
+		page, err := snapshot.Root.Serialize(snapshot.Meta.TxnID)
 		if err != nil {
 			return err
 		}
-		if err := db.pager.WritePage(root.PageID, page); err != nil {
+		if err := db.pager.WritePage(snapshot.Root.PageID, page); err != nil {
 			return err
 		}
-		root.Dirty = false
+		snapshot.Root.Dirty = false
 	}
 
 	// Flush cache
@@ -385,8 +335,8 @@ func (db *DB) Close() error {
 		}
 	}
 
-	// Close WAL
-	if err := db.wal.Close(); err != nil {
+	// Final sync to ensure durability
+	if err := db.pager.Sync(); err != nil {
 		return err
 	}
 
@@ -402,7 +352,7 @@ func (db *DB) backgroundReleaser() {
 		select {
 		case <-db.releaseC:
 			// Reader-triggered release - recalculate minimum
-			minTxn := db.minReaderTxn()
+			minTxn := db.earliestReader()
 			db.releasePages(minTxn)
 
 		case <-db.stopC:
@@ -413,138 +363,9 @@ func (db *DB) backgroundReleaser() {
 	}
 }
 
-// checkpoint writes wal transactions to main file and truncates wal
-func (db *DB) checkpoint() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	// Skip checkpoint if there's an active write transaction
-	// This prevents corruption from checkpoint allocating pages that are being freed
-	if db.writer.Load() != nil {
-		return nil
-	}
-
-	pm := db.pager
-
-	// get current transaction boundary
-	meta := pm.GetMeta()
-	checkpointTxn := meta.CheckpointTxnID
-	currentTxn := meta.TxnID
-
-	// Nothing to checkpoint
-	if currentTxn <= checkpointTxn {
-		return nil
-	}
-
-	// get minimum reader txnID to determine which disk versions need preservation
-	// IMPORTANT: If no readers, use currentTxn (last committed) not nextTxnID
-	// This prevents checkpoint from allocating pages freed by the just-committed transaction
-	minReaderTxn := db.minReaderTxnForCheckpoint(currentTxn)
-
-	// Before replaying wal, temporarily prevent allocation of recently freed pages
-	// This ensures checkpoint won't allocate pages freed by transactions being checkpointed
-	pm.PreventAllocationUpTo(currentTxn)
-	defer pm.AllowAllAllocations()
-
-	// Replay wal from last checkpoint to current
-	// IMPORTANT: Idempotent replay - skip pages already at correct version
-	err := db.wal.Replay(checkpointTxn, func(pageID base.PageID,
-		newPage *base.Page) error {
-		// Read current disk version BEFORE overwriting
-		// Note: We need to bypass the wal latch check for this read
-		oldPage, readErr := pm.ReadPage(pageID)
-
-		// Get new pages version for idempotency check
-		newHeader := newPage.Header()
-		newTxnID := newHeader.TxnID
-
-		if readErr == nil && oldPage != nil {
-			// Parse old version's TxnID
-			oldHeader := oldPage.Header()
-			oldTxnID := oldHeader.TxnID
-
-			// IDEMPOTENCY: Skip if already applied (prevents double-apply corruption)
-			// This handles crash between file.Sync() and PutMeta()
-			if oldTxnID >= newTxnID {
-				// Already has this version or newer, skip write
-				db.wal.Pages.Delete(pageID) // Clear latch even if skipping
-				return nil
-			}
-
-			// If any active reader might need this old version, relocate it
-			// Preserve if oldTxnID < minReaderTxn (old version still potentially visible to readers)
-			if oldTxnID < minReaderTxn && oldHeader.NumKeys > 0 {
-				// Allocate free Page for relocation
-				relocPageID, allocErr := pm.AllocatePage()
-				if allocErr != nil {
-					return allocErr
-				}
-
-				// Write old disk version to relocated Page
-				if writeErr := pm.WritePage(relocPageID, oldPage); writeErr != nil {
-					return writeErr
-				}
-
-				// Add to VersionMap so readers can find it
-				db.pager.TrackRelocation(pageID, oldTxnID, relocPageID)
-
-				// NOTE: Do NOT call FreePending here! The relocated Page will be freed
-				// later by CleanupRelocatedVersions when no readers need it anymore.
-				// Calling FreePending here would cause a double-free bug.
-			}
-		}
-
-		// Now overwrite disk with new checkpointed version
-		if err := pm.WritePage(pageID, newPage); err != nil {
-			return err
-		}
-
-		// Remove wal latch immediately after writing to disk
-		// This allows readers to access the Page from disk instead of being blocked
-		db.wal.Pages.Delete(pageID)
-
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	// Fsync main B-tree file
-	if err := pm.Sync(); err != nil {
-		return err
-	}
-
-	// Update meta with new checkpoint marker
-	// IMPORTANT: Make a copy of meta to avoid overwriting concurrent updates
-	freshMeta := pm.GetMeta() // Dereference to copy
-	freshMeta.CheckpointTxnID = currentTxn
-	if err := pm.PutMeta(freshMeta); err != nil {
-		return err
-	}
-
-	// Fsync meta Page (PutMeta already writes, but need explicit fsync)
-	if err := pm.Sync(); err != nil {
-		return err
-	}
-
-	// Truncate wal up to checkpoint
-	if err := db.wal.Truncate(currentTxn); err != nil {
-		return err
-	}
-
-	// Evict superseded checkpointed versions from cache
-	// Only evicts old versions that are superseded by newer versions visible to all readers
-	_ = db.cache.EvictCheckpointed(minReaderTxn)
-
-	// Cleanup wal Page latches for checkpointed pages visible to all readers
-	db.wal.CleanupLatch(checkpointTxn, minReaderTxn)
-
-	return nil
-}
-
-// minReaderTxn returns the minimum transaction ID across all active transactions (readers + writer).
+// earliestReader returns the minimum transaction ID across all active transactions (readers + writer).
 // This determines which pending pages can be safely released to the freelist.
-func (db *DB) minReaderTxn() uint64 {
+func (db *DB) earliestReader() uint64 {
 	// Start with current next transaction ID
 	minTxnID := db.nextTxnID.Load()
 
@@ -567,43 +388,11 @@ func (db *DB) minReaderTxn() uint64 {
 	return minTxnID
 }
 
-// minReaderTxnForCheckpoint returns minimum snapshot version being viewed by active readers.
-// Unlike minReaderTxn, this uses lastCommittedTxn as the floor when no readers exist.
-// This prevents checkpoint from allocating pages that were just freed.
-func (db *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
-	// Start with last committed transaction as minimum
-	// This ensures pages freed by that transaction won't be reallocated during checkpoint
-	minTxnID := lastCommittedTxn
-
-	// Consider active write transaction (should not exist during checkpoint, but be safe)
-	if writerTx := db.writer.Load(); writerTx != nil {
-		if writerTx.txnID < minTxnID {
-			minTxnID = writerTx.txnID
-		}
-	}
-
-	// Consider all active read transactions (lock-free via sync.Map)
-	// Now that readers use committed txnID as their snapshot, txnID == snapshot version
-	db.readers.Range(func(key, value interface{}) bool {
-		tx := key.(*Tx)
-		if tx.txnID < minTxnID {
-			minTxnID = tx.txnID
-		}
-		return true // continue iteration
-	})
-
-	return minTxnID
-}
-
 // releasePages calls Release on the freelist with the given minimum transaction ID
 func (db *DB) releasePages(minTxn uint64) {
 	// Need to access the PageManager's freelist
 	pm := db.pager
 	pm.ReleasePages(minTxn)
-
-	// Cleanup wal Page latches for checkpointed pages visible to all readers
-	meta := pm.GetMeta()
-	db.wal.CleanupLatch(meta.CheckpointTxnID, minTxn)
 
 	// Cleanup relocated Page versions that are no longer needed
 	db.cache.CleanupRelocatedVersions(minTxn)

@@ -64,22 +64,22 @@ for cursor.Seek([]byte("key")); cursor.Valid(); cursor.Next() {
 
 ### Options
 
-#### WAL Sync Modes
+#### Sync Modes
 
-WALSyncEveryCommit Mode
+SyncEveryCommit Mode
 
 - ✅ Zero data loss on power failure
 - ✅ tx.Commit() returns only after durable
 - ❌ Slow throughput (~200-500 TPS, 4ms/op fsync latency)
 
-WALSyncBytes Mode
+SyncBytes Mode
 
 - ✅ High throughput
 - ⚠️ Data loss window: last bytesPerSync bytes
 - ⚠️ tx.Commit() returns before durable
 - Recovery: WAL replay stops at first invalid/incomplete record 
 
-WALSyncOff Mode
+SyncOff Mode
 
 - ✅ Maximum throughput
 - ❌ All unfsynced data lost on crash
@@ -90,10 +90,10 @@ WALSyncOff Mode
 db, _ := Open("data.db")
 
 // High throughput - RocksDB-style with 1MB sync threshold
-db, _ := Open("data.db", WithWALSyncBytes(1024*1024))
+db, _ := Open("data.db", WithSyncBytes(1024*1024))
 
 // Testing/bulk loads only - no fsync
-db, _ := Open("data.db", WithWALSyncOff())
+db, _ := Open("data.db", WithSyncOff())
 ```
 
 ## Testing
@@ -105,19 +105,6 @@ go test ./fredb -v
 - B-tree ops: insert, delete, split, merge, rebalance
 - Wire format: byte-level serialization tests
 - Concurrency: parallel reads/writes
-
-## Roadmap
-
-- [x] B-tree implementation
-- [x] Node serialization
-- [x] Meta page format
-- [x] Free list design
-- [x] Disk page manager
-- [x] Cache eviction
-- [x] WAL for durability
-- [x] MVCC transactions
-- [x] Direct I/O support
-- [x] Benchmarks
 
 ## Inspiration
 

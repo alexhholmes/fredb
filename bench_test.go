@@ -13,7 +13,7 @@ func BenchmarkDBGet(b *testing.B) {
 	defer os.Remove(tmpfile)
 	defer os.Remove(tmpfile + ".wal")
 
-	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
+	db, err := Open(tmpfile, WithSyncEveryCommit())
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -73,7 +73,7 @@ func BenchmarkDBSet(b *testing.B) {
 	defer os.Remove(tmpfile)
 	defer os.Remove(tmpfile + ".wal")
 
-	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
+	db, err := Open(tmpfile, WithSyncEveryCommit())
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -99,7 +99,7 @@ func BenchmarkDBMixed(b *testing.B) {
 	defer os.Remove(tmpfile + ".wal")
 
 	// Use WALSyncBytes mode for better throughput during pre-population
-	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
+	db, err := Open(tmpfile, WithSyncEveryCommit())
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -171,7 +171,7 @@ func BenchmarkDBConcurrentReads(b *testing.B) {
 	defer os.Remove(tmpfile)
 	defer os.Remove(tmpfile + ".wal")
 
-	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
+	db, err := Open(tmpfile, WithSyncEveryCommit())
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}
@@ -228,7 +228,7 @@ func BenchmarkBTreeMixed(b *testing.B) {
 	defer os.Remove(tmpfile)
 	defer os.Remove(tmpfile + ".wal")
 
-	db, err := Open(tmpfile, WithWALSyncBytes(1024*1024))
+	db, err := Open(tmpfile, WithSyncEveryCommit())
 	if err != nil {
 		b.Fatalf("Failed to create DB: %v", err)
 	}

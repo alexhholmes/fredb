@@ -1,57 +1,57 @@
 package fredb
 
-import "fredb/internal/wal"
+// SyncMode controls when database writes are fsynced to disk
+type SyncMode int
+
+const (
+	// SyncEveryCommit fsyncs on every transaction commit
+	// - Guarantees zero data loss on power failure
+	// - Limited by fsync latency (typically 1-10ms per commit)
+	// - Use for: Financial transactions, critical data
+	SyncEveryCommit SyncMode = iota
+
+	// SyncOff disables fsync entirely (testing/bulk loads only)
+	// - Maximum throughput
+	// - All unflushed data lost on crash
+	// - Use for: Testing, bulk imports with external durability
+	SyncOff
+)
 
 // DBOptions configures database behavior.
 type DBOptions struct {
-	walSyncMode     wal.SyncMode
-	walBytesPerSync int // Used when walSyncMode == SyncBytes
-	maxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
+	syncMode       SyncMode
+	maxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
 // defaultDBOptions returns safe default configuration.
 func defaultDBOptions() DBOptions {
 	return DBOptions{
-		walSyncMode:     wal.SyncEveryCommit,
-		walBytesPerSync: 1024 * 1024, // 1MB
-		maxCacheSizeMB:  512,         // 512MB
+		syncMode:       SyncEveryCommit,
+		maxCacheSizeMB: 512, // 512MB
 	}
 }
 
 // DBOption configures database options using the functional options pattern.
 type DBOption func(*DBOptions)
 
-// WithWALSyncEveryCommit configures the database to fsync wal on every commit.
+// WithSyncEveryCommit configures the database to fsync on every commit.
 // This provides maximum durability (zero data loss) but lower throughput.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithWALSyncEveryCommit() DBOption {
+func WithSyncEveryCommit() DBOption {
 	return func(opts *DBOptions) {
-		opts.walSyncMode = wal.SyncEveryCommit
+		opts.syncMode = SyncEveryCommit
 	}
 }
 
-// WithWALSyncBytes configures the database to fsync wal every N bytes written.
-// This provides higher throughput with bounded data loss window.
-// The bytes parameter determines the maximum amount of data that could be lost on crash.
-// Note: It is optimal to align this value to the filesystem block size (typically 4096 bytes).
-//
-//goland:noinspection GoUnusedExportedFunction
-func WithWALSyncBytes(bytes int) DBOption {
-	return func(opts *DBOptions) {
-		opts.walSyncMode = wal.SyncBytes
-		opts.walBytesPerSync = bytes
-	}
-}
-
-// WithWALSyncOff disables wal fsync entirely.
+// WithSyncOff disables fsync entirely.
 // This provides maximum throughput but all unflushed data is lost on crash.
 // Only use for testing or bulk loads where data can be reconstructed.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithWALSyncOff() DBOption {
+func WithSyncOff() DBOption {
 	return func(opts *DBOptions) {
-		opts.walSyncMode = wal.SyncOff
+		opts.syncMode = SyncOff
 	}
 }
 

@@ -11,11 +11,21 @@ import (
 	"fredb/internal/directio"
 )
 
+// Snapshot bundles metadata and root pointer for atomic visibility
+type Snapshot struct {
+	Meta base.MetaPage
+	Root *base.Node
+}
+
 // PageManager implements PageManager with disk-based storage
 type PageManager struct {
 	mu   sync.Mutex // Protects meta and freelist access
 	file *os.File
-	meta base.MetaPage
+
+	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
+	activeMeta atomic.Pointer[Snapshot]
+	meta0      Snapshot
+	meta1      Snapshot
 
 	// Direct I/O buffer pool
 	bufPool *sync.Pool // Pool of aligned []byte buffers for direct I/O
@@ -27,6 +37,9 @@ type PageManager struct {
 
 	// Version relocation tracking
 	relocations map[base.PageID]map[uint64]base.PageID // originalPageID -> (txnID -> relocatedPageID)
+
+	// Page allocation tracking (separate from meta to avoid data races)
+	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
 
 	// Stats
 	diskReads  atomic.Uint64 // Number of actual disk reads
@@ -131,9 +144,9 @@ func (pm *PageManager) AllocatePage() (base.PageID, error) {
 		return id, nil
 	}
 
-	// Grow file
-	id = base.PageID(pm.meta.NumPages)
-	pm.meta.NumPages++
+	// Grow file - use atomic numPages counter (includes uncommitted allocations)
+	// Atomically increment and get the new page ID
+	id = base.PageID(pm.numPages.Add(1) - 1)
 
 	// Initialize empty Page
 	emptyPage := &base.Page{}
@@ -245,35 +258,60 @@ func (pm *PageManager) CleanupVersions(minReaderTxn uint64) []base.PageID {
 
 // GetMeta returns the current metadata
 func (pm *PageManager) GetMeta() base.MetaPage {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	return pm.meta
+	return pm.activeMeta.Load().Meta
 }
 
-// PutMeta updates the metadata and persists it to disk
-// Writes to the inactive meta Page and fsyncs for durability
-func (pm *PageManager) PutMeta(meta base.MetaPage) error {
+// GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
+// Returns by value to prevent data races with concurrent PutSnapshot updates
+func (pm *PageManager) GetSnapshot() Snapshot {
+	return *pm.activeMeta.Load()
+}
+
+// PutSnapshot updates the metadata and root pointer, persists metadata to disk
+// Does NOT make it visible to readers - call CommitSnapshot after fsync
+func (pm *PageManager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	// Update checksum
+	// Sync NumPages from atomic counter (may have uncommitted allocations)
+	meta.NumPages = pm.numPages.Load()
+
+	// Update checksum (after NumPages sync)
 	meta.Checksum = meta.CalculateChecksum()
 
-	// Write to inactive meta Page (alternates based on TxnID)
-	// TxnID % 2 determines which Page: 0 or 1
-	metaPage := &base.Page{}
-	metaPage.WriteMeta(&meta)
+	// Determine which page to write to based on TxnID
 	metaPageID := base.PageID(meta.TxnID % 2)
 
-	// Write meta Page to disk (unsafe - already holding lock)
+	// Write to disk
+	metaPage := &base.Page{}
+	metaPage.WriteMeta(&meta)
 	if err := pm.writePageUnsafe(metaPageID, metaPage); err != nil {
 		return err
 	}
 
-	// Only update in-memory meta after successful disk write
-	pm.meta = meta
+	// Update inactive in-memory copy with both meta and root (don't swap pointer yet)
+	if metaPageID == 0 {
+		pm.meta0.Meta = meta
+		pm.meta0.Root = root
+	} else {
+		pm.meta1.Meta = meta
+		pm.meta1.Root = root
+	}
 
 	return nil
+}
+
+// CommitSnapshot atomically makes the last PutSnapshot visible to readers
+// Call AFTER fsync to ensure durability before visibility
+// Lock-free: single writer guarantee + atomic swap
+func (pm *PageManager) CommitSnapshot() {
+	// Swap to the meta with higher or equal TxnID
+	// Use >= to handle initial case where both metas have TxnID=0
+	if pm.meta0.Meta.TxnID >= pm.meta1.Meta.TxnID {
+		pm.activeMeta.Swap(&pm.meta0)
+	} else {
+		pm.activeMeta.Swap(&pm.meta1)
+	}
 }
 
 // Close serializes freelist to disk and closes the file
@@ -281,26 +319,29 @@ func (pm *PageManager) Close() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	// Get active meta for reading
+	meta := pm.activeMeta.Load().Meta
+
 	// Serialize freelist to disk
 	pagesNeeded := pm.pagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
-	if uint64(pagesNeeded) > pm.meta.FreelistPages {
+	if uint64(pagesNeeded) > meta.FreelistPages {
 		// Mark old freelist pages as pending (not immediately reusable)
 		// Using current TxnID ensures they're only released after this close() completes
-		oldPages := make([]base.PageID, pm.meta.FreelistPages)
-		for i := uint64(0); i < pm.meta.FreelistPages; i++ {
-			oldPages[i] = pm.meta.FreelistID + base.PageID(i)
+		oldPages := make([]base.PageID, meta.FreelistPages)
+		for i := uint64(0); i < meta.FreelistPages; i++ {
+			oldPages[i] = meta.FreelistID + base.PageID(i)
 		}
-		pm.freePending(pm.meta.TxnID, oldPages)
+		pm.freePending(meta.TxnID, oldPages)
 
 		// Recalculate pages needed after adding old freelist pages to pending
 		pagesNeeded = pm.pagesNeeded()
 
 		// Move freelist to new pages at end of file
-		pm.meta.FreelistID = base.PageID(pm.meta.NumPages)
-		pm.meta.FreelistPages = uint64(pagesNeeded)
-		pm.meta.NumPages += uint64(pagesNeeded)
+		meta.FreelistID = base.PageID(meta.NumPages)
+		meta.FreelistPages = uint64(pagesNeeded)
+		meta.NumPages += uint64(pagesNeeded)
 	}
 
 	// Write freelist
@@ -311,21 +352,32 @@ func (pm *PageManager) Close() error {
 	pm.serializeFreelist(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := pm.writePageUnsafe(pm.meta.FreelistID+base.PageID(i), freelistPages[i]); err != nil {
+		if err := pm.writePageUnsafe(meta.FreelistID+base.PageID(i), freelistPages[i]); err != nil {
 			return err
 		}
 	}
 
 	// Update meta (increment TxnID, recalculate checksum)
-	pm.meta.TxnID++
-	pm.meta.Checksum = pm.meta.CalculateChecksum()
+	meta.TxnID++
+	meta.Checksum = meta.CalculateChecksum()
 
-	// Write meta to alternating Page
+	// Determine which metapage to write to
+	metaPageID := base.PageID(meta.TxnID % 2)
+
+	// Write meta to disk
 	metaPage := &base.Page{}
-	metaPage.WriteMeta(&pm.meta)
-	metaPageID := base.PageID(pm.meta.TxnID % 2)
+	metaPage.WriteMeta(&meta)
 	if err := pm.writePageUnsafe(metaPageID, metaPage); err != nil {
 		return err
+	}
+
+	// Update in-memory and swap pointer
+	if metaPageID == 0 {
+		pm.meta0.Meta = meta
+		pm.activeMeta.Swap(&pm.meta0)
+	} else {
+		pm.meta1.Meta = meta
+		pm.activeMeta.Swap(&pm.meta1)
 	}
 
 	return pm.file.Close()
@@ -333,8 +385,8 @@ func (pm *PageManager) Close() error {
 
 // initializeNewDB creates a new database with dual meta pages and empty freelist
 func (pm *PageManager) initializeNewDB() error {
-	// Initialize meta Page
-	pm.meta = base.MetaPage{
+	// Initialize meta
+	meta := base.MetaPage{
 		Magic:           base.MagicNumber,
 		Version:         base.FormatVersion,
 		PageSize:        base.PageSize,
@@ -345,11 +397,21 @@ func (pm *PageManager) initializeNewDB() error {
 		CheckpointTxnID: 0, // No checkpoint yet
 		NumPages:        3, // Pages 0-1 (meta), 2 (freelist) reserved
 	}
-	pm.meta.Checksum = pm.meta.CalculateChecksum()
+	meta.Checksum = meta.CalculateChecksum()
 
-	// Write meta to both pages 0 and 1
+	// Set both in-memory copies with Meta and Root (Root is nil initially)
+	pm.meta0.Meta = meta
+	pm.meta0.Root = nil
+	pm.meta1.Meta = meta
+	pm.meta1.Root = nil
+	pm.activeMeta.Store(&pm.meta0)
+
+	// Initialize atomic numPages counter
+	pm.numPages.Store(meta.NumPages)
+
+	// Write meta to both disk pages 0 and 1
 	metaPage := &base.Page{}
-	metaPage.WriteMeta(&pm.meta)
+	metaPage.WriteMeta(&meta)
 
 	if err := pm.WritePage(0, metaPage); err != nil {
 		return err
@@ -381,7 +443,7 @@ func (pm *PageManager) loadExistingDB() error {
 		return err
 	}
 
-	// validate and pick the best meta Page
+	// Validate and pick the best meta Page
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
 
@@ -393,24 +455,35 @@ func (pm *PageManager) loadExistingDB() error {
 		return fmt.Errorf("both meta pages corrupted: %v, %v", err0, err1)
 	}
 
-	// Pick the valid one with highest TxnID
+	// Set both in-memory copies with .Meta and .Root (Root will be loaded by DB later)
+	if err0 == nil {
+		pm.meta0.Meta = *meta0
+		pm.meta0.Root = nil // Will be set by DB.Open()
+	}
+	if err1 == nil {
+		pm.meta1.Meta = *meta1
+		pm.meta1.Root = nil // Will be set by DB.Open()
+	}
+
+	// Point activeMeta to the one with higher TxnID
 	if err0 != nil {
-		pm.meta = *meta1
+		pm.activeMeta.Store(&pm.meta1)
 	} else if err1 != nil {
-		pm.meta = *meta0
+		pm.activeMeta.Store(&pm.meta0)
 	} else {
-		// Both valid, pick highest TxnID
+		// Both valid - pick highest TxnID
 		if meta0.TxnID > meta1.TxnID {
-			pm.meta = *meta0
+			pm.activeMeta.Store(&pm.meta0)
 		} else {
-			pm.meta = *meta1
+			pm.activeMeta.Store(&pm.meta1)
 		}
 	}
 
-	// Load freelist
-	freelistPages := make([]*base.Page, pm.meta.FreelistPages)
-	for i := uint64(0); i < pm.meta.FreelistPages; i++ {
-		page, err := pm.ReadPage(pm.meta.FreelistID + base.PageID(i))
+	// Load freelist using active meta
+	activeMeta := pm.activeMeta.Load()
+	freelistPages := make([]*base.Page, activeMeta.Meta.FreelistPages)
+	for i := uint64(0); i < activeMeta.Meta.FreelistPages; i++ {
+		page, err := pm.ReadPage(activeMeta.Meta.FreelistID + base.PageID(i))
 		if err != nil {
 			return err
 		}
@@ -420,7 +493,10 @@ func (pm *PageManager) loadExistingDB() error {
 
 	// Release any pending pages that are safe to reclaim
 	// On startup, no readers exist, so all pending pages with txnID <= current can be released
-	pm.release(pm.meta.TxnID)
+	pm.release(activeMeta.Meta.TxnID)
+
+	// Initialize atomic numPages counter from active meta
+	pm.numPages.Store(activeMeta.Meta.NumPages)
 
 	return nil
 }

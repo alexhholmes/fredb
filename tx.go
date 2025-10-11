@@ -108,11 +108,8 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Use COW-aware insertion with splits
 	// Keep changes in tx.root (transaction-local), not DB.root
 
-	// Use tx.root if set, otherwise start from DB.root
+	// Use tx.root (already set from snapshot in Begin)
 	root := tx.root
-	if root == nil {
-		root = tx.db.root.Load()
-	}
 
 	// Handle root split with COW
 	if root.IsFull() {
@@ -189,11 +186,8 @@ func (tx *Tx) Delete(key []byte) error {
 	// Full COW-aware deletion with merge/borrow support
 	// Keep changes in tx.root (transaction-local), not DB.root
 
-	// Use tx.root if set, otherwise start from DB.root
+	// Use tx.root (already set from snapshot in Begin)
 	root := tx.root
-	if root == nil {
-		root = tx.db.root.Load()
-	}
 
 	// Root is always a branch node (never nil, never leaf)
 	// Even with NumKeys=0, root can have a child leaf with data
@@ -236,25 +230,18 @@ func (tx *Tx) Commit() error {
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
-	// Capture old root for rollback if commit fails (atomic load)
-	oldRoot := tx.db.root.Load()
-
-	// Write all TX-local pages to wal (not disk!)
+	// Write all TX-local pages directly to disk
 	// IMPORTANT: Populate cache BEFORE updating root to prevent race condition
 	// where concurrent readers capture new root but pages aren't available yet
 	for pageID, node := range tx.pages {
 		// Serialize Node to a Page with this transaction's ID
 		page, err := node.Serialize(tx.txnID)
 		if err != nil {
-			// Restore old root on failure (atomic store)
-			tx.db.root.Store(oldRoot)
 			return err
 		}
 
-		// Write to wal instead of disk
-		if err := tx.db.wal.AppendPage(tx.txnID, pageID, page); err != nil {
-			// Restore old root on failure (atomic store)
-			tx.db.root.Store(oldRoot)
+		// Write directly to pager (disk)
+		if err := tx.db.pager.WritePage(pageID, page); err != nil {
 			return err
 		}
 
@@ -264,25 +251,6 @@ func (tx *Tx) Commit() error {
 		// Flush to global versioned cache with this transaction's ID
 		// This makes the new version visible to future transactions
 		tx.db.cache.Put(pageID, tx.txnID, node)
-	}
-
-	// Apply transaction-local root to DB.root (atomic swap)
-	// This makes all COW changes visible to future transactions
-	// CRITICAL: Done AFTER cache population to ensure pages are available
-	if tx.root != nil {
-		tx.db.root.Store(tx.root)
-	}
-
-	// Append commit marker to wal
-	if err := tx.db.wal.AppendCommit(tx.txnID); err != nil {
-		tx.db.root.Store(oldRoot)
-		return err
-	}
-
-	// Conditionally fsync wal based on sync mode (this is the commit point!)
-	if err := tx.db.wal.Sync(); err != nil {
-		tx.db.root.Store(oldRoot)
-		return err
 	}
 
 	// Add freed pages to pending at this transaction ID
@@ -312,10 +280,22 @@ func (tx *Tx) Commit() error {
 	meta.TxnID = tx.txnID
 	meta.Checksum = meta.CalculateChecksum()
 
-	// Update storage's in-memory meta
-	if err := tx.db.pager.PutMeta(meta); err != nil {
+	// Update storage's in-memory meta WITH root pointer atomically
+	// This makes all COW changes visible to future transactions
+	// CRITICAL: Done AFTER cache population to ensure pages are available
+	if err := tx.db.pager.PutSnapshot(meta, tx.root); err != nil {
 		return err
 	}
+
+	// Conditionally fsync based on sync mode (this is the commit point!)
+	if tx.db.syncMode == SyncEveryCommit {
+		if err := tx.db.pager.Sync(); err != nil {
+			return err
+		}
+	}
+
+	// Commit the meta page after syncing
+	tx.db.pager.CommitSnapshot()
 
 	tx.db.writer.Store(nil)
 
@@ -447,13 +427,13 @@ retryLoop:
 
 		// CRITICAL: Never allocate a PageID that's currently in use by the root
 		// This can happen on fresh databases where the freelist hasn't been properly persisted
-		if root := tx.db.root.Load(); root != nil && pageID == root.PageID {
+		if tx.root != nil && pageID == tx.root.PageID {
 			continue retryLoop
 		}
 
 		// Also check if PageID collides with any child of the root
-		if root := tx.db.root.Load(); root != nil {
-			for _, childID := range root.Children {
+		if tx.root != nil {
+			for _, childID := range tx.root.Children {
 				if pageID == childID {
 					continue retryLoop
 				}
