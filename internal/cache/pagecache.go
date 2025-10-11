@@ -193,8 +193,9 @@ func (c *PageCache) Invalidate(pageID base.PageID) {
 }
 
 // EvictCheckpointed removes Page versions that have been checkpointed to disk
-// AND are older than all active readers.
-// Only versions where (txnID <= CheckpointTxnID AND txnID < minReaderTxn) are safe to evict.
+// AND are superseded by newer versions visible to all active readers.
+// For each page, keeps the latest version where txnID <= minReaderTxn (what oldest reader sees)
+// plus any newer versions. Evicts older superseded versions that are checkpointed.
 // Called by background checkpointer after checkpoint completes.
 func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
 	c.mu.Lock()
@@ -205,15 +206,30 @@ func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
 	evicted := 0
 
 	for pageID, versions := range c.entries {
-		// Track which versions to keep
+		// Find the latest version visible to oldest reader (txnID <= minReaderTxn)
+		// This is the version readers actually see
+		latestVisibleIdx := -1
+		for i := len(versions) - 1; i >= 0; i-- {
+			if versions[i].txnID <= minReaderTxn {
+				latestVisibleIdx = i
+				break
+			}
+		}
+
+		// Keep versions: latest visible to readers + all newer versions
 		keep := make([]*versionEntry, 0, len(versions))
 
-		for _, entry := range versions {
-			// Only evict if BOTH conditions are true:
-			// 1. Version is checkpointed (on disk)
-			// 2. Version is older than all active readers (no reader needs it)
-			if entry.txnID <= checkpointTxn && entry.txnID < minReaderTxn {
-				// Safe to evict
+		for i, entry := range versions {
+			// Keep if:
+			// 1. It's the latest version visible to oldest reader, OR
+			// 2. It's newer than oldest reader (future transactions might need it)
+			// Evict if: checkpointed AND superseded by latestVisible version
+			shouldEvict := entry.txnID <= checkpointTxn &&
+				latestVisibleIdx != -1 &&
+				i < latestVisibleIdx
+
+			if shouldEvict {
+				// Evict superseded version
 				if entry.lruElement != nil {
 					c.lruList.Remove(entry.lruElement)
 				}
@@ -221,7 +237,7 @@ func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
 				c.evictions.Add(1)
 				c.totalEntries.Add(-1)
 			} else {
-				// Keep version (either in wal only or needed by reader)
+				// Keep version
 				keep = append(keep, entry)
 			}
 		}

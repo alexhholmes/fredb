@@ -3,6 +3,7 @@ package fredb
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fredb/internal/base"
@@ -32,9 +33,9 @@ type DB struct {
 	closed bool     // Database closed flag
 
 	// Transaction state
-	writerTx  *Tx    // Current write transaction (nil if none)
-	readerTxs []*Tx  // Active read transactions
-	nextTxnID uint64 // Monotonic transaction ID counter
+	writerTx  *Tx           // Current write transaction (nil if none)
+	readerTxs []*Tx         // Active read transactions
+	nextTxnID atomic.Uint64 // Monotonic transaction ID counter (incremented for each write Tx)
 
 	// Background releaser
 	releaseC chan uint64    // Trigger release (unbuffered)
@@ -169,14 +170,14 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	db := &DB{
-		pager:     pager,
-		cache:     c,
-		root:      root,
-		wal:       newWAL,
-		nextTxnID: meta.TxnID, // Resume from last committed TxnID
-		releaseC:  make(chan uint64),
-		stopC:     make(chan struct{}),
+		pager:    pager,
+		cache:    c,
+		root:     root,
+		wal:      newWAL,
+		releaseC: make(chan uint64),
+		stopC:    make(chan struct{}),
 	}
+	db.nextTxnID.Store(meta.TxnID) // Resume from last committed TxnID
 
 	// Recover uncommitted newWAL entries into cache
 	if err := db.recoverFromWAL(); err != nil {
@@ -258,15 +259,24 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		return nil, ErrTxInProgress
 	}
 
-	// Assign monotonic transaction ID
-	db.nextTxnID++
-	txnID := db.nextTxnID
+	// Capture the current committed txnID from metadata
+	meta := db.pager.GetMeta()
+	committedTxnID := meta.TxnID
+
+	var txnID uint64
+	if writable {
+		// Writers get a new unique txnID (atomic increment)
+		txnID = db.nextTxnID.Add(1)
+	} else {
+		// Readers use the committed txnID as their snapshot
+		// No need to increment - they don't create new versions
+		txnID = committedTxnID
+	}
 
 	// Create transaction
-	// Read transactions keep this snapshot, write transactions replace it on first modification
 	tx := &Tx{
 		db:       db,
-		txnID:    txnID,
+		txnID:    txnID, // For writers: new unique ID; for readers: snapshot version
 		writable: writable,
 		root:     db.root, // Capture snapshot for MVCC isolation
 		pending:  make(map[base.PageID]struct{}),
@@ -550,8 +560,8 @@ func (db *DB) checkpoint() error {
 		return err
 	}
 
-	// Evict checkpointed versions from cache
-	// Only evict versions older than all active readers to preserve MVCC
+	// Evict superseded checkpointed versions from cache
+	// Only evicts old versions that are superseded by newer versions visible to all readers
 	_ = db.cache.EvictCheckpointed(minReaderTxn)
 
 	// Cleanup wal Page latches for checkpointed pages visible to all readers
@@ -566,8 +576,8 @@ func (db *DB) minReaderTxn() uint64 {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	// Start with minimum possible value
-	minTxnID := db.nextTxnID
+	// Start with current next transaction ID
+	minTxnID := db.nextTxnID.Load()
 
 	// Consider active write transaction
 	if db.writerTx != nil {
@@ -584,7 +594,7 @@ func (db *DB) minReaderTxn() uint64 {
 	return minTxnID
 }
 
-// minReaderTxnForCheckpoint returns minimum transaction ID for checkpoint operations.
+// minReaderTxnForCheckpoint returns minimum snapshot version being viewed by active readers.
 // Unlike minReaderTxn, this uses lastCommittedTxn as the floor when no readers exist.
 // This prevents checkpoint from allocating pages that were just freed.
 func (db *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
@@ -600,6 +610,7 @@ func (db *DB) minReaderTxnForCheckpoint(lastCommittedTxn uint64) uint64 {
 	}
 
 	// Consider all active read transactions
+	// Now that readers use committed txnID as their snapshot, txnID == snapshot version
 	for _, tx := range db.readerTxs {
 		if tx.txnID < minTxnID {
 			minTxnID = tx.txnID
