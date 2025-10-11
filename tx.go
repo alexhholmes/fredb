@@ -1002,10 +1002,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	}
 
 	algo.MergeNodes(leftNode, rightNode, parent.Keys[parentKeyIdx])
-
-	// Remove separator from parent using algo
 	algo.ApplyBranchRemoveSeparator(parent, parentKeyIdx)
-
 	// Update parent's child pointer to merged node
 	parent.Children[parentKeyIdx] = leftNode.PageID
 
