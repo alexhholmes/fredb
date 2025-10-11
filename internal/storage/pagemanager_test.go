@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"flag"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,6 +9,8 @@ import (
 
 	"fredb/internal/base"
 )
+
+var _ = flag.Bool("slow", false, "run slow tests")
 
 func TestPageManagerFreeListPending(t *testing.T) {
 	t.Parallel()

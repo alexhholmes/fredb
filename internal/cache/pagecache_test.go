@@ -1,12 +1,15 @@
 package cache
 
 import (
+	"flag"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	"fredb/internal/base"
 )
+
+var _ = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a test Node
 func makeTestNode(pageID base.PageID) *base.Node {

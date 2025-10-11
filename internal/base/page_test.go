@@ -1,12 +1,15 @@
 package base
 
 import (
+	"flag"
 	"testing"
 	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var _ = flag.Bool("slow", false, "run slow tests")
 
 func TestPageHeaderAlignment(t *testing.T) {
 	t.Parallel()
