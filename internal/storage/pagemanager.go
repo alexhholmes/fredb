@@ -490,16 +490,6 @@ func (pm *PageManager) allocate() base.PageID {
 		}
 	}
 
-	// DEBUG: Check if Page still exists in pending after removal
-	for txnID, pageIDs := range pm.pendingPages {
-		for _, pid := range pageIDs {
-			if pid == id {
-				panic(fmt.Sprintf("BUG: Allocated PageID %d still in pending[%d] after removal (removed %d occurrences)",
-					id, txnID, removedCount))
-			}
-		}
-	}
-
 	return id
 }
 

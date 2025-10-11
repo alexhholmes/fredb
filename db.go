@@ -62,6 +62,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		return nil, err
 	}
 
+	// Page size is 4096 bytes, so 256 pages per MB
 	c := cache.NewPageCache(opts.maxCacheSizeMB*256, pager)
 
 	// Initialize root (was newTree logic)
@@ -88,7 +89,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 	} else {
-		// Create new root
+		// Create new root - always a branch node, even when empty
 		rootPageID, err := pager.AllocatePage()
 		if err != nil {
 			_ = newWAL.Close()
@@ -96,18 +97,71 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		root = &base.Node{
-			PageID:   rootPageID,
+		// Create initial empty leaf
+		leafPageID, err := pager.AllocatePage()
+		if err != nil {
+			_ = newWAL.Close()
+			_ = pager.Close()
+			return nil, err
+		}
+
+		leaf := &base.Node{
+			PageID:   leafPageID,
 			Dirty:    true,
 			IsLeaf:   true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   make([][]byte, 0),
-			Children: make([]base.PageID, 0),
+			Children: nil,
+		}
+
+		// Serialize and write the leaf
+		leafPage, err := leaf.Serialize(0)
+		if err != nil {
+			_ = newWAL.Close()
+			_ = pager.Close()
+			return nil, err
+		}
+		if err := pager.WritePage(leafPageID, leafPage); err != nil {
+			_ = newWAL.Close()
+			_ = pager.Close()
+			return nil, err
+		}
+
+		// Root is always a branch, pointing to the single leaf
+		root = &base.Node{
+			PageID:   rootPageID,
+			Dirty:    true,
+			IsLeaf:   false,
+			NumKeys:  0,
+			Keys:     make([][]byte, 0),
+			Values:   nil,
+			Children: []base.PageID{leafPageID},
+		}
+
+		// Serialize and write the root
+		rootPage, err := root.Serialize(0)
+		if err != nil {
+			_ = newWAL.Close()
+			_ = pager.Close()
+			return nil, err
+		}
+		if err := pager.WritePage(rootPageID, rootPage); err != nil {
+			_ = newWAL.Close()
+			_ = pager.Close()
+			return nil, err
 		}
 
 		meta.RootPageID = rootPageID
 		if err := pager.PutMeta(meta); err != nil {
+			_ = newWAL.Close()
+			_ = pager.Close()
+			return nil, err
+		}
+
+		// CRITICAL: Sync pager to persist the initial allocations
+		// This ensures pages 3 and 4 (root and leaf) are not returned by future AllocatePage() calls
+		if err := pager.Sync(); err != nil {
 			_ = newWAL.Close()
 			_ = pager.Close()
 			return nil, err

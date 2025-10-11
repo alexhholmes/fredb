@@ -419,7 +419,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 	// Final tree should be empty
 	assert.Equal(t, uint16(0), db.root.NumKeys, "Tree should be empty")
-	assert.True(t, db.root.IsLeaf, "Empty tree root should be leaf")
+	assert.False(t, db.root.IsLeaf, "Empty tree root should be branch")
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
@@ -496,7 +496,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 		// Final tree should be empty
 		assert.Equal(t, uint16(0), db.root.NumKeys, "Tree should be empty")
-		assert.True(t, db.root.IsLeaf, "Empty tree root should be leaf")
+		assert.False(t, db.root.IsLeaf, "Empty tree root should be branch")
 
 		// close database after each iteration
 		db.Close()
@@ -646,9 +646,19 @@ func TestSingleKey(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, string(newValue), string(val))
 
-	// Verify tree is still a leaf (single key shouldn't cause split)
-	assert.True(t, db.root.IsLeaf, "Root should be a leaf with single key")
-	assert.Equal(t, uint16(1), db.root.NumKeys, "Root should have exactly 1 key")
+	// Verify tree structure: root is always a branch (never leaf)
+	assert.False(t, db.root.IsLeaf, "Root should always be a branch node")
+	assert.Equal(t, 1, len(db.root.Children), "Root should have 1 child")
+
+	// Load the child and verify it has the key
+	tx, err := db.Begin(false)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	child, err := tx.loadNode(db.root.Children[0])
+	assert.NoError(t, err)
+	assert.True(t, child.IsLeaf, "Child should be a leaf")
+	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
 }
 
 func TestDuplicateKeys(t *testing.T) {
@@ -1051,14 +1061,24 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// After MaxKeysPerNode Keys, root should be full but still a leaf
-	assert.True(t, db.root.IsLeaf, "Root should still be leaf with MaxKeysPerNode Keys")
-	assert.Equal(t, base.MaxKeysPerNode, int(db.root.NumKeys))
+	// Root is always a branch (constraint), check child is full
+	assert.False(t, db.root.IsLeaf, "Root should always be a branch node")
+	assert.Equal(t, 1, len(db.root.Children), "Root should have 1 child before split")
+
+	// Load child and verify it's full
+	tx, err := db.Begin(false)
+	require.NoError(t, err)
+	child, err := tx.loadNode(db.root.Children[0])
+	require.NoError(t, err)
+	tx.Rollback()
+
+	assert.True(t, child.IsLeaf, "Child should be a leaf")
+	assert.Equal(t, base.MaxKeysPerNode, int(child.NumKeys), "Child should be full with MaxKeysPerNode keys")
 
 	// Insert one more key (65th key) to trigger split
 	splitKey := fmt.Sprintf("key%06d", base.MaxKeysPerNode)
 	splitValue := fmt.Sprintf("value%06d", base.MaxKeysPerNode)
-	err := db.Set([]byte(splitKey), []byte(splitValue))
+	err = db.Set([]byte(splitKey), []byte(splitValue))
 	require.NoError(t, err)
 
 	// After inserting MaxKeysPerNode+1 Keys, root should be branch
@@ -1102,7 +1122,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		}
 	}
 
-	assert.True(t, db.root.IsLeaf, "Final root should be leaf")
+	assert.False(t, db.root.IsLeaf, "Final root should be branch")
 	assert.Equal(t, uint16(0), db.root.NumKeys, "Final root should have 0 Keys")
 }
 

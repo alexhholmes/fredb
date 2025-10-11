@@ -216,28 +216,13 @@ func (tx *Tx) Delete(key []byte) error {
 		root = tx.db.root
 	}
 
-	if root == nil || root.NumKeys == 0 {
-		return ErrKeyNotFound
-	}
+	// Root is always a branch node (never nil, never leaf)
+	// Even with NumKeys=0, root can have a child leaf with data
 
 	// Perform COW-aware recursive deletion - capture returned root
 	root, err := tx.deleteFromNode(root, key)
 	if err != nil {
 		return err
-	}
-
-	// Handle root collapse: if root is non-leaf and has no Keys, promote its only child
-	if !root.IsLeaf && root.NumKeys == 0 {
-		if len(root.Children) > 0 {
-			// Track old root as freed
-			tx.addFreed(root.PageID)
-
-			// Load the only child as new root
-			root, err = tx.loadNode(root.Children[0])
-			if err != nil {
-				return err
-			}
-		}
 	}
 
 	// Update transaction-local root (NOT DB.root)
@@ -487,6 +472,21 @@ retryLoop:
 			return 0, nil, err
 		}
 
+		// CRITICAL: Never allocate a PageID that's currently in use by the root
+		// This can happen on fresh databases where the freelist hasn't been properly persisted
+		if tx.db.root != nil && pageID == tx.db.root.PageID {
+			continue retryLoop
+		}
+
+		// Also check if PageID collides with any child of the root
+		if tx.db.root != nil && !tx.db.root.IsLeaf {
+			for _, childID := range tx.db.root.Children {
+				if pageID == childID {
+					continue retryLoop
+				}
+			}
+		}
+
 		// Check for duplicate in tx.pending (should never happen)
 		if _, inPending := tx.pending[pageID]; inPending {
 			return 0, nil, fmt.Errorf("FATAL: freelist returned PageID %d already in tx.pending (txnID=%d, pending=%v, freed=%v)",
@@ -604,18 +604,8 @@ func (tx *Tx) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
 			Dirty:  false,
 		}
 
-		header := page.Header()
-		if header.NumKeys > 0 {
-			if err := node.Deserialize(page); err != nil {
-				return nil, 0, err
-			}
-		} else {
-			// Empty page - initialize as empty leaf
-			node.IsLeaf = true
-			node.NumKeys = 0
-			node.Keys = make([][]byte, 0)
-			node.Values = make([][]byte, 0)
-			node.Children = make([]base.PageID, 0)
+		if err := node.Deserialize(page); err != nil {
+			return nil, 0, err
 		}
 
 		return node, relocTxnID, nil
@@ -634,17 +624,8 @@ func (tx *Tx) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
 	}
 
 	header := page.Header()
-	if header.NumKeys > 0 {
-		if err := node.Deserialize(page); err != nil {
-			return nil, 0, err
-		}
-	} else {
-		// Empty page - initialize as empty leaf
-		node.IsLeaf = true
-		node.NumKeys = 0
-		node.Keys = make([][]byte, 0)
-		node.Values = make([][]byte, 0)
-		node.Children = make([]base.PageID, 0)
+	if err := node.Deserialize(page); err != nil {
+		return nil, 0, err
 	}
 
 	// Cycle detection
@@ -918,9 +899,6 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 		return nil, err
 	}
 
-	// Check if child will underflow
-	shouldCheckUnderflow := child.NumKeys == base.MinKeysPerNode
-
 	// Delete from child - CRITICAL: capture returned child to get new PageID after COW
 	child, err = tx.deleteFromNode(child, key)
 	if err != nil {
@@ -936,8 +914,9 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	// Update child pointer (child may have been COW'd)
 	node.Children[childIdx] = child.PageID
 
-	// Handle underflow if necessary
-	if shouldCheckUnderflow && child.IsUnderflow() && node != tx.root {
+	// Check for underflow only if there are siblings to borrow from or merge with
+	// When parent has only 1 child (e.g., root with single child), underflow is allowed
+	if child.IsUnderflow() && len(node.Children) > 1 {
 		// CRITICAL: capture both returned parent and child
 		node, child, err = tx.fixUnderflow(node, childIdx, child)
 		if err != nil {
@@ -1059,6 +1038,12 @@ func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx 
 		node.Values = algo.InsertAt(node.Values, 0, borrowed.Value)
 		node.NumKeys++
 
+		// Remove borrowed key from left sibling
+		lastIdx := int(leftSibling.NumKeys) - 1
+		leftSibling.Keys = algo.RemoveAt(leftSibling.Keys, lastIdx)
+		leftSibling.Values = algo.RemoveAt(leftSibling.Values, lastIdx)
+		leftSibling.NumKeys--
+
 		// Update parent separator to be the first key of right node
 		parent.Keys[parentKeyIdx] = node.Keys[0]
 	} else {
@@ -1069,6 +1054,12 @@ func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx 
 		node.Keys = algo.InsertAt(node.Keys, 0, parent.Keys[parentKeyIdx])
 		node.Children = append([]base.PageID{borrowed.Child}, node.Children...)
 		node.NumKeys++
+
+		// Remove borrowed key and child from left sibling
+		lastIdx := int(leftSibling.NumKeys) - 1
+		leftSibling.Keys = algo.RemoveAt(leftSibling.Keys, lastIdx)
+		leftSibling.Children = algo.RemoveChildAt(leftSibling.Children, len(leftSibling.Children)-1)
+		leftSibling.NumKeys--
 
 		// Move last key from left sibling to parent
 		parent.Keys[parentKeyIdx] = borrowed.Key
@@ -1113,6 +1104,11 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 		node.Values = append(node.Values, borrowed.Value)
 		node.NumKeys++
 
+		// Remove borrowed key from right sibling
+		rightSibling.Keys = algo.RemoveAt(rightSibling.Keys, 0)
+		rightSibling.Values = algo.RemoveAt(rightSibling.Values, 0)
+		rightSibling.NumKeys--
+
 		// Update parent separator to be the first key of right sibling
 		parent.Keys[parentKeyIdx] = rightSibling.Keys[0]
 	} else {
@@ -1123,6 +1119,11 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 		node.Keys = append(node.Keys, parent.Keys[parentKeyIdx])
 		node.Children = append(node.Children, borrowed.Child)
 		node.NumKeys++
+
+		// Remove borrowed key and child from right sibling
+		rightSibling.Keys = algo.RemoveAt(rightSibling.Keys, 0)
+		rightSibling.Children = algo.RemoveChildAt(rightSibling.Children, 0)
+		rightSibling.NumKeys--
 
 		// Move first key from right sibling to parent
 		parent.Keys[parentKeyIdx] = borrowed.Key

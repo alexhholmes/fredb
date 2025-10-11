@@ -206,7 +206,7 @@ func (n *Node) Clone() *Node {
 	}
 
 	// Deep copy Children (branch nodes only)
-	if !n.IsLeaf && len(n.Children) > 0 {
+	if !n.IsLeaf {
 		cloned.Children = make([]PageID, len(n.Children))
 		copy(cloned.Children, n.Children)
 	}
