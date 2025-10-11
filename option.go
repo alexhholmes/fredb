@@ -12,9 +12,9 @@ type DBOptions struct {
 // defaultDBOptions returns safe default configuration.
 func defaultDBOptions() DBOptions {
 	return DBOptions{
-		walSyncMode:     wal.SyncEveryCommit, // Maximum durability by default
-		walBytesPerSync: 1024 * 1024,         // 1MB
-		maxCacheSizeMB:  512,                 // 512MB
+		walSyncMode:     wal.SyncBytes,
+		walBytesPerSync: 1024 * 1024, // 1MB
+		maxCacheSizeMB:  512,         // 512MB
 	}
 }
 

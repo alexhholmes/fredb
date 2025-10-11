@@ -4,7 +4,6 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"fredb/internal/base"
 	"fredb/internal/cache"
@@ -187,10 +186,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	// Start background releaser goroutine
 	db.wg.Add(1)
 	go db.backgroundReleaser()
-
-	// Start background checkpoint goroutine
-	db.wg.Add(1)
-	go db.backgroundCheckpoint()
 
 	return db, nil
 }
@@ -403,16 +398,8 @@ func (db *DB) Close() error {
 func (db *DB) backgroundReleaser() {
 	defer db.wg.Done()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
 	for {
 		select {
-		case <-ticker.C:
-			// Periodic active
-			minTxn := db.minReaderTxn()
-			db.releasePages(minTxn)
-
 		case <-db.releaseC:
 			// Reader-triggered release - recalculate minimum
 			minTxn := db.minReaderTxn()
@@ -421,32 +408,6 @@ func (db *DB) backgroundReleaser() {
 		case <-db.stopC:
 			// Shutdown - release everything
 			db.releasePages(math.MaxUint64)
-			return
-		}
-	}
-}
-
-// backgroundCheckpoint periodically checkpoints the wal to disk
-func (db *DB) backgroundCheckpoint() {
-	defer db.wg.Done()
-
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Ignore errors in background checkpoint
-			_ = db.checkpoint()
-
-		case <-db.releaseC:
-			// Also checkpoint on reader-triggered release
-			err := db.checkpoint()
-			if err != nil {
-				// TODO
-			}
-
-		case <-db.stopC:
 			return
 		}
 	}
