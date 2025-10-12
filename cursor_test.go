@@ -27,20 +27,18 @@ func TestCursorSequentialScan(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key000")))
+	k, v := cursor.Seek([]byte("key000"))
 
 	count := 0
-	for cursor.Valid() {
+	for k != nil {
 		count++
 		expectedKey := []byte(fmt.Sprintf("key%03d", count))
 		expectedValue := []byte(fmt.Sprintf("value%d", count))
 
-		assert.Equal(t, expectedKey, cursor.Key(), "Key mismatch at position %d", count)
-		assert.Equal(t, expectedValue, cursor.Value(), "Value mismatch at position %d", count)
+		assert.Equal(t, expectedKey, k, "Key mismatch at position %d", count)
+		assert.Equal(t, expectedValue, v, "Value mismatch at position %d", count)
 
-		if !cursor.Next() {
-			break
-		}
+		k, v = cursor.Next()
 	}
 
 	assert.Equal(t, 100, count)
@@ -64,32 +62,29 @@ func TestCursorReverseScan(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key999")))
+	k, v := cursor.Seek([]byte("key999"))
 
 	// Should be invalid (no key >= key999)
-	assert.False(t, cursor.Valid(), "Expected invalid cursor after seeking past end")
+	assert.Nil(t, k, "Expected nil key after seeking past end")
 
 	// Seek to actual last key
-	require.NoError(t, cursor.Seek([]byte("key050")))
-
-	require.True(t, cursor.Valid(), "Expected valid cursor on key050")
+	k, v = cursor.Seek([]byte("key050"))
+	require.NotNil(t, k, "Expected valid cursor on key050")
 
 	// Reverse scan from key050 down to key001
 	count := 50
-	for cursor.Valid() {
+	for k != nil {
 		expectedKey := []byte(fmt.Sprintf("key%03d", count))
 		expectedValue := []byte(fmt.Sprintf("value%d", count))
 
-		assert.Equal(t, expectedKey, cursor.Key(), "Key mismatch at position %d", count)
-		assert.Equal(t, expectedValue, cursor.Value(), "Value mismatch at position %d", count)
+		assert.Equal(t, expectedKey, k, "Key mismatch at position %d", count)
+		assert.Equal(t, expectedValue, v, "Value mismatch at position %d", count)
 
 		count--
 		if count == 0 {
 			break
 		}
-		if !cursor.Prev() {
-			break
-		}
+		k, v = cursor.Prev()
 	}
 
 	assert.Equal(t, 0, count, "Expected to scan down to key001")
@@ -113,16 +108,16 @@ func TestCursorRangeScan(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key030")))
+	k, _ := cursor.Seek([]byte("key030"))
 
 	var keys []string
-	for cursor.Valid() {
-		key := string(cursor.Key())
+	for k != nil {
+		key := string(k)
 		if key >= "key070" {
 			break
 		}
 		keys = append(keys, key)
-		cursor.Next()
+		k, _ = cursor.Next()
 	}
 
 	expectedKeys := []string{"key030", "key040", "key050", "key060"}
@@ -140,13 +135,15 @@ func TestCursorEmptyTree(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("anykey")))
+	k, _ := cursor.Seek([]byte("anykey"))
 
-	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree")
+	assert.Nil(t, k, "Expected nil key on empty tree")
 
-	// Next/Prev should return false
-	assert.False(t, cursor.Next(), "Next() should return false on invalid cursor")
-	assert.False(t, cursor.Prev(), "Prev() should return false on invalid cursor")
+	// Next/Prev should return nil
+	k, _ = cursor.Next()
+	assert.Nil(t, k, "Next() should return nil on invalid cursor")
+	k, _ = cursor.Prev()
+	assert.Nil(t, k, "Prev() should return nil on invalid cursor")
 }
 
 func TestCursorSeekNotFound(t *testing.T) {
@@ -167,21 +164,21 @@ func TestCursorSeekNotFound(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key002")))
+	k, _ := cursor.Seek([]byte("key002"))
 
-	require.True(t, cursor.Valid(), "Expected valid cursor")
-	assert.Equal(t, []byte("key003"), cursor.Key())
+	require.NotNil(t, k, "Expected valid cursor")
+	assert.Equal(t, []byte("key003"), k)
 
 	// Seek to key000 (before all Keys) - should land on key001
-	require.NoError(t, cursor.Seek([]byte("key000")))
+	k, _ = cursor.Seek([]byte("key000"))
 
-	require.True(t, cursor.Valid(), "Expected valid cursor")
-	assert.Equal(t, []byte("key001"), cursor.Key())
+	require.NotNil(t, k, "Expected valid cursor")
+	assert.Equal(t, []byte("key001"), k)
 
 	// Seek to key999 (after all Keys) - should be invalid
-	require.NoError(t, cursor.Seek([]byte("key999")))
+	k, _ = cursor.Seek([]byte("key999"))
 
-	assert.False(t, cursor.Valid(), "Expected invalid cursor")
+	assert.Nil(t, k, "Expected nil key after seeking past end")
 }
 
 func TestCursorAcrossSplits(t *testing.T) {
@@ -203,22 +200,20 @@ func TestCursorAcrossSplits(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key00000")))
+	k, _ := cursor.Seek([]byte("key00000"))
 
 	count := 0
-	prevKey := []byte{}
-	for cursor.Valid() {
+	var prevKey []byte
+	for k != nil {
 		count++
 
 		// Verify Keys are in order
 		if len(prevKey) > 0 {
-			assert.Greater(t, bytes.Compare(cursor.Key(), prevKey), 0, "Keys out of order: %s should be > %s", cursor.Key(), prevKey)
+			assert.Greater(t, bytes.Compare(k, prevKey), 0, "Keys out of order: %s should be > %s", k, prevKey)
 		}
-		prevKey = append([]byte{}, cursor.Key()...)
+		prevKey = append([]byte{}, k...)
 
-		if !cursor.Next() {
-			break
-		}
+		k, _ = cursor.Next()
 	}
 
 	assert.Equal(t, 200, count, "Expected 200 Keys after splits")
@@ -248,20 +243,18 @@ func TestCursorAfterMerges(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key00000")))
+	k, _ := cursor.Seek([]byte("key00000"))
 
 	count := 0
 	expectedNum := 1
-	for cursor.Valid() {
+	for k != nil {
 		count++
 		expectedKey := []byte(fmt.Sprintf("key%05d", expectedNum))
 
-		assert.Equal(t, expectedKey, cursor.Key(), "Key mismatch at position %d", count)
+		assert.Equal(t, expectedKey, k, "Key mismatch at position %d", count)
 
 		expectedNum += 2
-		if !cursor.Next() {
-			break
-		}
+		k, _ = cursor.Next()
 	}
 
 	assert.Equal(t, 50, count, "Expected 50 Keys after deletions")
@@ -286,16 +279,18 @@ func TestCursorSeekSTART(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// Seek(START) should position at first key
-	require.NoError(t, cursor.Seek(START))
+	k, _ := cursor.Seek(START)
 
-	require.True(t, cursor.Valid(), "Expected valid cursor after Seek(START)")
+	require.NotNil(t, k, "Expected valid cursor after Seek(START)")
 
-	assert.Equal(t, []byte("key010"), cursor.Key())
+	assert.Equal(t, []byte("key010"), k)
 
 	// Scan all Keys from START
 	count := 1
-	for cursor.Next() {
+	k, _ = cursor.Next()
+	for k != nil {
 		count++
+		k, _ = cursor.Next()
 	}
 
 	assert.Equal(t, 10, count, "Expected 10 Keys from START")
@@ -320,14 +315,15 @@ func TestCursorSeekEND(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// Seek(END) should position at last key
-	require.NoError(t, cursor.Seek(END))
+	k, _ := cursor.Seek(END)
 
-	require.True(t, cursor.Valid(), "Expected valid cursor after Seek(END)")
+	require.NotNil(t, k, "Expected valid cursor after Seek(END)")
 
-	assert.Equal(t, []byte("key100"), cursor.Key())
+	assert.Equal(t, []byte("key100"), k)
 
 	// Verify this is actually the last key by trying Next()
-	assert.False(t, cursor.Next(), "Next() after Seek(END) should return false")
+	k, _ = cursor.Next()
+	assert.Nil(t, k, "Next() after Seek(END) should return nil")
 }
 
 func TestCursorSeekSTARTEmptyTree(t *testing.T) {
@@ -342,9 +338,9 @@ func TestCursorSeekSTARTEmptyTree(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// Seek(START) on empty tree should be invalid
-	require.NoError(t, cursor.Seek(START))
+	k, _ := cursor.Seek(START)
 
-	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree")
+	assert.Nil(t, k, "Expected nil key on empty tree")
 }
 
 func TestCursorSeekENDEmptyTree(t *testing.T) {
@@ -359,9 +355,9 @@ func TestCursorSeekENDEmptyTree(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// Seek(END) on empty tree should be invalid
-	require.NoError(t, cursor.Seek(END))
+	k, _ := cursor.Seek(END)
 
-	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree")
+	assert.Nil(t, k, "Expected nil key on empty tree")
 }
 
 func TestCursorRangeScanWithSTARTEND(t *testing.T) {
@@ -383,12 +379,12 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 	cursor := tx.Cursor()
 
 	// Full range scan using START and END
-	require.NoError(t, cursor.Seek(START))
+	k, _ := cursor.Seek(START)
 
 	count := 0
-	for cursor.Valid() && bytes.Compare(cursor.Key(), END) < 0 {
+	for k != nil && bytes.Compare(k, END) < 0 {
 		count++
-		cursor.Next()
+		k, _ = cursor.Next()
 	}
 
 	assert.Equal(t, 100, count, "Expected 100 Keys in range [START, END)")
@@ -412,12 +408,12 @@ func TestCursorSeekFirstFunction(t *testing.T) {
 
 	cursor := tx.Cursor()
 
-	// SeekFirst() should position at first key
-	require.NoError(t, cursor.First(), "SeekFirst() failed")
+	// First() should position at first key
+	k, _ := cursor.First()
 
-	require.True(t, cursor.Valid(), "Expected valid cursor after SeekFirst()")
+	require.NotNil(t, k, "Expected valid cursor after First()")
 
-	assert.Equal(t, []byte("key010"), cursor.Key(), "Expected first key 'key010'")
+	assert.Equal(t, []byte("key010"), k, "Expected first key 'key010'")
 }
 
 func TestCursorSeekLastFunction(t *testing.T) {
@@ -438,17 +434,18 @@ func TestCursorSeekLastFunction(t *testing.T) {
 
 	cursor := tx.Cursor()
 
-	// SeekLast() positions at last key
-	require.NoError(t, cursor.Last(), "SeekLast() failed")
+	// Last() positions at last key
+	k, _ := cursor.Last()
 
-	require.True(t, cursor.Valid(), "Expected valid cursor after SeekLast()")
+	require.NotNil(t, k, "Expected valid cursor after Last()")
 
-	assert.Equal(t, []byte("key050"), cursor.Key(), "Expected last key 'key050'")
+	assert.Equal(t, []byte("key050"), k, "Expected last key 'key050'")
 
 	// Verify we can navigate backward
-	assert.True(t, cursor.Prev(), "Expected Prev() to succeed from last key")
+	k, _ = cursor.Prev()
+	assert.NotNil(t, k, "Expected Prev() to succeed from last key")
 
-	assert.Equal(t, []byte("key040"), cursor.Key(), "Expected 'key040' after Prev()")
+	assert.Equal(t, []byte("key040"), k, "Expected 'key040' after Prev()")
 }
 
 func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
@@ -462,15 +459,15 @@ func TestCursorSeekFirstLastEmptyTree(t *testing.T) {
 
 	cursor := tx.Cursor()
 
-	// SeekFirst() on empty tree
-	require.NoError(t, cursor.First(), "SeekFirst() failed")
+	// First() on empty tree
+	k, _ := cursor.First()
 
-	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree after SeekFirst()")
+	assert.Nil(t, k, "Expected nil key on empty tree after First()")
 
-	// SeekLast() on empty tree
-	require.NoError(t, cursor.Last(), "SeekLast() failed")
+	// Last() on empty tree
+	k, _ = cursor.Last()
 
-	assert.False(t, cursor.Valid(), "Expected invalid cursor on empty tree after SeekLast()")
+	assert.Nil(t, k, "Expected nil key on empty tree after Last()")
 }
 
 func TestCursorSeekENDComparison(t *testing.T) {
@@ -508,15 +505,16 @@ func TestCursorSeekENDComparison(t *testing.T) {
 	defer tx.Rollback()
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek(END), "Seek(END) failed")
+	k, _ := cursor.Seek(END)
 
-	require.True(t, cursor.Valid(), "Expected valid cursor after Seek(END)")
+	require.NotNil(t, k, "Expected valid cursor after Seek(END)")
 
 	// The last key lexicographically should be nearMaxKey (1023 0xFF + 1 0xFE)
 	// because it compares greater than maxKey (1024 0xFE)
 	expectedLastKey := nearMaxKey
-	assert.Equal(t, expectedLastKey, cursor.Key(), "Expected Seek(END) to position on nearMaxKey")
+	assert.Equal(t, expectedLastKey, k, "Expected Seek(END) to position on nearMaxKey")
 
 	// Verify this is actually the last key
-	assert.False(t, cursor.Next(), "Next() after Seek(END) should return false")
+	k, _ = cursor.Next()
+	assert.Nil(t, k, "Next() after Seek(END) should return nil")
 }

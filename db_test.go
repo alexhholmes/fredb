@@ -1830,10 +1830,16 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	}
 
 	// Verify tree structure remains valid (root is not a leaf for large tree)
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should not be a leaf after multiple splits")
+	// Get __root__ bucket's tree structure
+	tx, err := db.Begin(false)
+	require.NoError(t, err)
+	rootBucket := tx.Bucket([]byte("__root__"))
+	require.NotNil(t, rootBucket, "__root__ bucket should exist")
 
+	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should not be a leaf after multiple splits")
 	// Verify root has multiple Children
-	assert.GreaterOrEqual(t, len(db.coord.GetSnapshot().Root.Children), 2, "Root should have multiple Children after multiple splits")
+	assert.GreaterOrEqual(t, len(rootBucket.root.Children), 2, "Bucket root should have multiple Children after multiple splits")
+	tx.Rollback()
 
 	// All Keys retrievable
 	for key, expectedValue := range keys {
@@ -1846,7 +1852,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	// Verify we can still insert after multiple splits
 	testKey := []byte("test_after_splits")
 	testValue := []byte("test_value")
-	err := db.Set(testKey, testValue)
+	err = db.Set(testKey, testValue)
 	assert.NoError(t, err)
 
 	val, err := db.Get(testKey)
@@ -2762,14 +2768,18 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Root is always a branch (constraint), check child is full
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should always be a branch node")
-	assert.Equal(t, 1, len(db.coord.GetSnapshot().Root.Children), "Root should have 1 child before split")
-
-	// Load child and verify it's full
+	// Get __root__ bucket's tree structure
 	tx, err := db.Begin(false)
 	require.NoError(t, err)
-	child, err := tx.loadNode(db.coord.GetSnapshot().Root.Children[0])
+	rootBucket := tx.Bucket([]byte("__root__"))
+	require.NotNil(t, rootBucket, "__root__ bucket should exist")
+
+	// Bucket root is always a branch (constraint), check child is full
+	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should always be a branch node")
+	assert.Equal(t, 1, len(rootBucket.root.Children), "Bucket root should have 1 child before split")
+
+	// Load child and verify it's full
+	child, err := tx.loadNode(rootBucket.root.Children[0])
 	require.NoError(t, err)
 	tx.Rollback()
 
@@ -2782,9 +2792,15 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	err = db.Set([]byte(splitKey), []byte(splitValue))
 	require.NoError(t, err)
 
-	// After inserting MaxKeysPerNode+1 Keys, root should be branch
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should be branch after split")
-	assert.GreaterOrEqual(t, len(db.coord.GetSnapshot().Root.Children), 2, "Root should have at least 2 Children after split")
+	// After inserting MaxKeysPerNode+1 Keys, bucket root should be branch with split
+	tx2, err := db.Begin(false)
+	require.NoError(t, err)
+	rootBucket2 := tx2.Bucket([]byte("__root__"))
+	require.NotNil(t, rootBucket2, "__root__ bucket should exist")
+
+	assert.False(t, rootBucket2.root.IsLeaf(), "Bucket root should be branch after split")
+	assert.GreaterOrEqual(t, len(rootBucket2.root.Children), 2, "Bucket root should have at least 2 Children after split")
+	tx2.Rollback()
 
 	// Verify all Keys retrievable
 	for i := 0; i <= base.MaxKeysPerNode; i++ {

@@ -300,15 +300,12 @@ func (c *Cache) GetOrLoad(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	// Load from disk WITHOUT holding any locks (I/O)
 	node, diskTxnID, err := c.loadFromDisk(pageID)
 
-	// store result for waiting threads
-	state.mu.Lock()
-	state.node = node
-	state.diskTxnID = diskTxnID
-	state.err = err
-	close(state.done) // Wake up waiters
-	state.mu.Unlock()
-
 	if err != nil {
+		// Store error result for waiting threads
+		state.mu.Lock()
+		state.err = err
+		close(state.done) // Wake up waiters
+		state.mu.Unlock()
 		c.loadStates.Delete(pageID)
 		return nil, false
 	}
@@ -317,15 +314,30 @@ func (c *Cache) GetOrLoad(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	endGen := c.getGeneration(pageID)
 	if endGen != startGen {
 		// Page was freed/reallocated during load, discard
+		state.mu.Lock()
+		state.err = base.ErrPageInvalidated // Signal error to waiters
+		close(state.done) // Wake up waiters
+		state.mu.Unlock()
 		c.loadStates.Delete(pageID)
 		return nil, false
 	}
 
-	// Cache the result (makes it visible to future threads)
+	// Cache the result BEFORE waking waiters (makes it visible to waiting threads)
 	c.Put(pageID, diskTxnID, node)
 
-	// Cleanup coordination state
-	c.loadStates.Delete(pageID)
+	// Now store result and wake waiting threads
+	state.mu.Lock()
+	state.node = node
+	state.diskTxnID = diskTxnID
+	state.err = nil
+	close(state.done) // Wake up waiters - they can now safely read from cache
+	state.mu.Unlock()
+
+	// Don't delete loadState immediately - keep it alive to prevent eviction
+	// until waiting threads have had a chance to read from cache.
+	// The loadState will be cleaned up later by periodic cleanup or when
+	// the page is invalidated. This prevents cache thrashing where the page
+	// gets evicted between waking waiters and them reading from cache.
 
 	// Check visibility for THIS transaction
 	if diskTxnID <= txnID {
@@ -426,9 +438,47 @@ func (c *Cache) canEvict(txnID uint64) bool {
 // Called by background releaser when readers finish.
 // Returns the number of relocated versions cleaned up.
 func (c *Cache) CleanupRelocatedVersions(minReaderTxn uint64) int {
+	// Also clean up completed loadStates to prevent memory leak
+	c.cleanupLoadStates()
+
 	// Cleanup is now handled by ReleasePages since pendingVersions
 	// contains both in-place freed pages and relocated versions
 	return 0
+}
+
+// cleanupLoadStates removes loadStates for completed loads
+// This prevents memory leak from loadStates that are kept alive to prevent eviction
+func (c *Cache) cleanupLoadStates() {
+	c.loadStates.Range(func(key, value interface{}) bool {
+		pageID := key.(base.PageID)
+		state := value.(*loadState)
+
+		// Check if load is complete and has been for a while
+		state.mu.Lock()
+		loading := state.loading
+		state.mu.Unlock()
+
+		if !loading {
+			// Load is complete, check if channel is closed (all waiters notified)
+			select {
+			case <-state.done:
+				// Channel is closed, load is complete
+				// Safe to delete if the page is in cache (waiters had chance to read)
+				c.mu.RLock()
+				_, inCache := c.versions[pageID]
+				c.mu.RUnlock()
+
+				if inCache {
+					// Page is in cache, safe to remove loadState
+					// This allows the page to be evicted if needed
+					c.loadStates.Delete(pageID)
+				}
+			default:
+				// Channel not closed yet, keep loadState
+			}
+		}
+		return true // Continue iteration
+	})
 }
 
 // countEntries returns total number of cached versions across all pages
@@ -507,6 +557,14 @@ func (c *Cache) evictToWaterMark() {
 
 		entry := elem.Value.(*versionEntry)
 		attempts++
+
+		// Skip pages that have active load states (threads are waiting for them)
+		// This prevents cache thrashing where pages get evicted before waiting threads can read them
+		if _, hasLoadState := c.loadStates.Load(entry.pageID); hasLoadState {
+			// Move to front so we don't keep trying to evict it
+			c.lru.MoveToFront(elem)
+			continue
+		}
 
 		// Flush if Dirty - write to disk before evicting from memory
 		if !c.flushDirtyPage(entry) {

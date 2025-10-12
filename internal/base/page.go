@@ -13,6 +13,7 @@ var (
 	ErrInvalidVersion     = errors.New("invalid format version")
 	ErrInvalidPageSize    = errors.New("invalid Page Size")
 	ErrInvalidChecksum    = errors.New("invalid checksum")
+	ErrPageInvalidated    = errors.New("page invalidated during load")
 )
 
 const (

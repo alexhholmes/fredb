@@ -24,4 +24,7 @@ var (
 	ErrInvalidVersion     = base.ErrInvalidVersion
 	ErrInvalidPageSize    = base.ErrInvalidPageSize
 	ErrInvalidChecksum    = base.ErrInvalidChecksum
+
+	ErrBucketExists   = errors.New("bucket already exists")
+	ErrBucketNotFound = errors.New("bucket not found")
 )

@@ -1,6 +1,7 @@
 package fredb
 
 import (
+	"encoding/binary"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -85,22 +86,23 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 		coord.CommitSnapshot()
 	} else {
-		// Create new root - always a branch node, even when empty
+		// NEW DATABASE - Create root tree (directory) + __root__ bucket
+
+		// 1. Create root tree (directory for bucket metadata)
 		rootPageID, err := coord.AllocatePage()
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		// Create initial empty leaf
-		leafPageID, err := coord.AllocatePage()
+		rootLeafID, err := coord.AllocatePage()
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		leaf := &base.Node{
-			PageID:   leafPageID,
+		rootLeaf := &base.Node{
+			PageID:   rootLeafID,
 			Dirty:    true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
@@ -108,28 +110,70 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			Children: nil,
 		}
 
-		// Serialize and write the leaf
-		leafPage, err := leaf.Serialize(0)
-		if err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-		if err := coord.WritePage(leafPageID, leafPage); err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-
-		// Root is always a branch, pointing to the single leaf
 		root = &base.Node{
 			PageID:   rootPageID,
 			Dirty:    true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   nil,
-			Children: []base.PageID{leafPageID},
+			Children: []base.PageID{rootLeafID},
 		}
 
-		// Serialize and write the root
+		// 2. Create __root__ bucket's tree (default namespace)
+		rootBucketRootID, err := coord.AllocatePage()
+		if err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+
+		rootBucketLeafID, err := coord.AllocatePage()
+		if err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+
+		rootBucketLeaf := &base.Node{
+			PageID:   rootBucketLeafID,
+			Dirty:    true,
+			NumKeys:  0,
+			Keys:     make([][]byte, 0),
+			Values:   make([][]byte, 0),
+			Children: nil,
+		}
+
+		rootBucketRoot := &base.Node{
+			PageID:   rootBucketRootID,
+			Dirty:    true,
+			NumKeys:  0,
+			Keys:     make([][]byte, 0),
+			Values:   nil,
+			Children: []base.PageID{rootBucketLeafID},
+		}
+
+		// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
+		// We serialize manually since we don't have a Bucket object yet
+		metadata := make([]byte, 16)
+		binary.LittleEndian.PutUint64(metadata[0:8], uint64(rootBucketRootID))
+		binary.LittleEndian.PutUint64(metadata[8:16], 0) // Sequence = 0
+
+		// 4. Insert __root__ bucket metadata into root tree's leaf
+		// We need to manually insert since we don't have a transaction yet
+		rootLeaf.Keys = append(rootLeaf.Keys, []byte("__root__"))
+
+		rootLeaf.Values = append(rootLeaf.Values, metadata)
+		rootLeaf.NumKeys = 1
+
+		// 5. Serialize and write all 4 pages
+		leafPage, err := rootLeaf.Serialize(0)
+		if err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+		if err := coord.WritePage(rootLeafID, leafPage); err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+
 		rootPage, err := root.Serialize(0)
 		if err != nil {
 			_ = coord.Close()
@@ -140,20 +184,42 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
+		bucketLeafPage, err := rootBucketLeaf.Serialize(0)
+		if err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+		if err := coord.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+
+		bucketRootPage, err := rootBucketRoot.Serialize(0)
+		if err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+		if err := coord.WritePage(rootBucketRootID, bucketRootPage); err != nil {
+			_ = coord.Close()
+			return nil, err
+		}
+
+		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
+
 		if err := coord.PutSnapshot(meta, root); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		// CRITICAL: Sync coord to persist the initial allocations
+		// 7. CRITICAL: Sync coord to persist the initial allocations
 		// This ensures root and leaf are not returned by future AllocatePage() calls
 		if err := coord.Sync(); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		// Make metapage AND root visible to readers atomically
+		// 8. Make metapage AND root visible to readers atomically
 		coord.CommitSnapshot()
 	}
 
@@ -270,6 +336,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			freed:         make(map[base.PageID]struct{}),
 			done:          false,
 			nextVirtualID: -1, // Start virtual page IDs at -1
+			buckets:       make(map[string]*Bucket),
 		}
 
 		// Register writer (atomic store)
@@ -291,6 +358,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		pending:  make(map[base.PageID]struct{}),
 		freed:    make(map[base.PageID]struct{}),
 		done:     false,
+		buckets:  make(map[string]*Bucket),
 	}
 
 	// Register reader (lock-free via sync.Map)

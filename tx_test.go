@@ -466,7 +466,9 @@ func TestCursorAfterTxCommit(t *testing.T) {
 	require.NoError(t, err)
 
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key00")))
+	k, v := cursor.Seek([]byte("key00"))
+	require.NotNil(t, k, "Seek should find key00")
+	_ = v
 
 	// Cursor should be valid
 	assert.True(t, cursor.Valid(), "Cursor should be valid before commit")
@@ -480,12 +482,16 @@ func TestCursorAfterTxCommit(t *testing.T) {
 	// Rollback instead
 	require.NoError(t, tx.Rollback())
 
-	// Cursor operations should fail after rollback
-	assert.False(t, cursor.Next(), "Next() should return false after transaction rollback")
+	// Cursor operations should return nil after rollback
+	k, v = cursor.Next()
+	assert.Nil(t, k, "Next() should return nil key after transaction rollback")
+	_ = v
 
-	assert.False(t, cursor.Prev(), "Prev() should return false after transaction rollback")
+	k, v = cursor.Prev()
+	assert.Nil(t, k, "Prev() should return nil key after transaction rollback")
 
-	assert.Equal(t, ErrTxDone, cursor.Seek([]byte("key05")), "Seek() should return ErrTxDone after rollback")
+	k, v = cursor.Seek([]byte("key05"))
+	assert.Nil(t, k, "Seek() should return nil key after rollback")
 
 	assert.False(t, cursor.Valid(), "Cursor should be invalid after transaction rollback")
 }
@@ -509,7 +515,9 @@ func TestCursorAfterWriteTxCommit(t *testing.T) {
 
 	// Create cursor in same write transaction
 	cursor := tx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key00")))
+	k, v := cursor.Seek([]byte("key00"))
+	require.NotNil(t, k, "Seek should find key00")
+	_ = v
 
 	assert.True(t, cursor.Valid(), "Cursor should be valid")
 
@@ -520,9 +528,12 @@ func TestCursorAfterWriteTxCommit(t *testing.T) {
 	require.NoError(t, tx.Commit())
 
 	// Cursor should be invalid after commit
-	assert.False(t, cursor.Next(), "Next() should return false after commit")
+	k, v = cursor.Next()
+	assert.Nil(t, k, "Next() should return nil key after commit")
+	_ = v
 
-	assert.Equal(t, ErrTxDone, cursor.Seek([]byte("key00")), "Seek() should return ErrTxDone after commit")
+	k, v = cursor.Seek([]byte("key00"))
+	assert.Nil(t, k, "Seek() should return nil key after commit")
 }
 
 // TestCursorSnapshotIsolation tests that cursors see consistent snapshots
@@ -550,7 +561,9 @@ func TestCursorSnapshotIsolation(t *testing.T) {
 
 	// Create cursor on read transaction
 	cursor := readTx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key05")))
+	k, v := cursor.Seek([]byte("key05"))
+	require.NotNil(t, k, "Seek should find key05")
+	_ = v
 
 	require.True(t, cursor.Valid(), "Cursor should be valid")
 
@@ -566,7 +579,9 @@ func TestCursorSnapshotIsolation(t *testing.T) {
 	require.NoError(t, writeTx.Commit())
 
 	// Cursor should still see old value (snapshot isolation)
-	require.NoError(t, cursor.Seek([]byte("key05")))
+	k, v = cursor.Seek([]byte("key05"))
+	require.NotNil(t, k, "Seek should still find key05 in snapshot")
+	_ = v
 
 	assert.Equal(t, []byte("value5"), cursor.Value(), "Cursor should see snapshot value 'value5'")
 
@@ -616,9 +631,11 @@ func TestCursorConcurrentModifications(t *testing.T) {
 			defer tx.Rollback()
 
 			cursor := tx.Cursor()
-			if !assert.NoError(t, cursor.Seek([]byte("key0000"))) {
+			k, v := cursor.Seek([]byte("key0000"))
+			if !assert.NotNil(t, k, "Seek should find key0000") {
 				return
 			}
+			_ = v
 
 			// Scan through all Keys
 			count := 0
@@ -635,7 +652,8 @@ func TestCursorConcurrentModifications(t *testing.T) {
 				}
 
 				count++
-				if !cursor.Next() {
+				k, v = cursor.Next()
+				if k == nil {
 					break
 				}
 			}
@@ -704,11 +722,14 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 	defer readTx.Rollback()
 
 	cursor := readTx.Cursor()
-	require.NoError(t, cursor.Seek([]byte("key00")))
+	k, v := cursor.Seek([]byte("key00"))
+	require.NotNil(t, k, "Seek should find key00")
+	_ = v
 
 	// Advance to middle
 	for i := 0; i < 10; i++ {
-		require.True(t, cursor.Next(), "Should be able to advance")
+		k, v = cursor.Next()
+		require.NotNil(t, k, "Should be able to advance to position %d", i+1)
 	}
 
 	// Should be at key10
@@ -727,7 +748,9 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 	require.NoError(t, writeTx.Commit())
 
 	// Original cursor should still see all Keys (snapshot)
-	require.NoError(t, cursor.Seek([]byte("key05")))
+	k, v = cursor.Seek([]byte("key05"))
+	require.NotNil(t, k, "Seek should still find key05 in snapshot")
+	_ = v
 
 	// Should successfully find key05 in snapshot
 	assert.True(t, cursor.Valid(), "Cursor should be valid on key05 in snapshot")
@@ -736,8 +759,10 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 
 	// Count remaining Keys in snapshot
 	count := 1 // Starting at key05
-	for cursor.Next() {
+	k, v = cursor.Next()
+	for k != nil {
 		count++
+		k, v = cursor.Next()
 	}
 
 	// Should see all 15 remaining Keys (05-19) in snapshot

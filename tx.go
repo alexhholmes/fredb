@@ -29,23 +29,30 @@ type Tx struct {
 
 	// Virtual page ID allocation for deferred real allocation
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
+
+	// Bucket tracking
+	buckets map[string]*Bucket // Cache of loaded buckets
 }
 
-// Get retrieves the value for a key.
+// Get retrieves the value for a key from the default bucket.
 // Returns ErrKeyNotFound if the key does not exist.
 func (tx *Tx) Get(key []byte) ([]byte, error) {
 	if err := tx.check(); err != nil {
 		return nil, err
 	}
 
-	// Use transaction's snapshot root for MVCC isolation
-	// tx.root is captured at Begin() time and provides snapshot isolation
-	if tx.root == nil {
+	// Delegate to __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
 		return nil, ErrKeyNotFound
 	}
 
-	// Search from transaction's root (pass tx for versioned cache access)
-	return tx.search(tx.root, key)
+	val := bucket.Get(key)
+	if val == nil {
+		return nil, ErrKeyNotFound
+	}
+
+	return val, nil
 }
 
 // search recursively searches for a key using algo functions
@@ -77,7 +84,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	return tx.search(child, key)
 }
 
-// Set stores a key-value pair.
+// Set stores a key-value pair in the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
 func (tx *Tx) Set(key, value []byte) error {
 	if err := tx.check(); err != nil {
@@ -87,6 +94,17 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrTxNotWritable
 	}
 
+	// Delegate to __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return errors.New("root bucket not found")
+	}
+
+	return bucket.Put(key, value)
+}
+
+// setRootTree writes directly to the root tree (for internal use - bucket metadata)
+func (tx *Tx) setRootTree(key, value []byte) error {
 	// validate key/value size before insertion
 	if len(key) > MaxKeySize {
 		return ErrKeyTooLarge
@@ -169,7 +187,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	return nil
 }
 
-// Delete removes a key.
+// Delete removes a key from the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
 func (tx *Tx) Delete(key []byte) error {
 	if err := tx.check(); err != nil {
@@ -179,36 +197,28 @@ func (tx *Tx) Delete(key []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Full COW-aware deletion with merge/borrow support
-	// Keep changes in tx.root (transaction-local), not DB.root
-
-	// Use tx.root (already set from snapshot in Begin)
-	root := tx.root
-
-	// Root is always a branch node (never nil, never leaf)
-	// Even with NumKeys=0, root can have a child leaf with data
-
-	// Perform COW-aware recursive deletion - capture returned root
-	root, err := tx.deleteFromNode(root, key)
-	if err != nil {
-		return err
+	// Delegate to __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return errors.New("root bucket not found")
 	}
 
-	// Update transaction-local root (NOT DB.root)
-	// Changes become visible only on Commit()
-	tx.root = root
-
-	return nil
+	return bucket.Delete(key)
 }
 
-// Cursor creates a new cursor for iterating over Keys.
+// Cursor creates a cursor for the default bucket.
 // The cursor is bound to this transaction's snapshot.
 func (tx *Tx) Cursor() *Cursor {
-	// Pass transaction to cursor for snapshot isolation
-	return &Cursor{
-		tx:    tx,
-		valid: false,
+	// Delegate to __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		// Return empty cursor if __root__ doesn't exist
+		return &Cursor{
+			tx:    tx,
+			valid: false,
+		}
 	}
+	return bucket.Cursor()
 }
 
 // Commit writes all changes and makes them visible to future transactions.
@@ -233,7 +243,8 @@ func (tx *Tx) Commit() error {
 		syncMode = coordinator.SyncOff
 	}
 
-	// Delegate coordination to Coordinator
+	// Phase 1: Commit all bucket pages (NOT root tree yet)
+	// After this, bucket.root.PageID will have real page IDs
 	err := tx.db.coord.CommitTransaction(
 		tx.pages,
 		tx.root,
@@ -246,7 +257,53 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
-	// Commit the meta page after syncing (makes changes visible)
+	// CRITICAL: After CommitTransaction, nodes in tx.pages have been updated with real PageIDs,
+	// but the MAP is still keyed by the old virtual IDs. Rebuild the map with real PageIDs as keys.
+	remappedPages := make(map[base.PageID]*base.Node)
+	for _, node := range tx.pages {
+		remappedPages[node.PageID] = node
+	}
+	tx.pages = remappedPages
+
+	// Phase 2: Now insert bucket metadata with REAL page IDs
+	for name, bucket := range tx.buckets {
+		if bucket.writable {
+			if err := tx.setRootTree([]byte(name), bucket.Serialize()); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Phase 3: Commit all pages again (CommitTransaction will only write dirty pages)
+	// We need to pass ALL pages because tx.root might point to both old and new pages
+	err = tx.db.coord.CommitTransaction(
+		tx.pages,
+		tx.root,
+		nil, // No new freed pages in phase 2
+		tx.txnID,
+		syncMode,
+		tx.db.cache,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Sync to ensure durability before making visible
+	if tx.db.options.syncMode == SyncEveryCommit {
+		if err := tx.db.coord.Sync(); err != nil {
+			return err
+		}
+	}
+
+	// Update meta page with new root
+	meta := tx.db.coord.GetMeta()
+	meta.RootPageID = tx.root.PageID
+	meta.TxID = tx.txnID
+	if err := tx.db.coord.PutSnapshot(meta, tx.root); err != nil {
+		return err
+	}
+
+	// Make changes visible
 	tx.db.coord.CommitSnapshot()
 
 	tx.db.writer.Store(nil)
@@ -818,4 +875,203 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	tx.addFreed(rightNode.PageID)
 
 	return parent, nil
+}
+
+// Bucket returns an existing bucket or nil
+func (tx *Tx) Bucket(name []byte) *Bucket {
+	// Check tx cache first
+	if b, exists := tx.buckets[string(name)]; exists {
+		return b
+	}
+
+	// Load bucket metadata from root tree (including __root__ bucket)
+	meta, err := tx.search(tx.root, name)
+	if err != nil {
+		return nil
+	}
+
+	// Deserialize bucket metadata
+	if len(meta) < 16 {
+		return nil
+	}
+
+	bucket := &Bucket{}
+	bucket.Deserialize(meta)
+	bucket.tx = tx
+	bucket.writable = tx.writable
+	bucket.name = name
+	bucket.root, err = tx.loadNode(bucket.rootID)
+	if err != nil {
+		return nil
+	}
+
+	tx.buckets[string(name)] = bucket
+	return bucket
+}
+
+// CreateBucket creates a new bucket
+func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
+	if err := tx.check(); err != nil {
+		return nil, err
+	}
+	if !tx.writable {
+		return nil, ErrTxNotWritable
+	}
+
+	// Validate bucket name
+	if len(name) == 0 {
+		return nil, errors.New("bucket name cannot be empty")
+	}
+	if string(name) == "__root__" {
+		return nil, errors.New("cannot create reserved bucket __root__")
+	}
+
+	// Check if bucket already exists
+	if tx.Bucket(name) != nil {
+		return nil, errors.New("bucket already exists")
+	}
+
+	// Allocate page for bucket's root (branch node)
+	bucketRootID, _, err := tx.allocatePage()
+	if err != nil {
+		return nil, err
+	}
+
+	// Allocate page for bucket's initial leaf
+	bucketLeafID, _, err := tx.allocatePage()
+	if err != nil {
+		return nil, err
+	}
+
+	// Create bucket's leaf node (empty)
+	bucketLeaf := &base.Node{
+		PageID:   bucketLeafID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: nil,
+	}
+
+	// Create bucket's root node (branch with single child)
+	bucketRoot := &base.Node{
+		PageID:   bucketRootID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   nil,
+		Children: []base.PageID{bucketLeafID},
+	}
+
+	// Add nodes to transaction cache
+	tx.pages[bucketLeafID] = bucketLeaf
+	tx.pages[bucketRootID] = bucketRoot
+
+	// Create and cache bucket
+	// NOTE: We don't persist metadata to root tree yet - that happens at Commit()
+	// This avoids the chicken-and-egg problem with virtual vs real page IDs
+	bucket := &Bucket{
+		tx:       tx,
+		root:     bucketRoot,
+		name:     name,
+		sequence: 0,
+		writable: true,
+	}
+
+	tx.buckets[string(name)] = bucket
+	return bucket, nil
+}
+
+// CreateBucketIfNotExists convenience method
+func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
+	if b := tx.Bucket(name); b != nil {
+		return b, nil
+	}
+	return tx.CreateBucket(name)
+}
+
+// DeleteBucket removes a bucket and all its data
+func (tx *Tx) DeleteBucket(name []byte) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	// Validate bucket name
+	if len(name) == 0 {
+		return errors.New("bucket name cannot be empty")
+	}
+	if string(name) == "__root__" {
+		return errors.New("cannot delete reserved bucket __root__")
+	}
+
+	// Check if bucket exists
+	bucket := tx.Bucket(name)
+	if bucket == nil {
+		return errors.New("bucket not found")
+	}
+
+	// Delete bucket metadata from root tree
+	root, err := tx.deleteFromNode(tx.root, name)
+	if err != nil {
+		return err
+	}
+	tx.root = root
+
+	// Remove from cache
+	delete(tx.buckets, string(name))
+
+	// Mark bucket's root page as freed
+	// NOTE: This is a simplified implementation that only frees the root page
+	// A full implementation would recursively free all pages in the bucket's tree
+	tx.addFreed(bucket.root.PageID)
+
+	return nil
+}
+
+// ForEach iterates over all buckets
+func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+
+	// Create cursor for root tree (bucket directory)
+	c := &Cursor{
+		tx:         tx,
+		bucketRoot: tx.root,
+		valid:      false,
+	}
+
+	// Iterate over all bucket metadata
+	for k, v := c.First(); k != nil; k, v = c.Next() {
+		// Skip __root__ bucket
+		if string(k) == "__root__" {
+			continue
+		}
+
+		// Deserialize bucket metadata
+		if len(v) < 16 {
+			continue
+		}
+
+		var err error
+		var bucket Bucket
+		bucket.Deserialize(v)
+		bucket.tx = tx
+		bucket.writable = tx.writable
+		bucket.name = k
+		bucket.root, err = tx.loadNode(bucket.rootID)
+		if err != nil {
+			continue
+		}
+
+		// Call user function
+		if err := fn(k, &bucket); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
