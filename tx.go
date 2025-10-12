@@ -18,20 +18,17 @@ import (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	txnID    uint64                     // Unique transaction ID
-	writable bool                       // Is this a read-write transaction?
-	db       *DB                        // Database this transaction belongs to (concrete type for internal access)
-	root     *base.Node                 // Root Node at transaction start
-	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	pending  map[base.PageID]struct{}   // Pages allocated in this transaction (for COW)
-	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
-	done     bool                       // Has Commit() or Rollback() been called?
+	txID     uint64 // Unique transaction ID
+	writable bool   // Is this a read-write transaction?
 
-	// Virtual page ID allocation for deferred real allocation
+	db      *DB                        // Database this transaction belongs to (concrete type for internal access)
+	root    *base.Node                 // Root Node at transaction start (stores bucket metadata)
+	buckets map[string]*Bucket         // Cache of loaded buckets
+	pages   map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed   map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
-
-	// Bucket tracking
-	buckets map[string]*Bucket // Cache of loaded buckets
+	done          bool  // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key from the default bucket.
@@ -103,90 +100,6 @@ func (tx *Tx) Set(key, value []byte) error {
 	return bucket.Put(key, value)
 }
 
-// setRootTree writes directly to the root tree (for internal use - bucket metadata)
-func (tx *Tx) setRootTree(key, value []byte) error {
-	// validate key/value size before insertion
-	if len(key) > MaxKeySize {
-		return ErrKeyTooLarge
-	}
-	if len(value) > MaxValueSize {
-		return ErrValueTooLarge
-	}
-
-	// Also active practical limit based on Page size
-	// At minimum, a leaf Page must hold at least one key-value pair
-	maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
-	if len(key)+len(value) > maxSize {
-		return ErrPageOverflow
-	}
-
-	// Use COW-aware insertion with splits
-	// Keep changes in tx.root (transaction-local), not DB.root
-
-	// Use tx.root (already set from snapshot in Begin)
-	root := tx.root
-
-	// Handle root split with COW
-	if root.IsFull() {
-		// Split root using COW
-		leftChild, rightChild, midKey, _, err := tx.splitChild(root)
-		if err != nil {
-			return err
-		}
-
-		// Create new root using tx.allocatePage()
-		newRootID, _, err := tx.allocatePage()
-		if err != nil {
-			return err
-		}
-
-		newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-
-		// Don't add root to tx.pages - root is tracked separately in tx.root
-		// The split Children were already stored in splitChild()
-
-		root = newRoot
-	}
-
-	// Insert with recursive COW - retry until success or non-overflow error
-	// This handles cascading splits when parent nodes also overflow
-	maxRetries := 20 // Prevent infinite loops
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		newRoot, err := tx.insertNonFull(root, key, value)
-		if !errors.Is(err, ErrPageOverflow) {
-			// Either success or non-recoverable error
-			if err == nil {
-				root = newRoot // Only update root on success
-			}
-			break
-		}
-
-		// Root couldn't fit the new entry - split it
-		leftChild, rightChild, midKey, _, err := tx.splitChild(root)
-		if err != nil {
-			return err
-		}
-
-		// Create new root
-		newRootID, _, err := tx.allocatePage()
-		if err != nil {
-			return err
-		}
-
-		root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-
-		// Don't add root to tx.pages - root is tracked separately in tx.root
-		// Use new root for next retry (already assigned to root)
-	}
-
-	// Update transaction-local root (NOT DB.root)
-	// Changes become visible only on Commit()
-	tx.root = root
-
-	return nil
-}
-
 // Delete removes a key from the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
 func (tx *Tx) Delete(key []byte) error {
@@ -249,7 +162,7 @@ func (tx *Tx) Commit() error {
 		tx.pages,
 		tx.root,
 		tx.freed,
-		tx.txnID,
+		tx.txID,
 		syncMode,
 		tx.db.cache,
 	)
@@ -268,9 +181,85 @@ func (tx *Tx) Commit() error {
 	// Phase 2: Now insert bucket metadata with REAL page IDs
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
-			if err := tx.setRootTree([]byte(name), bucket.Serialize()); err != nil {
-				return err
+			key := []byte(name)
+			value := bucket.Serialize()
+
+			// Validate key/value size before insertion
+			if len(key) > MaxKeySize {
+				return ErrKeyTooLarge
 			}
+			if len(value) > MaxValueSize {
+				return ErrValueTooLarge
+			}
+
+			// Also active practical limit based on Page size
+			// At minimum, a leaf Page must hold at least one key-value pair
+			maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+			if len(key)+len(value) > maxSize {
+				return ErrPageOverflow
+			}
+
+			// Use COW-aware insertion with splits
+			// Keep changes in tx.root (transaction-local), not DB.root
+			root := tx.root
+
+			// Handle root split with COW
+			if root.IsFull() {
+				// Split root using COW
+				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
+				if err != nil {
+					return err
+				}
+
+				// Create new root using tx.allocatePage()
+				newRootID, _, err := tx.allocatePage()
+				if err != nil {
+					return err
+				}
+
+				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+
+				// Don't add root to tx.pages - root is tracked separately in tx.root
+				// The split Children were already stored in splitChild()
+
+				root = newRoot
+			}
+
+			// Insert with recursive COW - retry until success or non-overflow error
+			// This handles cascading splits when parent nodes also overflow
+			maxRetries := 20 // Prevent infinite loops
+
+			for attempt := 0; attempt < maxRetries; attempt++ {
+				newRoot, err := tx.insertNonFull(root, key, value)
+				if !errors.Is(err, ErrPageOverflow) {
+					// Either success or non-recoverable error
+					if err == nil {
+						root = newRoot // Only update root on success
+					}
+					break
+				}
+
+				// Root couldn't fit the new entry - split it
+				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
+				if err != nil {
+					return err
+				}
+
+				// Create new root
+				newRootID, _, err := tx.allocatePage()
+				if err != nil {
+					return err
+				}
+
+				root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+
+				// Don't add root to tx.pages - root is tracked separately in tx.root
+				// Use new root for next retry (already assigned to root)
+			}
+
+			// Update transaction-local root (NOT DB.root)
+			// Changes become visible only on Commit()
+			tx.root = root
 		}
 	}
 
@@ -280,7 +269,7 @@ func (tx *Tx) Commit() error {
 		tx.pages,
 		tx.root,
 		nil, // No new freed pages in phase 2
-		tx.txnID,
+		tx.txID,
 		syncMode,
 		tx.db.cache,
 	)
@@ -298,7 +287,7 @@ func (tx *Tx) Commit() error {
 	// Update meta page with new root
 	meta := tx.db.coord.GetMeta()
 	meta.RootPageID = tx.root.PageID
-	meta.TxID = tx.txnID
+	meta.TxID = tx.txID
 	if err := tx.db.coord.PutSnapshot(meta, tx.root); err != nil {
 		return err
 	}
@@ -336,7 +325,6 @@ func (tx *Tx) Rollback() error {
 		// Discard all transaction-local state
 		// Virtual pages were never allocated from Coordinator, so nothing to free
 		tx.pages = nil
-		tx.pending = nil
 
 		tx.db.writer.Store(nil)
 	} else {
@@ -373,9 +361,9 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 		return cloned, nil
 	}
 
-	// 2. Check if this Node already belongs to this transaction (pending allocations)
-	// If its PageID is in tx.pending, it was allocated in this transaction
-	if _, inPending := tx.pending[node.PageID]; inPending {
+	// 2. Check if this Node was allocated in this transaction (virtual page ID)
+	// Virtual page IDs are negative numbers
+	if int64(node.PageID) < 0 {
 		// Node already owned by this transaction, no COW needed
 		// But we still need to add it to tx.pages so it gets committed
 		tx.pages[node.PageID] = node
@@ -412,15 +400,11 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 
 // Allocates a new Page for this transaction.
 // Returns a virtual page ID (negative) that will be mapped to a real page at commit time.
-// The allocated Page is tracked in tx.pending for COW semantics.
 func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
 	// Generate virtual page ID (negative number)
 	// These are transaction-local and never touch Coordinator until commit
 	virtualID := base.PageID(tx.nextVirtualID)
 	tx.nextVirtualID--
-
-	// Track as allocated in this transaction
-	tx.pending[virtualID] = struct{}{}
 
 	// Return empty page (will be written at commit time with real page ID)
 	return virtualID, &base.Page{}, nil
@@ -489,7 +473,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	}
 
 	// Route through Coordinator for proper layering: TX → Coordinator → Cache → Storage
-	node, found := tx.db.coord.LoadNode(pageID, tx.txnID, tx.db.cache)
+	node, found := tx.db.coord.LoadNode(pageID, tx.txID, tx.db.cache)
 	if !found {
 		return nil, ErrKeyNotFound
 	}

@@ -245,16 +245,16 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 				// Consider active write transaction (atomic load)
 				if writerTx := db.writer.Load(); writerTx != nil {
-					if writerTx.txnID < minTxnID {
-						minTxnID = writerTx.txnID
+					if writerTx.txID < minTxnID {
+						minTxnID = writerTx.txID
 					}
 				}
 
 				// Consider all active read transactions (lock-free via sync.Map)
 				db.readers.Range(func(key, value interface{}) bool {
 					tx := key.(*Tx)
-					if tx.txnID < minTxnID {
-						minTxnID = tx.txnID
+					if tx.txID < minTxnID {
+						minTxnID = tx.txID
 					}
 					return true // continue iteration
 				})
@@ -328,11 +328,10 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		// Create write transaction
 		tx := &Tx{
 			db:            db,
-			txnID:         txnID,
+			txID:          txnID,
 			writable:      true,
 			root:          snapshot.Root, // Atomic snapshot of root
 			pages:         make(map[base.PageID]*base.Node),
-			pending:       make(map[base.PageID]struct{}),
 			freed:         make(map[base.PageID]struct{}),
 			done:          false,
 			nextVirtualID: -1, // Start virtual page IDs at -1
@@ -352,10 +351,9 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	// Create read transaction
 	tx := &Tx{
 		db:       db,
-		txnID:    snapshot.Meta.TxID, // Readers use committed txnID as snapshot
+		txID:     snapshot.Meta.TxID, // Readers use committed txnID as snapshot
 		writable: false,
 		root:     snapshot.Root, // Atomic snapshot of root
-		pending:  make(map[base.PageID]struct{}),
 		freed:    make(map[base.PageID]struct{}),
 		done:     false,
 		buckets:  make(map[string]*Bucket),
