@@ -362,11 +362,11 @@ func (tx *Tx) Commit() error {
 	// get current meta from storage
 	meta := tx.db.pager.GetMeta()
 
-	// Build new meta Page with updated root and incremented TxnID
+	// Build new meta Page with updated root and incremented TxID
 	if tx.root != nil {
 		meta.RootPageID = tx.root.PageID
 	}
-	meta.TxnID = tx.txnID
+	meta.TxID = tx.txnID
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Update storage's in-memory meta WITH root pointer atomically

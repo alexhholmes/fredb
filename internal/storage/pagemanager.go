@@ -17,6 +17,12 @@ type Snapshot struct {
 	Root *base.Node
 }
 
+// PendingVersion tracks a page version waiting for readers to finish
+type PendingVersion struct {
+	OriginalPageID base.PageID // Logical page ID
+	PhysicalPageID base.PageID // Where it actually lives (may differ if relocated)
+}
+
 // PageManager implements PageManager with disk-based storage
 type PageManager struct {
 	mu   sync.Mutex // Protects meta and freelist access
@@ -31,12 +37,9 @@ type PageManager struct {
 	bufPool *sync.Pool // Pool of aligned []byte buffers for direct I/O
 
 	// Freelist tracking
-	freePages        []base.PageID            // sorted array of free Page IDs
-	pendingPages     map[uint64][]base.PageID // txnID -> pages freed at that transaction
-	preventUpToTxnID uint64                   // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
-
-	// Version relocation tracking
-	relocations map[base.PageID]map[uint64]base.PageID // originalPageID -> (txnID -> relocatedPageID)
+	freePages        []base.PageID               // sorted array of free Page IDs
+	pendingVersions  map[uint64][]PendingVersion // txnID -> page versions freed at that transaction
+	preventUpToTxnID uint64                      // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 
 	// Page allocation tracking (separate from meta to avoid data races)
 	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
@@ -55,10 +58,9 @@ func NewPageManager(path string) (*PageManager, error) {
 	}
 
 	dm := &PageManager{
-		file:         file,
-		freePages:    make([]base.PageID, 0),
-		pendingPages: make(map[uint64][]base.PageID),
-		relocations:  make(map[base.PageID]map[uint64]base.PageID),
+		file:            file,
+		freePages:       make([]base.PageID, 0),
+		pendingVersions: make(map[uint64][]PendingVersion),
 		bufPool: &sync.Pool{
 			New: func() interface{} {
 				return directio.AlignedBlock(base.PageSize)
@@ -203,15 +205,16 @@ func (pm *PageManager) AllowAllAllocations() {
 	pm.preventUpToTxnID = 0
 }
 
-// TrackRelocation records that a Page version has been relocated to a new location
-func (pm *PageManager) TrackRelocation(originalPageID base.PageID, txnID uint64, relocatedPageID base.PageID) {
+// FreePendingRelocated adds a relocated page version to the pending map
+func (pm *PageManager) FreePendingRelocated(txnID uint64, originalPageID base.PageID, relocatedPageID base.PageID) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	if pm.relocations[originalPageID] == nil {
-		pm.relocations[originalPageID] = make(map[uint64]base.PageID)
-	}
-	pm.relocations[originalPageID][txnID] = relocatedPageID
+	pm.pendingVersions[txnID] = append(pm.pendingVersions[txnID], PendingVersion{
+		OriginalPageID: originalPageID,
+		PhysicalPageID: relocatedPageID,
+	})
+	return nil
 }
 
 // GetLatestVisible returns the relocated Page ID for the latest version visible to txnID
@@ -219,46 +222,23 @@ func (pm *PageManager) GetLatestVisible(originalPageID base.PageID, maxTxnID uin
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	versions := pm.relocations[originalPageID]
-	if versions == nil {
-		return 0, 0
-	}
-
-	// Find latest version where versionTxnID <= maxTxnID
 	var latestTxnID uint64
 	var latestPageID base.PageID
 
-	for versionTxnID, relocatedPageID := range versions {
-		if versionTxnID <= maxTxnID && versionTxnID > latestTxnID {
-			latestTxnID = versionTxnID
-			latestPageID = relocatedPageID
+	// Search pendingVersions for latest visible relocated version
+	for txnID, versions := range pm.pendingVersions {
+		if txnID > maxTxnID {
+			continue
+		}
+		for _, v := range versions {
+			if v.OriginalPageID == originalPageID && txnID > latestTxnID {
+				latestTxnID = txnID
+				latestPageID = v.PhysicalPageID
+			}
 		}
 	}
 
 	return latestPageID, latestTxnID
-}
-
-// CleanupVersions removes all relocations for versions older than minReaderTxn
-func (pm *PageManager) CleanupVersions(minReaderTxn uint64) []base.PageID {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	var toFree []base.PageID
-
-	for originalPageID, versions := range pm.relocations {
-		for txnID, relocatedPageID := range versions {
-			if txnID < minReaderTxn {
-				toFree = append(toFree, relocatedPageID)
-				delete(versions, txnID)
-			}
-		}
-
-		if len(versions) == 0 {
-			delete(pm.relocations, originalPageID)
-		}
-	}
-
-	return toFree
 }
 
 // GetMeta returns the current metadata
@@ -284,8 +264,8 @@ func (pm *PageManager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	// Update checksum (after NumPages sync)
 	meta.Checksum = meta.CalculateChecksum()
 
-	// Determine which page to write to based on TxnID
-	metaPageID := base.PageID(meta.TxnID % 2)
+	// Determine which page to write to based on TxID
+	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write to disk
 	metaPage := &base.Page{}
@@ -310,9 +290,9 @@ func (pm *PageManager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 // Call AFTER fsync to ensure durability before visibility
 // Lock-free: single writer guarantee + atomic swap
 func (pm *PageManager) CommitSnapshot() {
-	// Swap to the meta with higher or equal TxnID
-	// Use >= to handle initial case where both metas have TxnID=0
-	if pm.meta0.Meta.TxnID >= pm.meta1.Meta.TxnID {
+	// Swap to the meta with higher or equal TxID
+	// Use >= to handle initial case where both metas have TxID=0
+	if pm.meta0.Meta.TxID >= pm.meta1.Meta.TxID {
 		pm.activeMeta.Swap(&pm.meta0)
 	} else {
 		pm.activeMeta.Swap(&pm.meta1)
@@ -333,12 +313,12 @@ func (pm *PageManager) Close() error {
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
 	if uint64(pagesNeeded) > meta.FreelistPages {
 		// Mark old freelist pages as pending (not immediately reusable)
-		// Using current TxnID ensures they're only released after this close() completes
+		// Using current TxID ensures they're only released after this close() completes
 		oldPages := make([]base.PageID, meta.FreelistPages)
 		for i := uint64(0); i < meta.FreelistPages; i++ {
 			oldPages[i] = meta.FreelistID + base.PageID(i)
 		}
-		pm.freePending(meta.TxnID, oldPages)
+		pm.freePending(meta.TxID, oldPages)
 
 		// Recalculate pages needed after adding old freelist pages to pending
 		pagesNeeded = pm.pagesNeeded()
@@ -362,12 +342,12 @@ func (pm *PageManager) Close() error {
 		}
 	}
 
-	// Update meta (increment TxnID, recalculate checksum)
-	meta.TxnID++
+	// Update meta (increment TxID, recalculate checksum)
+	meta.TxID++
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Determine which metapage to write to
-	metaPageID := base.PageID(meta.TxnID % 2)
+	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write meta to disk
 	metaPage := &base.Page{}
@@ -398,7 +378,7 @@ func (pm *PageManager) initializeNewDB() error {
 		RootPageID:      0, // Will be set by BTree
 		FreelistID:      2, // Page 2
 		FreelistPages:   1, // One freelist Page
-		TxnID:           0, // First transaction
+		TxID:            0, // First transaction
 		CheckpointTxnID: 0, // No checkpoint yet
 		NumPages:        3, // Pages 0-1 (meta), 2 (freelist) reserved
 	}
@@ -470,14 +450,14 @@ func (pm *PageManager) loadExistingDB() error {
 		pm.meta1.Root = nil // Will be set by DB.Open()
 	}
 
-	// Point activeMeta to the one with higher TxnID
+	// Point activeMeta to the one with higher TxID
 	if err0 != nil {
 		pm.activeMeta.Store(&pm.meta1)
 	} else if err1 != nil {
 		pm.activeMeta.Store(&pm.meta0)
 	} else {
-		// Both valid - pick highest TxnID
-		if meta0.TxnID > meta1.TxnID {
+		// Both valid - pick highest TxID
+		if meta0.TxID > meta1.TxID {
 			pm.activeMeta.Store(&pm.meta0)
 		} else {
 			pm.activeMeta.Store(&pm.meta1)
@@ -498,7 +478,7 @@ func (pm *PageManager) loadExistingDB() error {
 
 	// Release any pending pages that are safe to reclaim
 	// On startup, no readers exist, so all pending pages with txnID <= current can be released
-	pm.release(activeMeta.Meta.TxnID)
+	pm.release(activeMeta.Meta.TxID)
 
 	// Initialize atomic numPages counter from active meta
 	pm.numPages.Store(activeMeta.Meta.NumPages)
@@ -542,8 +522,8 @@ func (pm *PageManager) allocate() base.PageID {
 		// If prevention is active and there are pending pages that could be released,
 		// return 0 to force allocation of new pages instead of using recently freed ones
 		if pm.preventUpToTxnID > 0 {
-			for txnID := range pm.pendingPages {
-				if txnID <= pm.preventUpToTxnID && len(pm.pendingPages[txnID]) > 0 {
+			for txnID := range pm.pendingVersions {
+				if txnID <= pm.preventUpToTxnID && len(pm.pendingVersions[txnID]) > 0 {
 					// There are pending pages that would normally be released
 					// Don't wait for them - force new Page allocation
 					return 0
@@ -558,16 +538,16 @@ func (pm *PageManager) allocate() base.PageID {
 
 	// CRITICAL: Remove from pending to prevent double-allocation
 	removedCount := 0
-	for txnID, pageIDs := range pm.pendingPages {
-		for i := len(pageIDs) - 1; i >= 0; i-- {
-			if pageIDs[i] == id {
-				pm.pendingPages[txnID] = append(pageIDs[:i], pageIDs[i+1:]...)
-				pageIDs = pm.pendingPages[txnID]
+	for txnID, versions := range pm.pendingVersions {
+		for i := len(versions) - 1; i >= 0; i-- {
+			if versions[i].PhysicalPageID == id {
+				pm.pendingVersions[txnID] = append(versions[:i], versions[i+1:]...)
+				versions = pm.pendingVersions[txnID]
 				removedCount++
 			}
 		}
-		if len(pm.pendingPages[txnID]) == 0 {
-			delete(pm.pendingPages, txnID)
+		if len(pm.pendingVersions[txnID]) == 0 {
+			delete(pm.pendingVersions, txnID)
 		}
 	}
 
@@ -601,20 +581,25 @@ func (pm *PageManager) freePending(txnID uint64, pageIDs []base.PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
-	pm.pendingPages[txnID] = append(pm.pendingPages[txnID], pageIDs...)
+	for _, id := range pageIDs {
+		pm.pendingVersions[txnID] = append(pm.pendingVersions[txnID], PendingVersion{
+			OriginalPageID: id,
+			PhysicalPageID: id, // Same location for in-place frees
+		})
+	}
 }
 
 // release moves pages from pending to free for all transactions < minTxnID
 func (pm *PageManager) release(minTxnID uint64) int {
 	// Caller must hold pm.mu
 	released := 0
-	for txnID, pageIDs := range pm.pendingPages {
+	for txnID, versions := range pm.pendingVersions {
 		if txnID < minTxnID {
-			for _, id := range pageIDs {
-				pm.free(id)
+			for _, v := range versions {
+				pm.free(v.PhysicalPageID)
 				released++
 			}
-			delete(pm.pendingPages, txnID)
+			delete(pm.pendingVersions, txnID)
 		}
 	}
 	return released
@@ -626,10 +611,10 @@ func (pm *PageManager) pagesNeeded() int {
 	freeBytes := 8 + len(pm.freePages)*8
 
 	pendingBytes := 0
-	if len(pm.pendingPages) > 0 {
+	if len(pm.pendingVersions) > 0 {
 		pendingBytes = 8 + 8
-		for _, pageIDs := range pm.pendingPages {
-			pendingBytes += 8 + 8 + len(pageIDs)*8
+		for _, versions := range pm.pendingVersions {
+			pendingBytes += 8 + 8 + len(versions)*8
 		}
 	}
 
@@ -670,7 +655,7 @@ func (pm *PageManager) serializeFreelist(pages []*base.Page) {
 	}
 
 	// Write pending data if present
-	if len(pm.pendingPages) > 0 {
+	if len(pm.pendingVersions) > 0 {
 		// Write marker
 		markerBytes := make([]byte, 8)
 		*(*base.PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
@@ -678,12 +663,12 @@ func (pm *PageManager) serializeFreelist(pages []*base.Page) {
 
 		// Write pending count
 		pendingCountBytes := make([]byte, 8)
-		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(pm.pendingPages))
+		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(pm.pendingVersions))
 		buf = append(buf, pendingCountBytes...)
 
 		// Sort txnIDs for deterministic serialization
-		txnIDs := make([]uint64, 0, len(pm.pendingPages))
-		for txnID := range pm.pendingPages {
+		txnIDs := make([]uint64, 0, len(pm.pendingVersions))
+		for txnID := range pm.pendingVersions {
 			txnIDs = append(txnIDs, txnID)
 		}
 		for i := 1; i < len(txnIDs); i++ {
@@ -694,7 +679,7 @@ func (pm *PageManager) serializeFreelist(pages []*base.Page) {
 
 		// Write each pending entry
 		for _, txnID := range txnIDs {
-			pageIDs := pm.pendingPages[txnID]
+			versions := pm.pendingVersions[txnID]
 
 			// Write txnID
 			txnBytes := make([]byte, 8)
@@ -703,13 +688,13 @@ func (pm *PageManager) serializeFreelist(pages []*base.Page) {
 
 			// Write Page count
 			countBytes := make([]byte, 8)
-			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(pageIDs))
+			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(versions))
 			buf = append(buf, countBytes...)
 
-			// Write Page IDs
-			for _, pageID := range pageIDs {
+			// Write PhysicalPageIDs (backward compatible)
+			for _, v := range versions {
 				pidBytes := make([]byte, 8)
-				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
+				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = v.PhysicalPageID
 				buf = append(buf, pidBytes...)
 			}
 		}
@@ -727,7 +712,7 @@ func (pm *PageManager) serializeFreelist(pages []*base.Page) {
 func (pm *PageManager) deserializeFreelist(pages []*base.Page) {
 	// Caller must hold pm.mu
 	pm.freePages = make([]base.PageID, 0)
-	pm.pendingPages = make(map[uint64][]base.PageID)
+	pm.pendingVersions = make(map[uint64][]PendingVersion)
 
 	// Build linear buffer from pages
 	buf := make([]byte, 0, base.PageSize*len(pages))
@@ -788,18 +773,21 @@ func (pm *PageManager) deserializeFreelist(pages []*base.Page) {
 		offset += 8
 
 		// Read Page IDs
-		pageIDs := make([]base.PageID, 0, pageCount)
+		versions := make([]PendingVersion, 0, pageCount)
 		for j := uint64(0); j < pageCount; j++ {
 			if offset+8 > len(buf) {
 				break
 			}
 			pageID := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
-			pageIDs = append(pageIDs, pageID)
+			versions = append(versions, PendingVersion{
+				OriginalPageID: pageID, // Backward compat: same ID
+				PhysicalPageID: pageID,
+			})
 			offset += 8
 		}
 
-		if len(pageIDs) > 0 {
-			pm.pendingPages[txnID] = pageIDs
+		if len(versions) > 0 {
+			pm.pendingVersions[txnID] = versions
 		}
 	}
 }

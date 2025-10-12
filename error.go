@@ -14,12 +14,10 @@ var (
 	ErrValueTooLarge  = errors.New("value too large")
 	ErrCorruption     = errors.New("data corruption detected")
 
-	// Transactions
 	ErrTxNotWritable = errors.New("transaction is read-only")
 	ErrTxInProgress  = errors.New("write transaction already in progress")
 	ErrTxDone        = errors.New("transaction has been committed or rolled back")
 
-	// Pages
 	ErrPageOverflow       = base.ErrPageOverflow
 	ErrInvalidOffset      = base.ErrInvalidOffset
 	ErrInvalidMagicNumber = base.ErrInvalidMagicNumber

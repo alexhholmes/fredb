@@ -918,7 +918,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	db1.Set([]byte("key1"), []byte("value1"))
 	db1.Close()
 
-	// Reopen and do a second commit (Set without close to avoid extra TxnID)
+	// Reopen and do a second commit (Set without close to avoid extra TxID)
 	db2, _ := Open(tmpfile)
 	db2.Set([]byte("key2"), []byte("value2"))
 
@@ -933,17 +933,17 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
-	t.Logf("After second Set: Page 0 TxnID=%d RootPageID=%d, Page 1 TxnID=%d RootPageID=%d",
-		meta0.TxnID, meta0.RootPageID, meta1.TxnID, meta1.RootPageID)
+	t.Logf("After second Set: Page 0 TxID=%d RootPageID=%d, Page 1 TxID=%d RootPageID=%d",
+		meta0.TxID, meta0.RootPageID, meta1.TxID, meta1.RootPageID)
 
-	// Record the older TxnID (should only have key1)
+	// Record the older TxID (should only have key1)
 	var olderTxn uint64
 	var olderRoot base.PageID
-	if meta0.TxnID < meta1.TxnID {
-		olderTxn = meta0.TxnID
+	if meta0.TxID < meta1.TxID {
+		olderTxn = meta0.TxID
 		olderRoot = meta0.RootPageID
 	} else {
-		olderTxn = meta1.TxnID
+		olderTxn = meta1.TxID
 		olderRoot = meta1.RootPageID
 	}
 
@@ -963,12 +963,12 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	// Corrupt the newer one
 	var corruptOffset int64
-	if meta0.TxnID > meta1.TxnID {
+	if meta0.TxID > meta1.TxID {
 		corruptOffset = int64(base.PageHeaderSize)
-		t.Logf("Corrupting Page 0 (TxnID %d)", meta0.TxnID)
+		t.Logf("Corrupting Page 0 (TxID %d)", meta0.TxID)
 	} else {
 		corruptOffset = int64(base.PageSize + base.PageHeaderSize)
-		t.Logf("Corrupting Page 1 (TxnID %d)", meta1.TxnID)
+		t.Logf("Corrupting Page 1 (TxID %d)", meta1.TxID)
 	}
 
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
@@ -982,8 +982,8 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	defer db3.Close()
 
 	meta3 := db3.pager.GetMeta()
-	t.Logf("After reopen: loaded meta with TxnID %d, RootPageID %d", meta3.TxnID, meta3.RootPageID)
-	t.Logf("Expected to recover to TxnID %d (previous valid state)", olderTxn)
+	t.Logf("After reopen: loaded meta with TxID %d, RootPageID %d", meta3.TxID, meta3.RootPageID)
+	t.Logf("Expected to recover to TxID %d (previous valid state)", olderTxn)
 
 	// key1 should always exist
 	v1, err := db3.Get([]byte("key1"))
@@ -1171,14 +1171,14 @@ func TestDBFileFormat(t *testing.T) {
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
 
-	// close() increments TxnID from 0 to 1, so writes to Page 1 (1 % 2 = 1)
+	// close() increments TxID from 0 to 1, so writes to Page 1 (1 % 2 = 1)
 	// Page 1 should have the latest meta with RootPageID set
-	t.Logf("Meta Page 0 TxnID: %d, RootPageID: %d", meta0.TxnID, meta0.RootPageID)
-	t.Logf("Meta Page 1 TxnID: %d, RootPageID: %d", meta1.TxnID, meta1.RootPageID)
+	t.Logf("Meta Page 0 TxID: %d, RootPageID: %d", meta0.TxID, meta0.RootPageID)
+	t.Logf("Meta Page 1 TxID: %d, RootPageID: %d", meta1.TxID, meta1.RootPageID)
 
-	// Pick the Page with highest TxnID (should be Page 1)
+	// Pick the Page with highest TxID (should be Page 1)
 	var meta *base.MetaPage
-	if meta0.TxnID > meta1.TxnID {
+	if meta0.TxID > meta1.TxID {
 		meta = meta0
 	} else {
 		meta = meta1
@@ -1209,7 +1209,7 @@ func TestDBFileFormat(t *testing.T) {
 	t.Logf("  RootPageID: %d", meta.RootPageID)
 	t.Logf("  FreelistID: %d", meta.FreelistID)
 	t.Logf("  FreelistPages: %d", meta.FreelistPages)
-	t.Logf("  TxnID: %d", meta.TxnID)
+	t.Logf("  TxID: %d", meta.TxID)
 	t.Logf("  NumPages: %d", meta.NumPages)
 	t.Logf("  File size: %d bytes (%d pages)", info.Size(),
 		info.Size()/int64(base.PageSize))
@@ -1453,7 +1453,7 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 	t.Logf("Successfully recovered from checksum corruption using backup meta Page")
 }
 
-// TestCrashRecoveryAlternatingWrites tests that meta pages alternate correctly based on TxnID
+// TestCrashRecoveryAlternatingWrites tests that meta pages alternate correctly based on TxID
 func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	t.Parallel()
 
@@ -1467,7 +1467,7 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	// TxnID starts at 0, so first commit writes to Page 0
+	// TxID starts at 0, so first commit writes to Page 0
 	// Do multiple commits and verify alternating pattern
 	for i := 0; i < 5; i++ {
 		key := []byte(fmt.Sprintf("key%d", i))
@@ -1492,22 +1492,22 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
 
-	t.Logf("Page 0 TxnID: %d", meta0.TxnID)
-	t.Logf("Page 1 TxnID: %d", meta1.TxnID)
+	t.Logf("Page 0 TxID: %d", meta0.TxID)
+	t.Logf("Page 1 TxID: %d", meta1.TxID)
 
-	// One should have higher TxnID than the other
-	assert.NotEqual(t, meta0.TxnID, meta1.TxnID, "Both meta pages have same TxnID - alternating writes not working")
+	// One should have higher TxID than the other
+	assert.NotEqual(t, meta0.TxID, meta1.TxID, "Both meta pages have same TxID - alternating writes not working")
 
-	// The Page with higher TxnID should be the active one
+	// The Page with higher TxID should be the active one
 	var activeMeta *base.MetaPage
-	if meta0.TxnID > meta1.TxnID {
+	if meta0.TxID > meta1.TxID {
 		activeMeta = meta0
-		// TxnID should be even (written to Page 0)
-		assert.Equal(t, uint64(0), activeMeta.TxnID%2, "Page 0 has odd TxnID %d, expected even", activeMeta.TxnID)
+		// TxID should be even (written to Page 0)
+		assert.Equal(t, uint64(0), activeMeta.TxID%2, "Page 0 has odd TxID %d, expected even", activeMeta.TxID)
 	} else {
 		activeMeta = meta1
-		// TxnID should be odd (written to Page 1)
-		assert.Equal(t, uint64(1), activeMeta.TxnID%2, "Page 1 has even TxnID %d, expected odd", activeMeta.TxnID)
+		// TxID should be odd (written to Page 1)
+		assert.Equal(t, uint64(1), activeMeta.TxID%2, "Page 1 has even TxID %d, expected odd", activeMeta.TxID)
 	}
 
 	// Both should be valid
@@ -1581,7 +1581,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
 
-	// Corrupt meta Page: set RootPageID to 0 but keep valid TxnID
+	// Corrupt meta Page: set RootPageID to 0 but keep valid TxID
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
 	require.NoError(t, err, "Failed to open file")
 
@@ -1592,7 +1592,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 
 	// Parse and modify
 	meta := page.ReadMeta()
-	meta.RootPageID = 0 // Set to 0 (invalid state if TxnID > 0)
+	meta.RootPageID = 0 // Set to 0 (invalid state if TxID > 0)
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Write back
@@ -1671,7 +1671,7 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
 
-	// Create impossible state: both meta pages with same TxnID but different roots
+	// Create impossible state: both meta pages with same TxID but different roots
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
 	require.NoError(t, err, "Failed to open file")
 
@@ -1687,8 +1687,8 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	require.NoError(t, err, "Failed to read meta 1")
 	meta1 := page1.ReadMeta()
 
-	// Make both have same TxnID
-	meta1.TxnID = meta0.TxnID
+	// Make both have same TxID
+	meta1.TxID = meta0.TxID
 	meta1.RootPageID = 999 // Different root (invalid)
 	meta1.Checksum = meta1.CalculateChecksum()
 
@@ -1702,11 +1702,11 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	// Try to open - should handle this gracefully
 	db, err = Open(tmpfile)
 	if err != nil {
-		t.Logf("Open failed with same TxnID (may be expected): %v", err)
+		t.Logf("Open failed with same TxID (may be expected): %v", err)
 		return
 	}
 	defer db.Close()
 
 	// If open succeeded, verify which meta was chosen
-	t.Log("Open succeeded despite same TxnID on both metas")
+	t.Log("Open succeeded despite same TxID on both metas")
 }

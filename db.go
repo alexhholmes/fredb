@@ -166,7 +166,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		stopC:    make(chan struct{}),
 		options:  opts,
 	}
-	db.nextTxnID.Store(meta.TxnID) // Resume from last committed TxnID
+	db.nextTxnID.Store(meta.TxID) // Resume from last committed TxID
 
 	// Start background releaser goroutine
 	db.wg.Add(1)
@@ -287,7 +287,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	// Create read transaction
 	tx := &Tx{
 		db:       db,
-		txnID:    snapshot.Meta.TxnID, // Readers use committed txnID as snapshot
+		txnID:    snapshot.Meta.TxID, // Readers use committed txnID as snapshot
 		writable: false,
 		root:     snapshot.Root, // Atomic snapshot of root
 		pending:  make(map[base.PageID]struct{}),
@@ -354,7 +354,7 @@ func (db *DB) Close() error {
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.pager.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
-		page, err := snapshot.Root.Serialize(snapshot.Meta.TxnID)
+		page, err := snapshot.Root.Serialize(snapshot.Meta.TxID)
 		if err != nil {
 			return err
 		}

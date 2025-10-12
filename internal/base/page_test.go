@@ -24,7 +24,7 @@ func TestPageHeaderAlignment(t *testing.T) {
 	assert.Equal(t, uintptr(8), unsafe.Offsetof(h.Flags), "Flags offset")
 	assert.Equal(t, uintptr(10), unsafe.Offsetof(h.NumKeys), "NumKeys offset")
 	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.Padding), "Padding offset")
-	assert.Equal(t, uintptr(16), unsafe.Offsetof(h.TxnID), "TxnID offset")
+	assert.Equal(t, uintptr(16), unsafe.Offsetof(h.TxnID), "TxID offset")
 	assert.Equal(t, uintptr(24), unsafe.Offsetof(h._NextLeaf), "_NextLeaf offset")
 	assert.Equal(t, uintptr(32), unsafe.Offsetof(h._PrevLeaf), "_PrevLeaf offset")
 }
@@ -51,7 +51,7 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 	assert.Equal(t, writeHdr.Flags, readHdr.Flags, "Flags")
 	assert.Equal(t, writeHdr.NumKeys, readHdr.NumKeys, "NumKeys")
 	assert.Equal(t, writeHdr.Padding, readHdr.Padding, "Padding")
-	assert.Equal(t, writeHdr.TxnID, readHdr.TxnID, "TxnID")
+	assert.Equal(t, writeHdr.TxnID, readHdr.TxnID, "TxID")
 }
 
 func TestPageHeaderByteLayout(t *testing.T) {
@@ -81,7 +81,7 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		0x78, 0x56,
 		// Padding (4 bytes, little-endian)
 		0xF0, 0xDE, 0xBC, 0x9A,
-		// TxnID (8 bytes, little-endian)
+		// TxID (8 bytes, little-endian)
 		0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
 		// _NextLeaf (8 bytes, little-endian)
 		0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,

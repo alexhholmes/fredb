@@ -37,7 +37,7 @@ type loadState struct {
 	loading   bool          // Is someone currently loading?
 	done      chan struct{} // Closed when load completes
 	node      *base.Node    // Loaded node
-	diskTxnID uint64        // TxnID read from disk
+	diskTxnID uint64        // TxID read from disk
 	err       error         // Load error if any
 }
 
@@ -436,17 +436,9 @@ func (c *PageCache) canEvict(txnID uint64) bool {
 // Called by background releaser when readers finish.
 // Returns the number of relocated versions cleaned up.
 func (c *PageCache) CleanupRelocatedVersions(minReaderTxn uint64) int {
-	// Cleanup VersionMap entries
-	freedPages := c.pager.CleanupVersions(minReaderTxn)
-
-	// Add relocated pages to freelist.pending with CURRENT minReaderTxn
-	// This prevents them from being allocated by transactions currently running
-	// They'll be freed when Release() is called with a higher minReaderTxn
-	if len(freedPages) > 0 && c.pager != nil {
-		_ = c.pager.FreePending(minReaderTxn, freedPages)
-	}
-
-	return len(freedPages)
+	// Cleanup is now handled by ReleasePages since pendingVersions
+	// contains both in-place freed pages and relocated versions
+	return 0
 }
 
 // countEntries returns total number of cached entries across all pages
@@ -506,7 +498,7 @@ func (c *PageCache) relocateVersion(entry *versionEntry) bool {
 	}
 
 	// Track relocation
-	c.pager.TrackRelocation(entry.pageID, entry.txnID, relocatedPageID)
+	c.pager.FreePendingRelocated(entry.txnID, entry.pageID, relocatedPageID)
 	return true
 }
 
@@ -581,7 +573,7 @@ func (c *PageCache) evictToWaterMark() {
 			}
 
 			// Track relocation mapping (originalPageID -> relocatedPageID at txnID)
-			c.pager.TrackRelocation(entry.pageID, entry.txnID, relocatedPageID)
+			c.pager.FreePendingRelocated(entry.txnID, entry.pageID, relocatedPageID)
 		} else {
 			// Already checkpointed - relocate only if needed for MVCC
 			if !c.relocateVersion(entry) {

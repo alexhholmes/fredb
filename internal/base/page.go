@@ -1,9 +1,9 @@
 package base
 
 import (
+	"encoding/binary"
 	"errors"
 	"hash/crc32"
-	"unsafe"
 )
 
 var (
@@ -21,7 +21,7 @@ const (
 	LeafPageFlag   uint16 = 0x01
 	BranchPageFlag uint16 = 0x02
 
-	PageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxnID(8) + _NextLeaf(8) + _PrevLeaf(8)
+	PageHeaderSize    = 40 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxID(8) + _NextLeaf(8) + _PrevLeaf(8)
 	LeafElementSize   = 12
 	BranchElementSize = 16
 
@@ -38,7 +38,7 @@ type PageID uint64
 // LEAF PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (40 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
+// │ PageID, Flags, NumKeys, Padding, TxID, _NextLeaf, _PrevLeaf        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ LeafElement[0] (12 bytes)                                           │
 // │ KeyOffset, KeySize, ValueOffset, ValueSize, Reserved                │
@@ -57,7 +57,7 @@ type PageID uint64
 // BRANCH PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (40 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxnID, _NextLeaf, _PrevLeaf        │
+// │ PageID, Flags, NumKeys, Padding, TxID, _NextLeaf, _PrevLeaf        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[0] (16 bytes)                                         │
 // │ KeyOffset, KeySize, Reserved, ChildID                               │
@@ -79,7 +79,7 @@ type Page struct {
 }
 
 // PageHeader represents the fixed-size Header at the start of each Page
-// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxnID: 8][_NextLeaf: 8][_PrevLeaf: 8]
+// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8][_NextLeaf: 8][_PrevLeaf: 8]
 type PageHeader struct {
 	PageID    PageID // 8 bytes
 	Flags     uint16 // 2 bytes (leaf/branch)
@@ -204,7 +204,7 @@ func (p *Page) dataAreaStart() int {
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1
-// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxnID: 8][CheckpointTxnID: 8][NumPages: 8][Checksum: 4]
+// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxID: 8][CheckpointTxnID: 8][NumPages: 8][Checksum: 4]
 // Total: 60 bytes
 type MetaPage struct {
 	Magic           uint32 // 4 bytes: 0x66726462 ("frdb")
@@ -213,7 +213,7 @@ type MetaPage struct {
 	RootPageID      PageID // 8 bytes: root of B-tree
 	FreelistID      PageID // 8 bytes: start of freelist
 	FreelistPages   uint64 // 8 bytes: number of contiguous freelist pages
-	TxnID           uint64 // 8 bytes: transaction counter
+	TxID            uint64 // 8 bytes: transaction counter
 	CheckpointTxnID uint64 // 8 bytes: last checkpointed transaction
 	NumPages        uint64 // 8 bytes: total pages allocated
 	Checksum        uint32 // 4 bytes: CRC32 of above fields
