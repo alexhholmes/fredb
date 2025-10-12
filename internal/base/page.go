@@ -1,9 +1,9 @@
 package base
 
 import (
-	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"unsafe"
 )
 
 var (

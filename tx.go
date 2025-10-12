@@ -668,9 +668,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 			algo.ApplyLeafUpdate(node, pos, value)
 
-			// Try to serialize after update
-			_, err = node.Serialize(tx.txnID)
-			if err != nil {
+			// Check size after update
+			if err := node.CheckOverflow(); err != nil {
 				// Rollback: restore old value
 				node.Values[pos] = oldValue
 				return nil, err
@@ -681,9 +680,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		// Insert new key-value using algo
 		algo.ApplyLeafInsert(node, pos, key, value)
 
-		// Try to serialize after insertion
-		_, err = node.Serialize(tx.txnID)
-		if err != nil {
+		// Check size after insertion
+		if err := node.CheckOverflow(); err != nil {
 			// Rollback: remove the inserted key/value
 			node.Keys = algo.RemoveAt(node.Keys, pos)
 			node.Values = algo.RemoveAt(node.Values, pos)
@@ -727,9 +725,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		// Apply split to parent using algo
 		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
 
-		// Serialize parent after modification
-		_, err = node.Serialize(tx.txnID)
-		if err != nil {
+		// Check size after modification
+		if err := node.CheckOverflow(); err != nil {
 			// Rollback: restore old state
 			node.Keys = oldKeys
 			node.Values = oldValues
@@ -774,9 +771,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		// Apply split to parent using algo
 		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
 
-		// Serialize parent after modification
-		_, err = node.Serialize(tx.txnID)
-		if err != nil {
+		// Check size after modification
+		if err := node.CheckOverflow(); err != nil {
 			// Rollback: restore old state
 			node.Keys = oldKeys
 			node.Values = oldValues
@@ -814,8 +810,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 		node.Children[i] = child.PageID
 		node.Dirty = true
-		_, err = node.Serialize(tx.txnID)
-		if err != nil {
+		if err := node.CheckOverflow(); err != nil {
 			return nil, err
 		}
 	}

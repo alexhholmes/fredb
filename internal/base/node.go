@@ -26,9 +26,8 @@ type Node struct {
 
 // Serialize encodes the Node data into a fresh Page
 func (n *Node) Serialize(txnID uint64) (*Page, error) {
-	// Check Size
-	if n.Size() > PageSize {
-		return nil, ErrPageOverflow
+	if err := n.CheckOverflow(); err != nil {
+		return nil, err
 	}
 
 	// Create fresh Page
@@ -217,6 +216,13 @@ func (n *Node) Clone() *Node {
 // IsUnderflow checks if Node has too few Keys (doesn't apply to root)
 func (n *Node) IsUnderflow() bool {
 	return int(n.NumKeys) < MinKeysPerNode
+}
+
+func (n *Node) CheckOverflow() error {
+	if n.Size() > PageSize {
+		return ErrPageOverflow
+	}
+	return nil
 }
 
 // IsFull checks if a Node is full
