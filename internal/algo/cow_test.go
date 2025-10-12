@@ -1,9 +1,11 @@
 package algo
 
 import (
-	"bytes"
-	"fredb/internal/base"
 	"testing"
+
+	"fredb/internal/base"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Helper: compare byte slice arrays
@@ -24,7 +26,6 @@ func newLeafNode(keys, values [][]byte) *base.Node {
 	return &base.Node{
 		PageID:  1,
 		Dirty:   false,
-		IsLeaf:  true,
 		NumKeys: uint16(len(keys)),
 		Keys:    keys,
 		Values:  values,
@@ -34,7 +35,6 @@ func newLeafNode(keys, values [][]byte) *base.Node {
 // Helper: create branch node for testing
 func newBranchNode(keys [][]byte, children []base.PageID) *base.Node {
 	return &base.Node{
-		IsLeaf:   false,
 		NumKeys:  uint16(len(keys)),
 		Keys:     keys,
 		Children: children,
@@ -1392,7 +1392,7 @@ func TestNewBranchRoot_Basic(t *testing.T) {
 	if !root.Dirty {
 		t.Error("Dirty = false, want true")
 	}
-	if root.IsLeaf {
+	if root.IsLeaf() {
 		t.Error("IsLeaf = true, want false")
 	}
 	if root.NumKeys != 1 {
@@ -1427,7 +1427,7 @@ func TestNewBranchRoot_EmptyKey(t *testing.T) {
 	if root.NumKeys != 1 {
 		t.Errorf("NumKeys = %v, want 1", root.NumKeys)
 	}
-	if root.IsLeaf {
+	if root.IsLeaf() {
 		t.Error("IsLeaf = true, want false")
 	}
 }

@@ -57,7 +57,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	// After loop: i points to first key > search_key (or NumKeys if all keys <= search_key)
 
 	// If leaf node, check if key found
-	if node.IsLeaf {
+	if node.IsLeaf() {
 		// In leaf, we need to check the previous position (since loop went past equal keys)
 		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
 			return node.Values[i-1], nil
@@ -264,7 +264,7 @@ func (tx *Tx) Commit() error {
 		}
 
 		// Remap child pointers in branch nodes
-		if !node.IsLeaf {
+		if !node.IsLeaf() {
 			for i, childID := range node.Children {
 				if realID, isVirtual := virtualToReal[childID]; isVirtual {
 					node.Children[i] = realID
@@ -289,7 +289,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Also remap root's children pointers
-	if tx.root != nil && !tx.root.IsLeaf {
+	if tx.root != nil && !tx.root.IsLeaf() {
 		for i, childID := range tx.root.Children {
 			if realID, isVirtual := virtualToReal[childID]; isVirtual {
 				tx.root.Children[i] = realID
@@ -539,16 +539,15 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
-	newNodeID, _, err := tx.allocatePage()
+	nodeID, _, err := tx.allocatePage()
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	// State: construct right node
-	newNode := &base.Node{
-		PageID:   newNodeID,
+	node := &base.Node{
+		PageID:   nodeID,
 		Dirty:    true,
-		IsLeaf:   child.IsLeaf,
 		NumKeys:  uint16(sp.RightCount),
 		Keys:     rightKeys,
 		Values:   rightVals,
@@ -559,9 +558,9 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	algo.TruncateLeft(child, sp)
 
 	// I/O: store right node in tx cache
-	tx.pages[newNodeID] = newNode
+	tx.pages[nodeID] = node
 
-	return child, newNode, sp.SeparatorKey, []byte{}, nil
+	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
 // loadFromDisk loads a node from disk with relocation support
@@ -606,7 +605,7 @@ func (tx *Tx) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
 	}
 
 	// Cycle detection
-	if !node.IsLeaf {
+	if !node.IsLeaf() {
 		for _, childID := range node.Children {
 			if childID == pageID {
 				return nil, 0, ErrCorruption
@@ -636,7 +635,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	}
 
 	// 3. Cycle detection on cached node
-	if !node.IsLeaf {
+	if !node.IsLeaf() {
 		for _, childID := range node.Children {
 			if childID == pageID {
 				return nil, ErrCorruption
@@ -650,7 +649,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 // insertNonFull inserts into a non-full node with COW
 // Returns the (possibly new) root node after COW
 func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
-	if node.IsLeaf {
+	if node.IsLeaf() {
 		// COW before modifying leaf
 		node, err := tx.ensureWritable(node)
 		if err != nil {
@@ -822,7 +821,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 // Returns the (possibly new) node after COW
 func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	// B+ tree: if this is a leaf, check if key exists and delete
-	if node.IsLeaf {
+	if node.IsLeaf() {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
 			return tx.deleteFromLeaf(node, idx)

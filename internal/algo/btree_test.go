@@ -3,8 +3,9 @@ package algo
 import (
 	"bytes"
 	"flag"
-	"fredb/internal/base"
 	"testing"
+
+	"fredb/internal/base"
 )
 
 var _ = flag.Bool("slow", false, "run slow tests")
@@ -12,7 +13,6 @@ var _ = flag.Bool("slow", false, "run slow tests")
 // Helper to create a test node
 func makeLeafNode(keys, values [][]byte) *base.Node {
 	return &base.Node{
-		IsLeaf:  true,
 		NumKeys: uint16(len(keys)),
 		Keys:    keys,
 		Values:  values,
@@ -21,7 +21,6 @@ func makeLeafNode(keys, values [][]byte) *base.Node {
 
 func makeBranchNode(keys [][]byte, children []base.PageID) *base.Node {
 	return &base.Node{
-		IsLeaf:   false,
 		NumKeys:  uint16(len(keys)),
 		Keys:     keys,
 		Children: children,
@@ -369,7 +368,7 @@ func TestCalculateSplitPoint(t *testing.T) {
 			}
 
 			// Verify separator is a copy, not shared
-			if tt.node.IsLeaf {
+			if tt.node.IsLeaf() {
 				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid+1]) > 0 {
 					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid+1][0] {
 						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
@@ -458,7 +457,7 @@ func TestExtractRightPortion(t *testing.T) {
 			}
 
 			// Verify vals are copied for leaf nodes
-			if tt.node.IsLeaf && len(vals) > 0 && len(vals[0]) > 0 {
+			if tt.node.IsLeaf() && len(vals) > 0 && len(vals[0]) > 0 {
 				originalIdx := tt.sp.Mid + 1
 				if len(tt.node.Values[originalIdx]) > 0 {
 					if &vals[0][0] == &tt.node.Values[originalIdx][0] {

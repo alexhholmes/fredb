@@ -77,7 +77,7 @@ func (it *Cursor) Seek(key []byte) error {
 		it.valid = false
 		return nil
 	}
-	for !node.IsLeaf {
+	for !node.IsLeaf() {
 		// Find which child to descend to
 		i := 0
 		for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) > 0 {
@@ -268,7 +268,7 @@ func (it *Cursor) descendToFirstLeaf() error {
 	}
 
 	// Keep descending to leftmost child
-	for !node.IsLeaf {
+	for !node.IsLeaf() {
 		it.stack = append(it.stack, pathElement{node: node, childIndex: 0})
 		child, err := it.tx.loadNode(node.Children[0])
 		if err != nil {
@@ -302,7 +302,7 @@ func (it *Cursor) descendToLastLeaf() error {
 	}
 
 	// Keep descending to rightmost child
-	for !node.IsLeaf {
+	for !node.IsLeaf() {
 		lastChild := len(node.Children) - 1
 		it.stack = append(it.stack, pathElement{node: node, childIndex: lastChild})
 		child, err := it.tx.loadNode(node.Children[lastChild])

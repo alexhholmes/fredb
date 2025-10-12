@@ -18,7 +18,7 @@ func FindChildIndex(node *base.Node, key []byte) int {
 
 // FindKeyInLeaf returns index of key in leaf, or -1 if not found
 func FindKeyInLeaf(node *base.Node, key []byte) int {
-	if !node.IsLeaf {
+	if !node.IsLeaf() {
 		return -1
 	}
 	for i := 0; i < int(node.NumKeys); i++ {
@@ -69,7 +69,7 @@ func CalculateSplitPoint(node *base.Node) SplitPoint {
 	var sep []byte
 	var leftCnt, rightCnt int
 
-	if node.IsLeaf {
+	if node.IsLeaf() {
 		sep = make([]byte, len(node.Keys[mid+1]))
 		copy(sep, node.Keys[mid+1])
 		leftCnt = mid + 1
@@ -98,7 +98,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 		keys = append(keys, keyCopy)
 	}
 
-	if node.IsLeaf {
+	if node.IsLeaf() {
 		vals = make([][]byte, 0, sp.RightCount)
 		for i := sp.Mid + 1; i < len(node.Values); i++ {
 			valCopy := make([]byte, len(node.Values[i]))
@@ -107,7 +107,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 		}
 	}
 
-	if !node.IsLeaf {
+	if !node.IsLeaf() {
 		children = make([]base.PageID, 0)
 		for i := sp.Mid + 1; i < len(node.Children); i++ {
 			children = append(children, node.Children[i])
@@ -135,7 +135,7 @@ func ExtractLastFromSibling(sibling *base.Node) BorrowData {
 	data := BorrowData{
 		Key: sibling.Keys[lastIdx],
 	}
-	if sibling.IsLeaf {
+	if sibling.IsLeaf() {
 		data.Value = sibling.Values[lastIdx]
 	} else {
 		data.Child = sibling.Children[len(sibling.Children)-1]
@@ -148,7 +148,7 @@ func ExtractFirstFromSibling(sibling *base.Node) BorrowData {
 	data := BorrowData{
 		Key: sibling.Keys[0],
 	}
-	if sibling.IsLeaf {
+	if sibling.IsLeaf() {
 		data.Value = sibling.Values[0]
 	} else {
 		data.Child = sibling.Children[0]

@@ -102,7 +102,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		leaf := &base.Node{
 			PageID:   leafPageID,
 			Dirty:    true,
-			IsLeaf:   true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   make([][]byte, 0),
@@ -124,7 +123,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		root = &base.Node{
 			PageID:   rootPageID,
 			Dirty:    true,
-			IsLeaf:   false,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   nil,

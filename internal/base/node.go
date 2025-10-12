@@ -17,10 +17,9 @@ type Node struct {
 	Dirty  bool
 
 	// Decoded Node data
-	IsLeaf   bool
 	NumKeys  uint16
 	Keys     [][]byte
-	Values   [][]byte // Empty and unused in branch nodes
+	Values   [][]byte // If nil, this is a branch Node
 	Children []PageID
 }
 
@@ -39,14 +38,14 @@ func (n *Node) Serialize(txnID uint64) (*Page, error) {
 		NumKeys: n.NumKeys,
 		TxnID:   txnID,
 	}
-	if n.IsLeaf {
+	if n.IsLeaf() {
 		header.Flags = LeafPageFlag
 	} else {
 		header.Flags = BranchPageFlag
 	}
 	page.WriteHeader(header)
 
-	if n.IsLeaf {
+	if n.IsLeaf() {
 		// Serialize leaf Node - pack from end backward
 		dataOffset := uint16(PageSize)
 		// Process in reverse order to pack from end
@@ -107,9 +106,8 @@ func (n *Node) Deserialize(p *Page) error {
 	header := p.Header()
 	n.PageID = header.PageID
 	n.NumKeys = header.NumKeys
-	n.IsLeaf = (header.Flags & LeafPageFlag) != 0
 
-	if n.IsLeaf {
+	if n.IsLeaf() {
 		// Deserialize leaf Node
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
@@ -184,7 +182,6 @@ func (n *Node) Clone() *Node {
 	cloned := &Node{
 		PageID:  0,
 		Dirty:   true,
-		IsLeaf:  n.IsLeaf,
 		NumKeys: n.NumKeys,
 	}
 
@@ -196,7 +193,7 @@ func (n *Node) Clone() *Node {
 	}
 
 	// Deep copy Values (leaf nodes only)
-	if n.IsLeaf && len(n.Values) > 0 {
+	if n.IsLeaf() && len(n.Values) > 0 {
 		cloned.Values = make([][]byte, len(n.Values))
 		for i, val := range n.Values {
 			cloned.Values[i] = make([]byte, len(val))
@@ -205,7 +202,7 @@ func (n *Node) Clone() *Node {
 	}
 
 	// Deep copy Children (branch nodes only)
-	if !n.IsLeaf {
+	if !n.IsLeaf() {
 		cloned.Children = make([]PageID, len(n.Children))
 		copy(cloned.Children, n.Children)
 	}
@@ -236,7 +233,7 @@ func (n *Node) IsFull() bool {
 func (n *Node) Size() int {
 	size := PageHeaderSize
 
-	if n.IsLeaf {
+	if n.IsLeaf() {
 		size += int(n.NumKeys) * LeafElementSize
 		for i := 0; i < int(n.NumKeys); i++ {
 			size += len(n.Keys[i]) + len(n.Values[i])
@@ -251,4 +248,9 @@ func (n *Node) Size() int {
 	}
 
 	return size
+}
+
+// IsLeaf returns true if this is a leaf Node
+func (n *Node) IsLeaf() bool {
+	return n.Values != nil
 }

@@ -15,7 +15,6 @@ var _ = flag.Bool("slow", false, "run slow tests")
 func makeTestNode(pageID base.PageID) *base.Node {
 	return &base.Node{
 		PageID:   pageID,
-		IsLeaf:   true,
 		Keys:     make([][]byte, 0),
 		Values:   make([][]byte, 0),
 		Children: make([]base.PageID, 0),
