@@ -18,13 +18,13 @@ var (
 	ErrTxInProgress  = errors.New("write transaction already in progress")
 	ErrTxDone        = errors.New("transaction has been committed or rolled back")
 
+	ErrBucketExists   = errors.New("bucket already exists")
+	ErrBucketNotFound = errors.New("bucket not found")
+
 	ErrPageOverflow       = base.ErrPageOverflow
 	ErrInvalidOffset      = base.ErrInvalidOffset
 	ErrInvalidMagicNumber = base.ErrInvalidMagicNumber
 	ErrInvalidVersion     = base.ErrInvalidVersion
 	ErrInvalidPageSize    = base.ErrInvalidPageSize
 	ErrInvalidChecksum    = base.ErrInvalidChecksum
-
-	ErrBucketExists   = errors.New("bucket already exists")
-	ErrBucketNotFound = errors.New("bucket not found")
 )

@@ -24,18 +24,18 @@ func makeTestNode(pageID base.PageID) *base.Node {
 func TestPageCacheBasics(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(10, nil)
+	cache := NewCache(10)
 
 	// Test cache miss
-	_, hit := cache.get(base.PageID(1), 0)
+	_, hit := cache.Get(base.PageID(1))
 	assert.False(t, hit, "Expected cache miss for Page 1")
 
-	// Add Node to cache with txnID=1
+	// Add Node to cache
 	node1 := makeTestNode(base.PageID(1))
-	cache.Put(base.PageID(1), 1, node1)
+	cache.Put(base.PageID(1), node1)
 
-	// Should now hit (for txnID >= 1)
-	retrieved, hit := cache.get(base.PageID(1), 1)
+	// Should now hit
+	retrieved, hit := cache.Get(base.PageID(1))
 	assert.True(t, hit, "Expected cache hit for Page 1")
 	assert.Equal(t, node1.PageID, retrieved.PageID, "Retrieved wrong Node")
 
@@ -48,61 +48,57 @@ func TestPageCacheBasics(t *testing.T) {
 	assert.Equal(t, uint64(1), misses)
 }
 
-func TestPageCacheMVCC(t *testing.T) {
+func TestPageCacheReplacement(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(10, nil)
+	cache := NewCache(10)
 
-	// Add version 1 of Page 1
+	// Add Page 1
 	node1 := makeTestNode(base.PageID(1))
-	cache.Put(base.PageID(1), 1, node1)
+	node1.NumKeys = 0
+	cache.Put(base.PageID(1), node1)
 
-	// Add version 2 of Page 1
+	// Should retrieve the first version
+	retrieved, hit := cache.Get(base.PageID(1))
+	assert.True(t, hit, "Expected cache hit")
+	assert.Equal(t, uint16(0), retrieved.NumKeys, "Expected NumKeys=0")
+
+	// Replace Page 1 with new version
 	node2 := makeTestNode(base.PageID(1))
 	node2.NumKeys = 5 // Different data
-	cache.Put(base.PageID(1), 2, node2)
+	cache.Put(base.PageID(1), node2)
 
-	// Reader at txnID=1 should see version 1
-	retrieved, hit := cache.get(base.PageID(1), 1)
-	assert.True(t, hit, "Expected cache hit for txnID=1")
-	assert.Equal(t, uint16(0), retrieved.NumKeys, "Expected version 1 (NumKeys=0)")
+	// Should now see the new version
+	retrieved, hit = cache.Get(base.PageID(1))
+	assert.True(t, hit, "Expected cache hit")
+	assert.Equal(t, uint16(5), retrieved.NumKeys, "Expected NumKeys=5")
 
-	// Reader at txnID=2 should see version 2
-	retrieved, hit = cache.get(base.PageID(1), 2)
-	assert.True(t, hit, "Expected cache hit for txnID=2")
-	assert.Equal(t, uint16(5), retrieved.NumKeys, "Expected version 2 (NumKeys=5)")
-
-	// Reader at txnID=3 should see version 2 (latest committed)
-	retrieved, hit = cache.get(base.PageID(1), 3)
-	assert.True(t, hit, "Expected cache hit for txnID=3")
-	assert.Equal(t, uint16(5), retrieved.NumKeys, "Expected version 2 (NumKeys=5)")
-
-	// size should be 2 (two versions)
-	assert.Equal(t, 2, cache.Size())
+	// Size should still be 1 (replaced, not added)
+	assert.Equal(t, 1, cache.Size())
 }
 
 func TestPageCacheMinSize(t *testing.T) {
 	t.Parallel()
 
 	// Request size too small
-	cache := NewCache(5, nil)
+	cache := NewCache(5)
 	assert.Equal(t, MinCacheSize, cache.maxSize)
 }
 
 func TestPageCacheEviction(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(20, nil) // max=20, lowWater=16
+	cache := NewCache(20) // max=20, lowWater=16
 
 	// Add 19 pages
 	for i := 1; i <= 19; i++ {
-		cache.Put(base.PageID(i), uint64(i), makeTestNode(base.PageID(i)))
+		cache.Put(base.PageID(i), makeTestNode(base.PageID(i)))
 	}
 
 	assert.Equal(t, 19, cache.Size())
 
 	// Add 20th Page - triggers eviction
-	cache.Put(base.PageID(20), 20, makeTestNode(base.PageID(20)))
+	cache.Put(base.PageID(20), makeTestNode(base.PageID(20)))
 
 	// Should be at 16 now
 	size := cache.Size()
@@ -114,11 +110,11 @@ func TestPageCacheEviction(t *testing.T) {
 
 	// Pages 1-4 (LRU) should be evicted
 	for i := 1; i <= 4; i++ {
-		_, hit := cache.get(base.PageID(i), uint64(i))
+		_, hit := cache.Get(base.PageID(i))
 		assert.False(t, hit, "Page %d should have been evicted", i)
 	}
 
 	// Page 20 (newest) should still be there
-	_, hit := cache.get(base.PageID(20), 20)
+	_, hit := cache.Get(base.PageID(20))
 	assert.True(t, hit, "Page 20 should still be in cache")
 }

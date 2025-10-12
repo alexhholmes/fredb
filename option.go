@@ -23,8 +23,10 @@ type DBOptions struct {
 	maxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
-// defaultDBOptions returns safe default configuration.
-func defaultDBOptions() DBOptions {
+// DefaultDBOptions returns safe default configuration.
+//
+// goland:noinspection GoUnusedExportedFunction
+func DefaultDBOptions() DBOptions {
 	return DBOptions{
 		syncMode:       SyncEveryCommit,
 		maxCacheSizeMB: 512, // 512MB

@@ -44,7 +44,7 @@ type DB struct {
 
 func Open(path string, options ...DBOption) (*DB, error) {
 	// Apply options
-	opts := defaultDBOptions()
+	opts := DefaultDBOptions()
 	for _, opt := range options {
 		opt(&opts)
 	}
@@ -55,7 +55,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Page size is 4096 bytes, so 256 pages per MB
-	c := cache.NewCache(opts.maxCacheSizeMB*256, coord)
+	c := cache.NewCache(opts.maxCacheSizeMB * 256)
 
 	// Initialize root (was newTree logic)
 	var root *base.Node
@@ -260,11 +260,11 @@ func Open(path string, options ...DBOption) (*DB, error) {
 				})
 
 				db.coord.ReleasePages(minTxnID)
-				db.cache.CleanupRelocatedVersions(minTxnID)
+				// TODO: Cache cleanup removed after simplification
 			case <-db.stopC:
 				// Shutdown - release everything
 				db.coord.ReleasePages(math.MaxUint64)
-				db.cache.CleanupRelocatedVersions(math.MaxUint64)
+				// TODO: Cache cleanup removed after simplification
 				return
 			}
 		}
@@ -428,12 +428,8 @@ func (db *DB) Close() error {
 		snapshot.Root.Dirty = false
 	}
 
-	// Flush cache
-	if db.cache != nil {
-		if err := db.cache.FlushDirty(db.coord); err != nil {
-			return err
-		}
-	}
+	// TODO: Cache flush removed after simplification
+	// The cache is now a pure LRU cache without dirty page tracking
 
 	// Final sync to ensure durability
 	if err := db.coord.Sync(); err != nil {

@@ -723,11 +723,12 @@ func (pm *Coordinator) deserializeFreelist(pages []*base.Page) {
 
 // LoadNode loads a node, coordinating cache and disk I/O.
 // Routes TX calls through Coordinator instead of direct cache access.
-func (pm *Coordinator) LoadNode(pageID base.PageID, txnID uint64, cache interface {
-	GetOrLoad(base.PageID, uint64) (*base.Node, bool)
-}) (*base.Node, bool) {
-	return cache.GetOrLoad(pageID, txnID)
-}
+// TODO: Temporarily commented out - needs refactoring after cache simplification
+// func (pm *Coordinator) LoadNode(pageID base.PageID, txnID uint64, cache interface {
+// 	GetOrLoad(base.PageID, uint64) (*base.Node, bool)
+// }) (*base.Node, bool) {
+// 	return cache.GetOrLoad(pageID, txnID)
+// }
 
 // LoadNodeFromDisk reads a page from disk and deserializes it to a Node.
 // This centralizes disk I/O + deserialization in coordinator layer.
@@ -755,7 +756,7 @@ func (pm *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64,
 // Used for MVCC: when a page version is relocated to a different physical location,
 // we need to load from relocatedPageID but restore the logical originalPageID.
 // Returns (node, error).
-func (pm *Coordinator) LoadRelocatedNode(originalPageID, relocatedPageID base.PageID, relocatedTxnID uint64) (*base.Node, error) {
+func (pm *Coordinator) LoadRelocatedNode(originalPageID, relocatedPageID base.PageID) (*base.Node, error) {
 	node, _, err := pm.LoadNodeFromDisk(relocatedPageID)
 	if err != nil {
 		return nil, err
@@ -831,7 +832,7 @@ func (pm *Coordinator) CommitTransaction(
 	txnID uint64,
 	syncMode SyncMode,
 	cache interface {
-		Put(base.PageID, uint64, *base.Node)
+		Put(base.PageID, *base.Node)
 	},
 ) error {
 	// Caller must hold db.mu
@@ -914,7 +915,7 @@ func (pm *Coordinator) CommitTransaction(
 		}
 
 		node.Dirty = false
-		cache.Put(node.PageID, txnID, node)
+		cache.Put(node.PageID, node)
 	}
 
 	// Write root separately
@@ -929,7 +930,7 @@ func (pm *Coordinator) CommitTransaction(
 		}
 
 		root.Dirty = false
-		cache.Put(root.PageID, txnID, root)
+		cache.Put(root.PageID, root)
 	}
 
 	// Pass 5: Add freed pages to pending

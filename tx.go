@@ -463,7 +463,7 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
-// loadNode loads a node using hybrid cache: tx.pages → Coordinator → Cache → Storage
+// loadNode loads a node using simplified cache: tx.pages → Cache → Storage
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
@@ -472,11 +472,19 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 		}
 	}
 
-	// Route through Coordinator for proper layering: TX → Coordinator → Cache → Storage
-	node, found := tx.db.coord.LoadNode(pageID, tx.txID, tx.db.cache)
-	if !found {
-		return nil, ErrKeyNotFound
+	// Check simplified cache (no version tracking)
+	if node, found := tx.db.cache.Get(pageID); found {
+		return node, nil
 	}
+
+	// Cache miss - load from disk
+	node, _, err := tx.db.coord.LoadNodeFromDisk(pageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate cache for future reads
+	tx.db.cache.Put(pageID, node)
 
 	return node, nil
 }
