@@ -7,7 +7,7 @@ import (
 
 	"fredb/internal/base"
 	"fredb/internal/cache"
-	"fredb/internal/storage"
+	"fredb/internal/coordinator"
 )
 
 const (
@@ -24,8 +24,8 @@ const (
 
 type DB struct {
 	mu     sync.Mutex // Lock only for writers
-	pager  *storage.PageManager
-	cache  *cache.PageCache
+	pager  *coordinator.PageManager
+	cache  *cache.Cache
 	closed atomic.Bool // Database closed flag
 
 	// Transaction state
@@ -48,7 +48,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	pager, err := storage.NewPageManager(path)
+	pager, err := coordinator.NewPageManager(path)
 	if err != nil {
 		return nil, err
 	}

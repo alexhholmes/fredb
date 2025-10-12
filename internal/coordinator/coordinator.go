@@ -1,14 +1,13 @@
-package storage
+package coordinator
 
 import (
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 
 	"fredb/internal/base"
-	"fredb/internal/directio"
+	storage2 "fredb/internal/storage"
 )
 
 // PendingVersion tracks a page version waiting for readers to finish
@@ -17,18 +16,15 @@ type PendingVersion struct {
 	PhysicalPageID base.PageID // Where it actually lives (may differ if relocated)
 }
 
-// PageManager implements PageManager with disk-based storage
+// PageManager coordinates storage, cache, meta, and freelist
 type PageManager struct {
-	mu   sync.Mutex // Protects meta and freelist access
-	file *os.File
+	mu      sync.Mutex        // Protects meta and freelist access
+	storage *storage2.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
 	activeMeta atomic.Pointer[base.Snapshot]
 	meta0      base.Snapshot
 	meta1      base.Snapshot
-
-	// Direct I/O buffer pool
-	bufPool *sync.Pool // Pool of aligned []byte buffers for direct I/O
 
 	// Freelist tracking
 	freePages        []base.PageID               // sorted array of free Page IDs
@@ -37,101 +33,57 @@ type PageManager struct {
 
 	// Page allocation tracking (separate from meta to avoid data races)
 	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
-
-	// Stats
-	diskReads  atomic.Uint64 // Number of actual disk reads
-	diskWrites atomic.Uint64 // Number of actual disk writes
 }
 
 // NewPageManager opens or creates a database file
 func NewPageManager(path string) (*PageManager, error) {
-	// Use directio.OpenFile - falls back to regular I/O on unsupported platforms
-	file, err := directio.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+	storage, err := storage2.NewStorage(path)
 	if err != nil {
 		return nil, err
 	}
 
-	dm := &PageManager{
-		file:            file,
+	pm := &PageManager{
+		storage:         storage,
 		freePages:       make([]base.PageID, 0),
 		pendingVersions: make(map[uint64][]PendingVersion),
-		bufPool: &sync.Pool{
-			New: func() interface{} {
-				return directio.AlignedBlock(base.PageSize)
-			},
-		},
 	}
 
 	// Check if new file (empty)
-	info, err := file.Stat()
+	empty, err := storage.Empty()
 	if err != nil {
-		_ = file.Close()
+		_ = storage.Close()
 		return nil, err
-	}
-
-	if info.Size() == 0 {
+	} else if empty {
 		// New database - initialize
-		if err := dm.initializeNewDB(); err != nil {
-			_ = file.Close()
+		if err := pm.initializeNewDB(); err != nil {
+			_ = storage.Close()
 			return nil, err
 		}
 	} else {
 		// Existing database - load meta and freelist
-		if err := dm.loadExistingDB(); err != nil {
-			_ = file.Close()
+		if err := pm.loadExistingDB(); err != nil {
+			_ = storage.Close()
 			return nil, err
 		}
 	}
 
-	return dm, nil
+	return pm, nil
 }
 
 // ReadPage reads a Page from disk.
 // Used during checkpoint to read old disk versions before overwriting.
 func (pm *PageManager) ReadPage(id base.PageID) (*base.Page, error) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	offset := int64(id) * base.PageSize
-	page := &base.Page{}
-
-	// Get aligned buffer from pool
-	buf := pm.bufPool.Get().([]byte)
-	defer pm.bufPool.Put(buf)
-
-	pm.diskReads.Add(1) // Track disk read
-	n, err := pm.file.ReadAt(buf, offset)
-	if err != nil {
-		return nil, err
-	}
-	if n != base.PageSize {
-		return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, base.PageSize)
-	}
-
-	// Copy from aligned buffer to page
-	copy(page.Data[:], buf)
-
-	return page, nil
+	return pm.storage.ReadPage(id)
 }
 
 // WritePage writes a Page to a specific offset (with locking)
 func (pm *PageManager) WritePage(id base.PageID, page *base.Page) error {
-	// Defensive check: virtual page IDs (negative when cast to int64) should never reach WritePage
-	if int64(id) < 0 {
-		return fmt.Errorf("FATAL: attempting to write virtual page ID %d (0x%x) to disk - page IDs must be remapped before writing", int64(id), id)
-	}
-
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	return pm.writePageUnsafe(id, page)
+	return pm.storage.WritePage(id, page)
 }
 
 // Sync flushes any buffered writes to disk
 func (pm *PageManager) Sync() error {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	return pm.file.Sync()
+	return pm.storage.Sync()
 }
 
 // AllocatePage allocates a new Page (from freelist or grows file)
@@ -359,7 +311,7 @@ func (pm *PageManager) Close() error {
 		pm.activeMeta.Swap(&pm.meta1)
 	}
 
-	return pm.file.Close()
+	return pm.storage.Close()
 }
 
 // initializeNewDB creates a new database with dual meta pages and empty freelist
@@ -407,7 +359,7 @@ func (pm *PageManager) initializeNewDB() error {
 	}
 
 	// Fsync to ensure durability
-	return pm.file.Sync()
+	return pm.storage.Sync()
 }
 
 // loadExistingDB loads meta and freelist from existing database file
@@ -480,27 +432,10 @@ func (pm *PageManager) loadExistingDB() error {
 	return nil
 }
 
-// writePageUnsafe writes a Page without acquiring the lock (caller must hold lock)
+// writePageUnsafe writes a Page without acquiring pm.mu (caller must hold pm.mu)
+// Delegates to storage which has its own locking
 func (pm *PageManager) writePageUnsafe(id base.PageID, page *base.Page) error {
-	offset := int64(id) * base.PageSize
-
-	// Get aligned buffer from pool
-	buf := pm.bufPool.Get().([]byte)
-	defer pm.bufPool.Put(buf)
-
-	// Copy page to aligned buffer
-	copy(buf, page.Data[:])
-
-	pm.diskWrites.Add(1) // Track disk write
-	n, err := pm.file.WriteAt(buf, offset)
-	if err != nil {
-		return err
-	}
-	if n != base.PageSize {
-		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, base.PageSize)
-	}
-
-	return nil
+	return pm.storage.WritePage(id, page)
 }
 
 const (
@@ -786,7 +721,170 @@ func (pm *PageManager) deserializeFreelist(pages []*base.Page) {
 	}
 }
 
+// LoadNode loads a node, coordinating cache and disk I/O.
+// Routes TX calls through PageManager instead of direct cache access.
+func (pm *PageManager) LoadNode(pageID base.PageID, txnID uint64, cache interface {
+	GetOrLoad(base.PageID, uint64) (*base.Node, bool)
+}) (*base.Node, bool) {
+	return cache.GetOrLoad(pageID, txnID)
+}
+
+// SyncMode controls when to fsync (copied from main package to avoid import cycle)
+type SyncMode int
+
+const (
+	SyncEveryCommit SyncMode = iota
+	SyncOff
+)
+
+// CommitTransaction coordinates the full transaction commit:
+// - Virtual→real page ID mapping
+// - Page writes + cache population
+// - Freed pages handling
+// - Meta update
+// - Sync coordination
+func (pm *PageManager) CommitTransaction(
+	pages map[base.PageID]*base.Node,
+	root *base.Node,
+	freed map[base.PageID]struct{},
+	txnID uint64,
+	syncMode SyncMode,
+	cache interface {
+		Put(base.PageID, uint64, *base.Node)
+	},
+) error {
+	// Caller must hold db.mu
+
+	// Pass 1: Allocate real page IDs for all virtual pages
+	virtualToReal := make(map[base.PageID]base.PageID)
+
+	for pageID := range pages {
+		if int64(pageID) < 0 { // Virtual page ID
+			realPageID, err := pm.AllocatePage()
+			if err != nil {
+				// Rollback partial allocation
+				for _, allocated := range virtualToReal {
+					_ = pm.FreePage(allocated)
+				}
+				return err
+			}
+			virtualToReal[pageID] = realPageID
+		}
+	}
+
+	// Pass 2: Update nodes' PageID fields and remap child pointers
+	for pageID, node := range pages {
+		// Update this node's PageID if map key was virtual
+		if int64(pageID) < 0 {
+			if realID, exists := virtualToReal[pageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Defensive check for node.PageID itself
+		if int64(node.PageID) < 0 {
+			if realID, exists := virtualToReal[node.PageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Remap child pointers in branch nodes
+		if !node.IsLeaf() {
+			for i, childID := range node.Children {
+				if realID, isVirtual := virtualToReal[childID]; isVirtual {
+					node.Children[i] = realID
+				}
+			}
+		}
+	}
+
+	// Pass 3: Handle root separately
+	if root != nil && int64(root.PageID) < 0 {
+		realPageID, err := pm.AllocatePage()
+		if err != nil {
+			// Rollback
+			for _, allocated := range virtualToReal {
+				_ = pm.FreePage(allocated)
+			}
+			return err
+		}
+		virtualToReal[root.PageID] = realPageID
+		root.PageID = realPageID
+	}
+
+	// Remap root's children pointers
+	if root != nil && !root.IsLeaf() {
+		for i, childID := range root.Children {
+			if realID, isVirtual := virtualToReal[childID]; isVirtual {
+				root.Children[i] = realID
+			}
+		}
+	}
+
+	// Pass 4: Write pages to disk and populate cache
+	for _, node := range pages {
+		page, err := node.Serialize(txnID)
+		if err != nil {
+			return err
+		}
+
+		if err := pm.storage.WritePage(node.PageID, page); err != nil {
+			return err
+		}
+
+		node.Dirty = false
+		cache.Put(node.PageID, txnID, node)
+	}
+
+	// Write root separately
+	if root != nil && root.Dirty {
+		page, err := root.Serialize(txnID)
+		if err != nil {
+			return err
+		}
+
+		if err := pm.storage.WritePage(root.PageID, page); err != nil {
+			return err
+		}
+
+		root.Dirty = false
+		cache.Put(root.PageID, txnID, root)
+	}
+
+	// Pass 5: Add freed pages to pending
+	if len(freed) > 0 {
+		freedSlice := make([]base.PageID, 0, len(freed))
+		for pageID := range freed {
+			freedSlice = append(freedSlice, pageID)
+		}
+		if err := pm.FreePending(txnID, freedSlice); err != nil {
+			return err
+		}
+	}
+
+	// Pass 6: Update meta
+	meta := pm.GetMeta()
+	if root != nil {
+		meta.RootPageID = root.PageID
+	}
+	meta.TxID = txnID
+	meta.Checksum = meta.CalculateChecksum()
+
+	if err := pm.PutSnapshot(meta, root); err != nil {
+		return err
+	}
+
+	// Pass 7: Conditional sync (this is the commit point!)
+	if syncMode == SyncEveryCommit {
+		if err := pm.storage.Sync(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Stats returns disk I/O statistics
 func (pm *PageManager) Stats() (reads, writes uint64) {
-	return pm.diskReads.Load(), pm.diskWrites.Load()
+	return pm.storage.Stats()
 }

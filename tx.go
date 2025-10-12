@@ -6,6 +6,7 @@ import (
 
 	"fredb/internal/algo"
 	"fredb/internal/base"
+	"fredb/internal/coordinator"
 )
 
 // Tx represents a transaction on the database.
@@ -67,7 +68,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	}
 
 	// Branch node: continue descending
-	// i is the correct child index (first child with keys >= search_key)
+	// `i` is the correct child index (first child with keys >= search_key)
 	child, err := tx.loadNode(node.Children[i])
 	if err != nil {
 		return nil, err
@@ -221,184 +222,42 @@ func (tx *Tx) Commit() error {
 		return ErrTxNotWritable
 	}
 
-	// Apply transaction changes to database (writers only need mu)
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
-	// NEW: Allocate real page IDs for all virtual pages
-	// Temporary map for remapping (local to this function, stack-allocated)
-	virtualToReal := make(map[base.PageID]base.PageID)
-
-	// Pass 1: Allocate real page IDs for all virtual pages (identified by map key)
-	for pageID := range tx.pages {
-		if int64(pageID) < 0 { // Virtual page ID (map key) - PageID is uint64, virtual IDs are negative
-			// NOW allocate from PageManager (at commit time)
-			realPageID, err := tx.db.pager.AllocatePage()
-			if err != nil {
-				// Rollback partial allocation - return already-allocated real pages
-				for _, allocated := range virtualToReal {
-					_ = tx.db.pager.FreePage(allocated)
-				}
-				return err
-			}
-
-			// Track mapping for remapping pass
-			virtualToReal[pageID] = realPageID
-		}
+	// Convert syncMode to storage package type
+	var syncMode coordinator.SyncMode
+	if tx.db.options.syncMode == SyncEveryCommit {
+		syncMode = coordinator.SyncEveryCommit
+	} else {
+		syncMode = coordinator.SyncOff
 	}
 
-	// Pass 2: Update all nodes' PageID fields and remap child pointers
-	for pageID, node := range tx.pages {
-		// Update this node's PageID if the map key was virtual
-		if int64(pageID) < 0 {
-			if realID, exists := virtualToReal[pageID]; exists {
-				node.PageID = realID
-			}
-		}
-
-		// Also check if node.PageID itself is virtual (defensive check for any edge cases)
-		if int64(node.PageID) < 0 {
-			if realID, exists := virtualToReal[node.PageID]; exists {
-				node.PageID = realID
-			}
-		}
-
-		// Remap child pointers in branch nodes
-		if !node.IsLeaf() {
-			for i, childID := range node.Children {
-				if realID, isVirtual := virtualToReal[childID]; isVirtual {
-					node.Children[i] = realID
-				}
-			}
-		}
-	}
-
-	// Pass 3: Handle root separately (not in tx.pages)
-	// Allocate real page ID for root if it's virtual
-	if tx.root != nil && int64(tx.root.PageID) < 0 {
-		realPageID, err := tx.db.pager.AllocatePage()
-		if err != nil {
-			// Rollback partial allocation
-			for _, allocated := range virtualToReal {
-				_ = tx.db.pager.FreePage(allocated)
-			}
-			return err
-		}
-		virtualToReal[tx.root.PageID] = realPageID
-		tx.root.PageID = realPageID
-	}
-
-	// Also remap root's children pointers
-	if tx.root != nil && !tx.root.IsLeaf() {
-		for i, childID := range tx.root.Children {
-			if realID, isVirtual := virtualToReal[childID]; isVirtual {
-				tx.root.Children[i] = realID
-			}
-		}
-	}
-
-	// Write all TX-local pages directly to disk
-	// IMPORTANT: Populate cache BEFORE updating root to prevent race condition
-	// where concurrent readers capture new root but pages aren't available yet
-	for _, node := range tx.pages {
-		// Use node.PageID (already remapped to real page ID)
-
-		// Serialize Node to a Page with this transaction's ID
-		page, err := node.Serialize(tx.txnID)
-		if err != nil {
-			return err
-		}
-
-		// Write directly to pager (disk) using real page ID
-		if err := tx.db.pager.WritePage(node.PageID, page); err != nil {
-			return err
-		}
-
-		// Clear Dirty flag after successful write
-		node.Dirty = false
-
-		// Flush to global versioned cache with this transaction's ID using real page ID
-		// This makes the new version visible to future transactions
-		tx.db.cache.Put(node.PageID, tx.txnID, node)
-	}
-
-	// Write root separately (not in tx.pages)
-	if tx.root != nil && tx.root.Dirty {
-		// Serialize root
-		page, err := tx.root.Serialize(tx.txnID)
-		if err != nil {
-			return err
-		}
-
-		// Write root to disk
-		if err := tx.db.pager.WritePage(tx.root.PageID, page); err != nil {
-			return err
-		}
-
-		// Clear Dirty flag
-		tx.root.Dirty = false
-
-		// Add root to cache
-		tx.db.cache.Put(tx.root.PageID, tx.txnID, tx.root)
-	}
-
-	// Add freed pages to pending at this transaction ID
-	// These pages were part of the previous version and can be reclaimed
-	// when all readers that might reference them have finished.
-	if len(tx.freed) > 0 {
-		dm := tx.db.pager
-		// Convert map to slice for FreePending
-		freedSlice := make([]base.PageID, 0, len(tx.freed))
-		for pageID := range tx.freed {
-			freedSlice = append(freedSlice, pageID)
-		}
-		err := dm.FreePending(tx.txnID, freedSlice)
-		if err != nil {
-			// TODO
-		}
-	}
-
-	// Write meta Page to disk for persistence
-	// get current meta from storage
-	meta := tx.db.pager.GetMeta()
-
-	// Build new meta Page with updated root and incremented TxID
-	if tx.root != nil {
-		meta.RootPageID = tx.root.PageID
-	}
-	meta.TxID = tx.txnID
-	meta.Checksum = meta.CalculateChecksum()
-
-	// Update storage's in-memory meta WITH root pointer atomically
-	// This makes all COW changes visible to future transactions
-	// CRITICAL: Done AFTER cache population to ensure pages are available
-	if err := tx.db.pager.PutSnapshot(meta, tx.root); err != nil {
+	// Delegate coordination to PageManager
+	err := tx.db.pager.CommitTransaction(
+		tx.pages,
+		tx.root,
+		tx.freed,
+		tx.txnID,
+		syncMode,
+		tx.db.cache,
+	)
+	if err != nil {
 		return err
 	}
 
-	// Conditionally fsync based on sync mode (this is the commit point!)
-	if tx.db.options.syncMode == SyncEveryCommit {
-		if err := tx.db.pager.Sync(); err != nil {
-			return err
-		}
-	}
-
-	// Commit the meta page after syncing
+	// Commit the meta page after syncing (makes changes visible)
 	tx.db.pager.CommitSnapshot()
 
 	tx.db.writer.Store(nil)
 
-	// Trigger background releaser to reclaim pending pages
-	// Non-blocking send - if channel is full, next trigger will handle it
+	// Trigger background releaser
 	select {
 	case tx.db.releaseC <- 0:
 	default:
 	}
 
-	// Mark transaction as done ONLY after all writes succeed
-	// This ensures Rollback can clean up if any write fails
 	tx.done = true
-
 	return nil
 }
 
@@ -563,84 +422,19 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
-// loadFromDisk loads a node from disk with relocation support
-func (tx *Tx) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
-	// Check if a relocated version exists that's visible to this transaction
-	relocPageID, relocTxnID := tx.db.pager.GetLatestVisible(pageID, tx.txnID)
-	if relocPageID != 0 {
-		// Found relocated version - read from relocated location
-		page, err := tx.db.pager.ReadPage(relocPageID)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		// Deserialize relocated page
-		node := &base.Node{
-			PageID: pageID, // Use original PageID, not relocated
-			Dirty:  false,
-		}
-
-		if err := node.Deserialize(page); err != nil {
-			return nil, 0, err
-		}
-
-		return node, relocTxnID, nil
-	}
-
-	// No relocated version - read from original location
-	page, err := tx.db.pager.ReadPage(pageID)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// Deserialize page
-	node := &base.Node{
-		PageID: pageID,
-		Dirty:  false,
-	}
-
-	header := page.Header()
-	if err := node.Deserialize(page); err != nil {
-		return nil, 0, err
-	}
-
-	// Cycle detection
-	if !node.IsLeaf() {
-		for _, childID := range node.Children {
-			if childID == pageID {
-				return nil, 0, ErrCorruption
-			}
-		}
-	}
-
-	return node, header.TxnID, nil
-}
-
-// loadNode loads a node using hybrid cache: tx.pages → versioned global cache → disk
+// loadNode loads a node using hybrid cache: tx.pages → PageManager → Cache → Storage
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
-	// 1. Check TX-local cache first (if writable tx with uncommitted changes)
+	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
 		if node, exists := tx.pages[pageID]; exists {
 			return node, nil
 		}
 	}
 
-	// 2. GetOrLoad atomically checks cache or coordinates disk load
-	node, found := tx.db.cache.GetOrLoad(pageID, tx.txnID, func() (*base.Node, uint64, error) {
-		return tx.loadFromDisk(pageID)
-	})
-
+	// Route through PageManager for proper layering: TX → PageManager → Cache → Storage
+	node, found := tx.db.pager.LoadNode(pageID, tx.txnID, tx.db.cache)
 	if !found {
 		return nil, ErrKeyNotFound
-	}
-
-	// 3. Cycle detection on cached node
-	if !node.IsLeaf() {
-		for _, childID := range node.Children {
-			if childID == pageID {
-				return nil, ErrCorruption
-			}
-		}
 	}
 
 	return node, nil

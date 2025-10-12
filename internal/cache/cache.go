@@ -6,19 +6,19 @@ import (
 	"sync/atomic"
 
 	"fredb/internal/base"
-	"fredb/internal/storage"
+	"fredb/internal/coordinator"
 )
 
-// PageCache implements a versioned LRU cache for MVCC isolation.
+// Cache implements a versioned LRU cache for MVCC isolation.
 // Each Page can have multiple versions (one per committing transaction).
 // Readers see the latest version where version.txnID <= reader.txnID.
-type PageCache struct {
+type Cache struct {
 	mu       sync.RWMutex
 	maxSize  int                             // Max total versions (e.g., 1024)
 	lowWater int                             // Evict to this (80% of max)
 	entries  map[base.PageID][]*versionEntry // Multiple versions per Page
 	lruList  *list.List                      // Doubly-linked list (front=MRU, back=LRU)
-	pager    *storage.PageManager            // Sibling-reference not ownership
+	pager    *coordinator.PageManager        // Sibling-reference not ownership
 
 	// Atomic GetOrLoad coordination
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
@@ -55,10 +55,10 @@ const (
 )
 
 // NewPageCache creates a new Page cache with the specified maximum size
-func NewPageCache(maxSize int, pagemanager *storage.PageManager) *PageCache {
+func NewPageCache(maxSize int, pagemanager *coordinator.PageManager) *Cache {
 	maxSize = max(maxSize, MinCacheSize)
 
-	return &PageCache{
+	return &Cache{
 		maxSize:  maxSize,
 		lowWater: (maxSize * 4) / 5, // 80%
 		entries:  make(map[base.PageID][]*versionEntry),
@@ -69,7 +69,7 @@ func NewPageCache(maxSize int, pagemanager *storage.PageManager) *PageCache {
 
 // Put adds a new version of a Page to the cache.
 // The version is tagged with the committing transaction's ID for MVCC.
-func (c *PageCache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
+func (c *Cache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -105,7 +105,7 @@ func (c *PageCache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 
 // FlushDirty writes all Dirty cached Node versions to disk.
 // Returns the first error encountered, but attempts to flush all Dirty nodes.
-func (c *PageCache) FlushDirty(pager *storage.PageManager) error {
+func (c *Cache) FlushDirty(pager *coordinator.PageManager) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -144,12 +144,12 @@ func (c *PageCache) FlushDirty(pager *storage.PageManager) error {
 }
 
 // Stats returns cache statistics
-func (c *PageCache) Stats() (hits, misses, evictions uint64) {
+func (c *Cache) Stats() (hits, misses, evictions uint64) {
 	return c.hits.Load(), c.misses.Load(), c.evictions.Load()
 }
 
 // Size returns current number of cached Page versions
-func (c *PageCache) Size() int {
+func (c *Cache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -162,7 +162,7 @@ func (c *PageCache) Size() int {
 
 // Invalidate removes all cached versions of a Page.
 // Used when a PageID is reallocated to prevent stale cache hits.
-func (c *PageCache) Invalidate(pageID base.PageID) {
+func (c *Cache) Invalidate(pageID base.PageID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -197,7 +197,7 @@ func (c *PageCache) Invalidate(pageID base.PageID) {
 // For each page, keeps the latest version where txnID <= minReaderTxn (what oldest reader sees)
 // plus any newer versions. Evicts older superseded versions that are checkpointed.
 // Called by background checkpointer after checkpoint completes.
-func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
+func (c *Cache) EvictCheckpointed(minReaderTxn uint64) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -257,9 +257,7 @@ func (c *PageCache) EvictCheckpointed(minReaderTxn uint64) int {
 // GetOrLoad retrieves a Node from cache or loads it from disk atomically.
 // Coordinates concurrent loads to prevent multiple threads loading the same Page.
 // Returns (Node, true) if version is visible, (nil, false) otherwise.
-func (c *PageCache) GetOrLoad(pageID base.PageID, txnID uint64,
-	loadFunc func() (*base.Node, uint64, error)) (*base.Node, bool) {
-
+func (c *Cache) GetOrLoad(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	// Fast path: active cache first
 	if node, hit := c.get(pageID, txnID); hit {
 		return node, true
@@ -309,7 +307,7 @@ func (c *PageCache) GetOrLoad(pageID base.PageID, txnID uint64,
 	state.mu.Unlock()
 
 	// Load from disk WITHOUT holding any locks (I/O)
-	node, diskTxnID, err := loadFunc()
+	node, diskTxnID, err := c.loadFromDisk(pageID)
 
 	// store result for waiting threads
 	state.mu.Lock()
@@ -347,10 +345,31 @@ func (c *PageCache) GetOrLoad(pageID base.PageID, txnID uint64,
 	return c.loadRelocatedVersion(pageID, txnID)
 }
 
+// loadFromDisk reads a page from disk and deserializes it.
+// Called by GetOrLoad when page is not in cache.
+func (c *Cache) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
+	page, err := c.pager.ReadPage(pageID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	node := &base.Node{
+		PageID: pageID,
+		Dirty:  false,
+	}
+
+	header := page.Header()
+	if err := node.Deserialize(page); err != nil {
+		return nil, 0, err
+	}
+
+	return node, header.TxnID, nil
+}
+
 // get retrieves a Node version visible to the transaction (MVCC snapshot isolation).
 // Returns the latest version where version.txnID <= txnID.
 // Returns (Node, true) on cache hit, (nil, false) on miss.
-func (c *PageCache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
+func (c *Cache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -382,7 +401,7 @@ func (c *PageCache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 
 // getGeneration returns the current generation counter for a PageID.
 // Used to detect invalidation during disk loads.
-func (c *PageCache) getGeneration(pageID base.PageID) uint64 {
+func (c *Cache) getGeneration(pageID base.PageID) uint64 {
 	if val, ok := c.generations.Load(pageID); ok {
 		return val.(uint64)
 	}
@@ -391,7 +410,7 @@ func (c *PageCache) getGeneration(pageID base.PageID) uint64 {
 
 // loadRelocatedVersion attempts to load an older relocated version visible to txnID.
 // Returns (Node, true) if found, (nil, false) otherwise.
-func (c *PageCache) loadRelocatedVersion(pageID base.PageID, txnID uint64) (*base.Node, bool) {
+func (c *Cache) loadRelocatedVersion(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	relocatedPageID, relocatedTxnID := c.pager.GetLatestVisible(pageID, txnID)
 	if relocatedPageID == 0 {
 		return nil, false
@@ -423,7 +442,7 @@ func (c *PageCache) loadRelocatedVersion(pageID base.PageID, txnID uint64) (*bas
 
 // canEvict returns true if a Page version is safe to evict.
 // A version is safe to evict if it has been checkpointed to disk.
-func (c *PageCache) canEvict(txnID uint64) bool {
+func (c *Cache) canEvict(txnID uint64) bool {
 	if c.pager == nil {
 		return true // No storage (test mode), allow eviction
 	}
@@ -435,14 +454,14 @@ func (c *PageCache) canEvict(txnID uint64) bool {
 // and adds relocated pages to freelist.pending.
 // Called by background releaser when readers finish.
 // Returns the number of relocated versions cleaned up.
-func (c *PageCache) CleanupRelocatedVersions(minReaderTxn uint64) int {
+func (c *Cache) CleanupRelocatedVersions(minReaderTxn uint64) int {
 	// Cleanup is now handled by ReleasePages since pendingVersions
 	// contains both in-place freed pages and relocated versions
 	return 0
 }
 
 // countEntries returns total number of cached entries across all pages
-func (c *PageCache) countEntries() int {
+func (c *Cache) countEntries() int {
 	total := 0
 	for _, versions := range c.entries {
 		total += len(versions)
@@ -452,7 +471,7 @@ func (c *PageCache) countEntries() int {
 
 // flushDirtyPage writes a Dirty node to disk and marks it clean.
 // Returns true if successfully flushed, false if should skip eviction.
-func (c *PageCache) flushDirtyPage(entry *versionEntry) bool {
+func (c *Cache) flushDirtyPage(entry *versionEntry) bool {
 	if !entry.node.Dirty {
 		return true // Already clean
 	}
@@ -473,7 +492,7 @@ func (c *PageCache) flushDirtyPage(entry *versionEntry) bool {
 
 // relocateVersion writes an old version to a new location for MVCC.
 // Returns true if successfully relocated, false if should skip eviction.
-func (c *PageCache) relocateVersion(entry *versionEntry) bool {
+func (c *Cache) relocateVersion(entry *versionEntry) bool {
 	// Only relocate if there are multiple versions (readers might need old version)
 	if len(c.entries[entry.pageID]) <= 1 {
 		return true // No need to relocate
@@ -503,7 +522,7 @@ func (c *PageCache) relocateVersion(entry *versionEntry) bool {
 }
 
 // removeEntry removes a version entry from cache structures
-func (c *PageCache) removeEntry(entry *versionEntry) {
+func (c *Cache) removeEntry(entry *versionEntry) {
 	// Remove from LRU list
 	c.lruList.Remove(entry.lruElement)
 
@@ -527,7 +546,7 @@ func (c *PageCache) removeEntry(entry *versionEntry) {
 
 // evictToWaterMark evicts old versions from LRU end until at lowWater.
 // Must be called with write lock held.
-func (c *PageCache) evictToWaterMark() {
+func (c *Cache) evictToWaterMark() {
 	target := c.lowWater
 	attempts := 0
 	maxAttempts := c.maxSize * 2
