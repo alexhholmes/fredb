@@ -729,6 +729,87 @@ func (pm *Coordinator) LoadNode(pageID base.PageID, txnID uint64, cache interfac
 	return cache.GetOrLoad(pageID, txnID)
 }
 
+// LoadNodeFromDisk reads a page from disk and deserializes it to a Node.
+// This centralizes disk I/O + deserialization in coordinator layer.
+// Returns (node, diskTxnID, error).
+func (pm *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
+	page, err := pm.storage.ReadPage(pageID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	node := &base.Node{
+		PageID: pageID,
+		Dirty:  false,
+	}
+
+	header := page.Header()
+	if err := node.Deserialize(page); err != nil {
+		return nil, 0, err
+	}
+
+	return node, header.TxnID, nil
+}
+
+// LoadRelocatedNode loads a relocated version from disk and restores original PageID.
+// Used for MVCC: when a page version is relocated to a different physical location,
+// we need to load from relocatedPageID but restore the logical originalPageID.
+// Returns (node, error).
+func (pm *Coordinator) LoadRelocatedNode(originalPageID, relocatedPageID base.PageID, relocatedTxnID uint64) (*base.Node, error) {
+	node, _, err := pm.LoadNodeFromDisk(relocatedPageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Restore logical PageID (node was relocated but logically represents originalPageID)
+	node.PageID = originalPageID
+
+	return node, nil
+}
+
+// RelocateVersion writes a node version to a new physical location for MVCC.
+// Serializes node, allocates new page, writes to disk, and tracks the relocation.
+// Returns (relocatedPageID, error).
+func (pm *Coordinator) RelocateVersion(node *base.Node, txnID uint64, originalPageID base.PageID) (base.PageID, error) {
+	// Serialize the version
+	page, err := node.Serialize(txnID)
+	if err != nil {
+		return 0, err
+	}
+
+	// Allocate a page for relocation
+	relocatedPageID, err := pm.AllocatePage()
+	if err != nil {
+		return 0, err
+	}
+
+	// Write version to relocated page
+	if err := pm.storage.WritePage(relocatedPageID, page); err != nil {
+		_ = pm.FreePage(relocatedPageID)
+		return 0, err
+	}
+
+	// Track relocation mapping
+	if err := pm.FreePendingRelocated(txnID, originalPageID, relocatedPageID); err != nil {
+		_ = pm.FreePage(relocatedPageID)
+		return 0, err
+	}
+
+	return relocatedPageID, nil
+}
+
+// FlushNode serializes and writes a dirty node to disk.
+// Used by cache to flush dirty pages during eviction or checkpoint.
+// Returns error if serialization or write fails.
+func (pm *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageID) error {
+	page, err := node.Serialize(txnID)
+	if err != nil {
+		return err
+	}
+
+	return pm.storage.WritePage(pageID, page)
+}
+
 // SyncMode controls when to fsync (copied from main package to avoid import cycle)
 type SyncMode int
 

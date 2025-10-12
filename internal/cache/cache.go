@@ -17,7 +17,7 @@ type Cache struct {
 	maxSize  int                             // Max total versions (e.g., 1024)
 	lowWater int                             // Evict to this (80% of max)
 	versions map[base.PageID][]*versionEntry // Multiple versions per Page
-	lruList  *list.List                      // Doubly-linked list (front=MRU, back=LRU)
+	lru      *list.List                      // Doubly-linked list (front=MRU, back=LRU)
 	pager    *coordinator.Coordinator        // Sibling-reference not ownership
 
 	// Atomic GetOrLoad coordination
@@ -62,7 +62,7 @@ func NewCache(maxSize int, pagemanager *coordinator.Coordinator) *Cache {
 		maxSize:  maxSize,
 		lowWater: (maxSize * 4) / 5, // 80%
 		versions: make(map[base.PageID][]*versionEntry),
-		lruList:  list.New(),
+		lru:      list.New(),
 		pager:    pagemanager,
 	}
 }
@@ -78,7 +78,7 @@ func (c *Cache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 		for _, existing := range versions {
 			if existing.txnID == txnID {
 				// Version already cached, update LRU and return
-				c.lruList.MoveToFront(existing.lruElement)
+				c.lru.MoveToFront(existing.lruElement)
 				return
 			}
 		}
@@ -91,7 +91,7 @@ func (c *Cache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 		node:     node,
 		pinCount: 0, // Not pinned initially (caller doesn't hold reference)
 	}
-	entry.lruElement = c.lruList.PushFront(entry)
+	entry.lruElement = c.lru.PushFront(entry)
 
 	// Append to versions list (maintains sorted order if txnID is monotonic)
 	c.versions[pageID] = append(c.versions[pageID], entry)
@@ -118,19 +118,10 @@ func (c *Cache) FlushDirty(pager *coordinator.Coordinator) error {
 				continue
 			}
 
-			// Serialize Node with the transaction ID that committed this version
-			page, serErr := entry.node.Serialize(entry.txnID)
-			if serErr != nil {
+			// Delegate to coordinator for serialize + write
+			if flushErr := (*pager).FlushNode(entry.node, entry.txnID, entry.pageID); flushErr != nil {
 				if err == nil {
-					err = serErr
-				}
-				continue
-			}
-
-			// Write to disk
-			if writeErr := (*pager).WritePage(entry.pageID, page); writeErr != nil {
-				if err == nil {
-					err = writeErr
+					err = flushErr
 				}
 				continue
 			}
@@ -182,7 +173,7 @@ func (c *Cache) Invalidate(pageID base.PageID) {
 	numVersions := len(versions)
 	for _, entry := range versions {
 		if entry.lruElement != nil {
-			c.lruList.Remove(entry.lruElement)
+			c.lru.Remove(entry.lruElement)
 			c.evictions.Add(1)
 		}
 	}
@@ -231,7 +222,7 @@ func (c *Cache) EvictCheckpointed(minReaderTxn uint64) int {
 			if shouldEvict {
 				// Evict superseded version
 				if entry.lruElement != nil {
-					c.lruList.Remove(entry.lruElement)
+					c.lru.Remove(entry.lruElement)
 				}
 				evicted++
 				c.evictions.Add(1)
@@ -345,25 +336,18 @@ func (c *Cache) GetOrLoad(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	return c.loadRelocatedVersion(pageID, txnID)
 }
 
-// loadFromDisk reads a page from disk and deserializes it.
+// loadFromDisk delegates to coordinator for disk I/O and deserialization.
 // Called by GetOrLoad when page is not in cache.
 func (c *Cache) loadFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
-	page, err := c.pager.ReadPage(pageID)
-	if err != nil {
-		return nil, 0, err
-	}
+	return c.pager.LoadNodeFromDisk(pageID)
+}
 
-	node := &base.Node{
-		PageID: pageID,
-		Dirty:  false,
-	}
-
-	header := page.Header()
-	if err := node.Deserialize(page); err != nil {
-		return nil, 0, err
-	}
-
-	return node, header.TxnID, nil
+// Get retrieves a Node version visible to the transaction (MVCC snapshot isolation).
+// Returns the latest version where version.txnID <= txnID.
+// Returns (Node, true) on cache hit, (nil, false) on miss.
+// Pure cache lookup - for future use when coordinator owns disk I/O.
+func (c *Cache) Get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
+	return c.get(pageID, txnID)
 }
 
 // get retrieves a Node version visible to the transaction (MVCC snapshot isolation).
@@ -395,7 +379,7 @@ func (c *Cache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	}
 
 	c.hits.Add(1)
-	c.lruList.MoveToFront(found.lruElement)
+	c.lru.MoveToFront(found.lruElement)
 	return found.node, true
 }
 
@@ -416,28 +400,15 @@ func (c *Cache) loadRelocatedVersion(pageID base.PageID, txnID uint64) (*base.No
 		return nil, false
 	}
 
-	// Found an older relocated version
-	page, err := c.pager.ReadPage(relocatedPageID)
+	// Delegate disk I/O and deserialization to coordinator
+	node, err := c.pager.LoadRelocatedNode(pageID, relocatedPageID, relocatedTxnID)
 	if err != nil {
 		return nil, false
 	}
 
-	relocatedNode := &base.Node{
-		PageID: pageID, // Use original PageID, not relocated
-		Dirty:  false,
-	}
-	header := page.Header()
-	if header.NumKeys == 0 {
-		return nil, false
-	}
-
-	if err := relocatedNode.Deserialize(page); err != nil {
-		return nil, false
-	}
-
 	// Cache the relocated version
-	c.Put(pageID, relocatedTxnID, relocatedNode)
-	return relocatedNode, true
+	c.Put(pageID, relocatedTxnID, node)
+	return node, true
 }
 
 // canEvict returns true if a Page version is safe to evict.
@@ -476,13 +447,8 @@ func (c *Cache) flushDirtyPage(entry *versionEntry) bool {
 		return true // Already clean
 	}
 
-	// Serialize and write to disk
-	page, err := entry.node.Serialize(entry.txnID)
-	if err != nil {
-		return false
-	}
-
-	if err := c.pager.WritePage(entry.pageID, page); err != nil {
+	// Delegate to coordinator for serialize + write
+	if err := c.pager.FlushNode(entry.node, entry.txnID, entry.pageID); err != nil {
 		return false
 	}
 
@@ -498,33 +464,15 @@ func (c *Cache) relocateVersion(entry *versionEntry) bool {
 		return true // No need to relocate
 	}
 
-	// Serialize the version
-	page, err := entry.node.Serialize(entry.txnID)
-	if err != nil {
-		return false
-	}
-
-	// Allocate a free pages for relocation
-	relocatedPageID, err := c.pager.AllocatePage()
-	if err != nil {
-		return false
-	}
-
-	// Write version to relocated pages
-	if err := c.pager.WritePage(relocatedPageID, page); err != nil {
-		_ = c.pager.FreePage(relocatedPageID)
-		return false
-	}
-
-	// Track relocation
-	c.pager.FreePendingRelocated(entry.txnID, entry.pageID, relocatedPageID)
-	return true
+	// Delegate to coordinator for serialization, allocation, write, and tracking
+	_, err := c.pager.RelocateVersion(entry.node, entry.txnID, entry.pageID)
+	return err == nil
 }
 
 // removeEntry removes a version entry from cache structures
 func (c *Cache) removeEntry(entry *versionEntry) {
 	// Remove from LRU list
-	c.lruList.Remove(entry.lruElement)
+	c.lru.Remove(entry.lruElement)
 
 	// Remove from versions array
 	versions := c.versions[entry.pageID]
@@ -552,7 +500,7 @@ func (c *Cache) evictToWaterMark() {
 	maxAttempts := c.maxSize * 2
 
 	for int(c.entries.Load()) > target && attempts < maxAttempts {
-		elem := c.lruList.Back()
+		elem := c.lru.Back()
 		if elem == nil {
 			break
 		}
@@ -562,7 +510,7 @@ func (c *Cache) evictToWaterMark() {
 
 		// Flush if Dirty - write to disk before evicting from memory
 		if !c.flushDirtyPage(entry) {
-			c.lruList.MoveToFront(elem)
+			c.lru.MoveToFront(elem)
 			continue
 		}
 
@@ -572,31 +520,15 @@ func (c *Cache) evictToWaterMark() {
 
 		if !isCheckpointed {
 			// Page only exists in WAL, not at final disk location
-			// Force relocation: write to new location so it's readable even after eviction
-			page, err := entry.node.Serialize(entry.txnID)
-			if err != nil {
-				c.lruList.MoveToFront(elem)
+			// Force relocation: delegate to coordinator
+			if _, err := c.pager.RelocateVersion(entry.node, entry.txnID, entry.pageID); err != nil {
+				c.lru.MoveToFront(elem)
 				continue
 			}
-
-			relocatedPageID, err := c.pager.AllocatePage()
-			if err != nil {
-				c.lruList.MoveToFront(elem)
-				continue
-			}
-
-			if err := c.pager.WritePage(relocatedPageID, page); err != nil {
-				_ = c.pager.FreePage(relocatedPageID)
-				c.lruList.MoveToFront(elem)
-				continue
-			}
-
-			// Track relocation mapping (originalPageID -> relocatedPageID at txnID)
-			c.pager.FreePendingRelocated(entry.txnID, entry.pageID, relocatedPageID)
 		} else {
 			// Already checkpointed - relocate only if needed for MVCC
 			if !c.relocateVersion(entry) {
-				c.lruList.MoveToFront(elem)
+				c.lru.MoveToFront(elem)
 				continue
 			}
 		}
