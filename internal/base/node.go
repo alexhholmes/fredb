@@ -107,7 +107,7 @@ func (n *Node) Deserialize(p *Page) error {
 	n.PageID = header.PageID
 	n.NumKeys = header.NumKeys
 
-	if n.IsLeaf() {
+	if (header.Flags & LeafPageFlag) != 0 {
 		// Deserialize leaf Node
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
