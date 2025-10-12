@@ -16,8 +16,8 @@ type PendingVersion struct {
 	PhysicalPageID base.PageID // Where it actually lives (may differ if relocated)
 }
 
-// PageManager coordinates storage, cache, meta, and freelist
-type PageManager struct {
+// Coordinator coordinates storage, cache, meta, and freelist
+type Coordinator struct {
 	mu      sync.Mutex        // Protects meta and freelist access
 	storage *storage2.Storage // File I/O backend
 
@@ -35,14 +35,14 @@ type PageManager struct {
 	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
 }
 
-// NewPageManager opens or creates a database file
-func NewPageManager(path string) (*PageManager, error) {
+// NewCoordinator opens or creates a database file
+func NewCoordinator(path string) (*Coordinator, error) {
 	storage, err := storage2.NewStorage(path)
 	if err != nil {
 		return nil, err
 	}
 
-	pm := &PageManager{
+	pm := &Coordinator{
 		storage:         storage,
 		freePages:       make([]base.PageID, 0),
 		pendingVersions: make(map[uint64][]PendingVersion),
@@ -72,22 +72,22 @@ func NewPageManager(path string) (*PageManager, error) {
 
 // ReadPage reads a Page from disk.
 // Used during checkpoint to read old disk versions before overwriting.
-func (pm *PageManager) ReadPage(id base.PageID) (*base.Page, error) {
+func (pm *Coordinator) ReadPage(id base.PageID) (*base.Page, error) {
 	return pm.storage.ReadPage(id)
 }
 
 // WritePage writes a Page to a specific offset (with locking)
-func (pm *PageManager) WritePage(id base.PageID, page *base.Page) error {
+func (pm *Coordinator) WritePage(id base.PageID, page *base.Page) error {
 	return pm.storage.WritePage(id, page)
 }
 
 // Sync flushes any buffered writes to disk
-func (pm *PageManager) Sync() error {
+func (pm *Coordinator) Sync() error {
 	return pm.storage.Sync()
 }
 
 // AllocatePage allocates a new Page (from freelist or grows file)
-func (pm *PageManager) AllocatePage() (base.PageID, error) {
+func (pm *Coordinator) AllocatePage() (base.PageID, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -111,7 +111,7 @@ func (pm *PageManager) AllocatePage() (base.PageID, error) {
 }
 
 // FreePage adds a Page to the freelist
-func (pm *PageManager) FreePage(id base.PageID) error {
+func (pm *Coordinator) FreePage(id base.PageID) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -120,7 +120,7 @@ func (pm *PageManager) FreePage(id base.PageID) error {
 }
 
 // FreePending adds pages to the pending freelist at the given transaction ID
-func (pm *PageManager) FreePending(txnID uint64, pageIDs []base.PageID) error {
+func (pm *Coordinator) FreePending(txnID uint64, pageIDs []base.PageID) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -129,14 +129,14 @@ func (pm *PageManager) FreePending(txnID uint64, pageIDs []base.PageID) error {
 }
 
 // ReleasePages moves pages from pending to free for all transactions < minTxnID
-func (pm *PageManager) ReleasePages(minTxnID uint64) int {
+func (pm *Coordinator) ReleasePages(minTxnID uint64) int {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	return pm.release(minTxnID)
 }
 
 // PreventAllocationUpTo prevents allocation of pages freed up to and including the specified txnID
-func (pm *PageManager) PreventAllocationUpTo(txnID uint64) {
+func (pm *Coordinator) PreventAllocationUpTo(txnID uint64) {
 	// We want to hold a lock rather than use an atomic because this is held by
 	// DB during checkpoint.
 	pm.mu.Lock()
@@ -145,14 +145,14 @@ func (pm *PageManager) PreventAllocationUpTo(txnID uint64) {
 }
 
 // AllowAllAllocations clears the allocation prevention
-func (pm *PageManager) AllowAllAllocations() {
+func (pm *Coordinator) AllowAllAllocations() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.preventUpToTxnID = 0
 }
 
 // FreePendingRelocated adds a relocated page version to the pending map
-func (pm *PageManager) FreePendingRelocated(txnID uint64, originalPageID base.PageID, relocatedPageID base.PageID) error {
+func (pm *Coordinator) FreePendingRelocated(txnID uint64, originalPageID base.PageID, relocatedPageID base.PageID) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -164,7 +164,7 @@ func (pm *PageManager) FreePendingRelocated(txnID uint64, originalPageID base.Pa
 }
 
 // GetLatestVisible returns the relocated Page ID for the latest version visible to txnID
-func (pm *PageManager) GetLatestVisible(originalPageID base.PageID, maxTxnID uint64) (base.PageID, uint64) {
+func (pm *Coordinator) GetLatestVisible(originalPageID base.PageID, maxTxnID uint64) (base.PageID, uint64) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -188,19 +188,19 @@ func (pm *PageManager) GetLatestVisible(originalPageID base.PageID, maxTxnID uin
 }
 
 // GetMeta returns the current metadata
-func (pm *PageManager) GetMeta() base.MetaPage {
+func (pm *Coordinator) GetMeta() base.MetaPage {
 	return pm.activeMeta.Load().Meta
 }
 
 // GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
 // Returns by value to prevent data races with concurrent PutSnapshot updates
-func (pm *PageManager) GetSnapshot() base.Snapshot {
+func (pm *Coordinator) GetSnapshot() base.Snapshot {
 	return *pm.activeMeta.Load()
 }
 
 // PutSnapshot updates the metadata and root pointer, persists metadata to disk
 // Does NOT make it visible to readers - call CommitSnapshot after fsync
-func (pm *PageManager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
+func (pm *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -235,7 +235,7 @@ func (pm *PageManager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 // CommitSnapshot atomically makes the last PutSnapshot visible to readers
 // Call AFTER fsync to ensure durability before visibility
 // Lock-free: single writer guarantee + atomic swap
-func (pm *PageManager) CommitSnapshot() {
+func (pm *Coordinator) CommitSnapshot() {
 	// Swap to the meta with higher or equal TxID
 	// Use >= to handle initial case where both metas have TxID=0
 	if pm.meta0.Meta.TxID >= pm.meta1.Meta.TxID {
@@ -246,7 +246,7 @@ func (pm *PageManager) CommitSnapshot() {
 }
 
 // Close serializes freelist to disk and closes the file
-func (pm *PageManager) Close() error {
+func (pm *Coordinator) Close() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -315,7 +315,7 @@ func (pm *PageManager) Close() error {
 }
 
 // initializeNewDB creates a new database with dual meta pages and empty freelist
-func (pm *PageManager) initializeNewDB() error {
+func (pm *Coordinator) initializeNewDB() error {
 	// Initialize meta
 	meta := base.MetaPage{
 		Magic:           base.MagicNumber,
@@ -363,7 +363,7 @@ func (pm *PageManager) initializeNewDB() error {
 }
 
 // loadExistingDB loads meta and freelist from existing database file
-func (pm *PageManager) loadExistingDB() error {
+func (pm *Coordinator) loadExistingDB() error {
 	// Read both meta pages
 	page0, err := pm.ReadPage(0)
 	if err != nil {
@@ -434,7 +434,7 @@ func (pm *PageManager) loadExistingDB() error {
 
 // writePageUnsafe writes a Page without acquiring pm.mu (caller must hold pm.mu)
 // Delegates to storage which has its own locking
-func (pm *PageManager) writePageUnsafe(id base.PageID, page *base.Page) error {
+func (pm *Coordinator) writePageUnsafe(id base.PageID, page *base.Page) error {
 	return pm.storage.WritePage(id, page)
 }
 
@@ -444,7 +444,7 @@ const (
 )
 
 // allocate returns a free Page ID, or 0 if none available
-func (pm *PageManager) allocate() base.PageID {
+func (pm *Coordinator) allocate() base.PageID {
 	// Caller must hold pm.mu
 	if len(pm.freePages) == 0 {
 		// No free pages available
@@ -484,7 +484,7 @@ func (pm *PageManager) allocate() base.PageID {
 }
 
 // free adds a Page ID to the free list
-func (pm *PageManager) free(id base.PageID) {
+func (pm *Coordinator) free(id base.PageID) {
 	// Caller must hold pm.mu
 	// Check if already in free list to prevent duplicates
 	for _, existingID := range pm.freePages {
@@ -505,7 +505,7 @@ func (pm *PageManager) free(id base.PageID) {
 }
 
 // freePending adds pages to the pending map at the given transaction ID
-func (pm *PageManager) freePending(txnID uint64, pageIDs []base.PageID) {
+func (pm *Coordinator) freePending(txnID uint64, pageIDs []base.PageID) {
 	// Caller must hold pm.mu
 	if len(pageIDs) == 0 {
 		return
@@ -519,7 +519,7 @@ func (pm *PageManager) freePending(txnID uint64, pageIDs []base.PageID) {
 }
 
 // release moves pages from pending to free for all transactions < minTxnID
-func (pm *PageManager) release(minTxnID uint64) int {
+func (pm *Coordinator) release(minTxnID uint64) int {
 	// Caller must hold pm.mu
 	released := 0
 	for txnID, versions := range pm.pendingVersions {
@@ -535,7 +535,7 @@ func (pm *PageManager) release(minTxnID uint64) int {
 }
 
 // pagesNeeded returns number of pages needed to serialize this freelist
-func (pm *PageManager) pagesNeeded() int {
+func (pm *Coordinator) pagesNeeded() int {
 	// Caller must hold pm.mu
 	freeBytes := 8 + len(pm.freePages)*8
 
@@ -567,7 +567,7 @@ func (pm *PageManager) pagesNeeded() int {
 }
 
 // serializeFreelist writes freelist to pages starting at given slice
-func (pm *PageManager) serializeFreelist(pages []*base.Page) {
+func (pm *Coordinator) serializeFreelist(pages []*base.Page) {
 	// Caller must hold pm.mu
 	buf := make([]byte, 0, base.PageSize*len(pages))
 
@@ -638,7 +638,7 @@ func (pm *PageManager) serializeFreelist(pages []*base.Page) {
 }
 
 // deserializeFreelist reads freelist from pages
-func (pm *PageManager) deserializeFreelist(pages []*base.Page) {
+func (pm *Coordinator) deserializeFreelist(pages []*base.Page) {
 	// Caller must hold pm.mu
 	pm.freePages = make([]base.PageID, 0)
 	pm.pendingVersions = make(map[uint64][]PendingVersion)
@@ -722,8 +722,8 @@ func (pm *PageManager) deserializeFreelist(pages []*base.Page) {
 }
 
 // LoadNode loads a node, coordinating cache and disk I/O.
-// Routes TX calls through PageManager instead of direct cache access.
-func (pm *PageManager) LoadNode(pageID base.PageID, txnID uint64, cache interface {
+// Routes TX calls through Coordinator instead of direct cache access.
+func (pm *Coordinator) LoadNode(pageID base.PageID, txnID uint64, cache interface {
 	GetOrLoad(base.PageID, uint64) (*base.Node, bool)
 }) (*base.Node, bool) {
 	return cache.GetOrLoad(pageID, txnID)
@@ -743,7 +743,7 @@ const (
 // - Freed pages handling
 // - Meta update
 // - Sync coordination
-func (pm *PageManager) CommitTransaction(
+func (pm *Coordinator) CommitTransaction(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
 	freed map[base.PageID]struct{},
@@ -885,6 +885,7 @@ func (pm *PageManager) CommitTransaction(
 }
 
 // Stats returns disk I/O statistics
-func (pm *PageManager) Stats() (reads, writes uint64) {
-	return pm.storage.Stats()
+func (pm *Coordinator) Stats() (reads, writes uint64) {
+	stats := pm.storage.Stats()
+	return stats.Reads, stats.Writes
 }

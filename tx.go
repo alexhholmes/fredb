@@ -233,8 +233,8 @@ func (tx *Tx) Commit() error {
 		syncMode = coordinator.SyncOff
 	}
 
-	// Delegate coordination to PageManager
-	err := tx.db.pager.CommitTransaction(
+	// Delegate coordination to Coordinator
+	err := tx.db.coord.CommitTransaction(
 		tx.pages,
 		tx.root,
 		tx.freed,
@@ -247,7 +247,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Commit the meta page after syncing (makes changes visible)
-	tx.db.pager.CommitSnapshot()
+	tx.db.coord.CommitSnapshot()
 
 	tx.db.writer.Store(nil)
 
@@ -277,7 +277,7 @@ func (tx *Tx) Rollback() error {
 		defer tx.db.mu.Unlock()
 
 		// Discard all transaction-local state
-		// Virtual pages were never allocated from PageManager, so nothing to free
+		// Virtual pages were never allocated from Coordinator, so nothing to free
 		tx.pages = nil
 		tx.pending = nil
 
@@ -358,7 +358,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 // The allocated Page is tracked in tx.pending for COW semantics.
 func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
 	// Generate virtual page ID (negative number)
-	// These are transaction-local and never touch PageManager until commit
+	// These are transaction-local and never touch Coordinator until commit
 	virtualID := base.PageID(tx.nextVirtualID)
 	tx.nextVirtualID--
 
@@ -422,7 +422,7 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
-// loadNode loads a node using hybrid cache: tx.pages → PageManager → Cache → Storage
+// loadNode loads a node using hybrid cache: tx.pages → Coordinator → Cache → Storage
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
@@ -431,8 +431,8 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 		}
 	}
 
-	// Route through PageManager for proper layering: TX → PageManager → Cache → Storage
-	node, found := tx.db.pager.LoadNode(pageID, tx.txnID, tx.db.cache)
+	// Route through Coordinator for proper layering: TX → Coordinator → Cache → Storage
+	node, found := tx.db.coord.LoadNode(pageID, tx.txnID, tx.db.cache)
 	if !found {
 		return nil, ErrKeyNotFound
 	}

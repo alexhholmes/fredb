@@ -24,7 +24,7 @@ func makeTestNode(pageID base.PageID) *base.Node {
 func TestPageCacheBasics(t *testing.T) {
 	t.Parallel()
 
-	cache := NewPageCache(10, nil)
+	cache := NewCache(10, nil)
 
 	// Test cache miss
 	_, hit := cache.get(base.PageID(1), 0)
@@ -51,7 +51,7 @@ func TestPageCacheBasics(t *testing.T) {
 func TestPageCacheMVCC(t *testing.T) {
 	t.Parallel()
 
-	cache := NewPageCache(10, nil)
+	cache := NewCache(10, nil)
 
 	// Add version 1 of Page 1
 	node1 := makeTestNode(base.PageID(1))
@@ -85,14 +85,14 @@ func TestPageCacheMinSize(t *testing.T) {
 	t.Parallel()
 
 	// Request size too small
-	cache := NewPageCache(5, nil)
+	cache := NewCache(5, nil)
 	assert.Equal(t, MinCacheSize, cache.maxSize)
 }
 
 func TestPageCacheEviction(t *testing.T) {
 	t.Parallel()
 
-	cache := NewPageCache(20, nil) // max=20, lowWater=16
+	cache := NewCache(20, nil) // max=20, lowWater=16
 
 	// Add 19 pages
 	for i := 1; i <= 19; i++ {

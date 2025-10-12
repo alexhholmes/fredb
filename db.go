@@ -24,7 +24,7 @@ const (
 
 type DB struct {
 	mu     sync.Mutex // Lock only for writers
-	pager  *coordinator.PageManager
+	coord  *coordinator.Coordinator
 	cache  *cache.Cache
 	closed atomic.Bool // Database closed flag
 
@@ -48,23 +48,23 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	pager, err := coordinator.NewPageManager(path)
+	coord, err := coordinator.NewCoordinator(path)
 	if err != nil {
 		return nil, err
 	}
 
 	// Page size is 4096 bytes, so 256 pages per MB
-	c := cache.NewPageCache(opts.maxCacheSizeMB*256, pager)
+	c := cache.NewCache(opts.maxCacheSizeMB*256, coord)
 
 	// Initialize root (was newTree logic)
 	var root *base.Node
-	meta := pager.GetMeta()
+	meta := coord.GetMeta()
 
 	if meta.RootPageID != 0 {
 		// Load existing root
-		rootPage, err := pager.ReadPage(meta.RootPageID)
+		rootPage, err := coord.ReadPage(meta.RootPageID)
 		if err != nil {
-			_ = pager.Close()
+			_ = coord.Close()
 			return nil, err
 		}
 
@@ -74,28 +74,28 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		if err := root.Deserialize(rootPage); err != nil {
-			_ = pager.Close()
+			_ = coord.Close()
 			return nil, err
 		}
 
 		// Bundle root with metadata and make visible atomically
-		if err := pager.PutSnapshot(meta, root); err != nil {
-			_ = pager.Close()
+		if err := coord.PutSnapshot(meta, root); err != nil {
+			_ = coord.Close()
 			return nil, err
 		}
-		pager.CommitSnapshot()
+		coord.CommitSnapshot()
 	} else {
 		// Create new root - always a branch node, even when empty
-		rootPageID, err := pager.AllocatePage()
+		rootPageID, err := coord.AllocatePage()
 		if err != nil {
-			_ = pager.Close()
+			_ = coord.Close()
 			return nil, err
 		}
 
 		// Create initial empty leaf
-		leafPageID, err := pager.AllocatePage()
+		leafPageID, err := coord.AllocatePage()
 		if err != nil {
-			_ = pager.Close()
+			_ = coord.Close()
 			return nil, err
 		}
 
@@ -111,11 +111,11 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// Serialize and write the leaf
 		leafPage, err := leaf.Serialize(0)
 		if err != nil {
-			_ = pager.Close()
+			_ = coord.Close()
 			return nil, err
 		}
-		if err := pager.WritePage(leafPageID, leafPage); err != nil {
-			_ = pager.Close()
+		if err := coord.WritePage(leafPageID, leafPage); err != nil {
+			_ = coord.Close()
 			return nil, err
 		}
 
@@ -132,33 +132,33 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// Serialize and write the root
 		rootPage, err := root.Serialize(0)
 		if err != nil {
-			_ = pager.Close()
+			_ = coord.Close()
 			return nil, err
 		}
-		if err := pager.WritePage(rootPageID, rootPage); err != nil {
-			_ = pager.Close()
+		if err := coord.WritePage(rootPageID, rootPage); err != nil {
+			_ = coord.Close()
 			return nil, err
 		}
 
 		meta.RootPageID = rootPageID
-		if err := pager.PutSnapshot(meta, root); err != nil {
-			_ = pager.Close()
+		if err := coord.PutSnapshot(meta, root); err != nil {
+			_ = coord.Close()
 			return nil, err
 		}
 
-		// CRITICAL: Sync pager to persist the initial allocations
+		// CRITICAL: Sync coord to persist the initial allocations
 		// This ensures root and leaf are not returned by future AllocatePage() calls
-		if err := pager.Sync(); err != nil {
-			_ = pager.Close()
+		if err := coord.Sync(); err != nil {
+			_ = coord.Close()
 			return nil, err
 		}
 
 		// Make metapage AND root visible to readers atomically
-		pager.CommitSnapshot()
+		coord.CommitSnapshot()
 	}
 
 	db := &DB{
-		pager:    pager,
+		coord:    coord,
 		cache:    c,
 		releaseC: make(chan uint64),
 		stopC:    make(chan struct{}),
@@ -193,11 +193,11 @@ func Open(path string, options ...DBOption) (*DB, error) {
 					return true // continue iteration
 				})
 
-				db.pager.ReleasePages(minTxnID)
+				db.coord.ReleasePages(minTxnID)
 				db.cache.CleanupRelocatedVersions(minTxnID)
 			case <-db.stopC:
 				// Shutdown - release everything
-				db.pager.ReleasePages(math.MaxUint64)
+				db.coord.ReleasePages(math.MaxUint64)
 				db.cache.CleanupRelocatedVersions(math.MaxUint64)
 				return
 			}
@@ -257,7 +257,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		txnID := db.nextTxnID.Add(1)
 
 		// Atomically load current snapshot (meta + root)
-		snapshot := db.pager.GetSnapshot()
+		snapshot := db.coord.GetSnapshot()
 
 		// Create write transaction
 		tx := &Tx{
@@ -280,7 +280,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 
 	// READERS: NO LOCK - completely lock-free path
 	// Atomically capture current snapshot (meta + root)
-	snapshot := db.pager.GetSnapshot()
+	snapshot := db.coord.GetSnapshot()
 
 	// Create read transaction
 	tx := &Tx{
@@ -350,13 +350,13 @@ func (db *DB) Close() error {
 	db.closed.Store(true)
 
 	// Flush root if dirty (was algo.close logic)
-	snapshot := db.pager.GetSnapshot()
+	snapshot := db.coord.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
 		page, err := snapshot.Root.Serialize(snapshot.Meta.TxID)
 		if err != nil {
 			return err
 		}
-		if err := db.pager.WritePage(snapshot.Root.PageID, page); err != nil {
+		if err := db.coord.WritePage(snapshot.Root.PageID, page); err != nil {
 			return err
 		}
 		snapshot.Root.Dirty = false
@@ -364,16 +364,16 @@ func (db *DB) Close() error {
 
 	// Flush cache
 	if db.cache != nil {
-		if err := db.cache.FlushDirty(db.pager); err != nil {
+		if err := db.cache.FlushDirty(db.coord); err != nil {
 			return err
 		}
 	}
 
 	// Final sync to ensure durability
-	if err := db.pager.Sync(); err != nil {
+	if err := db.coord.Sync(); err != nil {
 		return err
 	}
 
-	// Close pager
-	return db.pager.Close()
+	// Close coord
+	return db.coord.Close()
 }

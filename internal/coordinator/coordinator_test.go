@@ -16,8 +16,8 @@ func TestPageManagerFreeListPending(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewPageManager(tmpFile)
-	require.NoError(t, err, "Failed to create PageManager")
+	pm, err := NewCoordinator(tmpFile)
+	require.NoError(t, err, "Failed to create Coordinator")
 	defer pm.Close()
 
 	// Add some pages to pending at different transactions
@@ -52,8 +52,8 @@ func TestPageManagerFreeListReleaseOrder(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewPageManager(tmpFile)
-	require.NoError(t, err, "Failed to create PageManager")
+	pm, err := NewCoordinator(tmpFile)
+	require.NoError(t, err, "Failed to create Coordinator")
 	defer pm.Close()
 
 	// Add pages at various transaction IDs
@@ -79,8 +79,8 @@ func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewPageManager(tmpFile)
-	require.NoError(t, err, "Failed to create PageManager")
+	pm, err := NewCoordinator(tmpFile)
+	require.NoError(t, err, "Failed to create Coordinator")
 	defer pm.Close()
 
 	// Release on empty pending should do nothing
@@ -100,10 +100,10 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 
 	tmpFile := t.TempDir() + "/test.db"
 
-	// Create PageManager and add data
+	// Create Coordinator and add data
 	{
-		pm, err := NewPageManager(tmpFile)
-		require.NoError(t, err, "Failed to create PageManager")
+		pm, err := NewCoordinator(tmpFile)
+		require.NoError(t, err, "Failed to create Coordinator")
 
 		// Add some free pages
 		require.NoError(t, pm.FreePage(10), "FreePage failed")
@@ -120,8 +120,8 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 
 	// Reopen and verify
 	{
-		pm, err := NewPageManager(tmpFile)
-		require.NoError(t, err, "Failed to reopen PageManager")
+		pm, err := NewCoordinator(tmpFile)
+		require.NoError(t, err, "Failed to reopen Coordinator")
 		defer pm.Close()
 
 		// Try to allocate - should get freed pages first
@@ -141,8 +141,8 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewPageManager(tmpFile)
-	require.NoError(t, err, "Failed to create PageManager")
+	pm, err := NewCoordinator(tmpFile)
+	require.NoError(t, err, "Failed to create Coordinator")
 	defer pm.Close()
 
 	// Allocate some pages
@@ -179,8 +179,8 @@ func TestPageManagerPreventAllocation(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewPageManager(tmpFile)
-	require.NoError(t, err, "Failed to create PageManager")
+	pm, err := NewCoordinator(tmpFile)
+	require.NoError(t, err, "Failed to create Coordinator")
 	defer pm.Close()
 
 	// Allocate all initial free pages to empty the freelist

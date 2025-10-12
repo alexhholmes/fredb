@@ -14,7 +14,6 @@ var (
 	// END is a special marker for seeking to the last key in the database
 	// Since max key size is MaxKeySize (1024 bytes), END is 1024 bytes of 0xFF
 	// Usage: cursor.Seek(pkg.END) positions at last key (or invalid if empty)
-	// Useful for range bounds: bytes.Compare(key, END) < 0
 	END = make([]byte, MaxKeySize) // MaxKeySize bytes of 0xFF
 )
 
@@ -25,21 +24,21 @@ func init() {
 	}
 }
 
-// pathElement represents one level in the cursor's navigation path from root to leaf
+// path represents one level in the cursor's navigation path from root to leaf
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
-type pathElement struct {
+type path struct {
 	node       *base.Node
 	childIndex int
 }
 
 // Cursor provides ordered iteration over B-tree Keys
 type Cursor struct {
-	tx    *Tx           // Transaction this cursor belongs to
-	stack []pathElement // Navigation path from root to current leaf
-	key   []byte        // Cached current key
-	value []byte        // Cached current value
-	valid bool          // Is cursor positioned on valid key?
+	tx    *Tx    // Transaction this cursor belongs to
+	stack []path // Navigation path from root to current leaf
+	key   []byte // Cached current key
+	value []byte // Cached current value
+	valid bool   // Is cursor positioned on valid key?
 }
 
 // First positions cursor at the first key in the database
@@ -85,7 +84,7 @@ func (it *Cursor) Seek(key []byte) error {
 		}
 
 		// Push current Node and child index to stack
-		it.stack = append(it.stack, pathElement{node: node, childIndex: i})
+		it.stack = append(it.stack, path{node: node, childIndex: i})
 
 		// Descend to child
 		child, err := it.tx.loadNode(node.Children[i])
@@ -96,13 +95,12 @@ func (it *Cursor) Seek(key []byte) error {
 	}
 
 	// Find position within leaf
-	i := 0
-	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) > 0 {
-		i++
+	var i int
+	for i = 0; i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) > 0; i++ {
 	}
 
 	// Push leaf to stack (childIndex is key position in leaf)
-	it.stack = append(it.stack, pathElement{node: node, childIndex: i})
+	it.stack = append(it.stack, path{node: node, childIndex: i})
 
 	// If positioned within Node, we're valid
 	if i < int(node.NumKeys) {
@@ -133,7 +131,6 @@ func (it *Cursor) Seek(key []byte) error {
 
 // Next advances cursor to next key
 // Returns true if advanced successfully, false if exhausted
-// B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Next() bool {
 	// validate transaction state
 	if err := it.active(); err != nil {
@@ -161,7 +158,6 @@ func (it *Cursor) Next() bool {
 
 // Prev moves cursor to previous key
 // Returns true if moved successfully, false if at beginning
-// B+ tree: only visits leaf nodes (all data is in leaves)
 func (it *Cursor) Prev() bool {
 	// validate transaction state
 	if err := it.active(); err != nil {
@@ -225,7 +221,35 @@ func (it *Cursor) nextLeaf() error {
 		// Does parent have more Children?
 		if parent.childIndex < len(parent.node.Children) {
 			// Descend to leftmost leaf of next subtree
-			return it.descendToFirstLeaf()
+			node, err := it.tx.loadNode(parent.node.Children[parent.childIndex])
+			if err != nil {
+				it.valid = false
+				return err
+			}
+
+			// Keep descending to leftmost child
+			for !node.IsLeaf() {
+				it.stack = append(it.stack, path{node: node, childIndex: 0})
+				child, err := it.tx.loadNode(node.Children[0])
+				if err != nil {
+					it.valid = false
+					return err
+				}
+				node = child
+			}
+
+			// Reached leaf
+			it.stack = append(it.stack, path{node: node, childIndex: 0})
+
+			if node.NumKeys > 0 {
+				it.key = node.Keys[0]
+				it.value = node.Values[0]
+				it.valid = true
+			} else {
+				it.valid = false
+			}
+
+			return nil
 		}
 	}
 
@@ -249,81 +273,41 @@ func (it *Cursor) prevLeaf() error {
 		// Does parent have more Children to the left?
 		if parent.childIndex >= 0 {
 			// Descend to rightmost leaf of previous subtree
-			return it.descendToLastLeaf()
+			node, err := it.tx.loadNode(parent.node.Children[parent.childIndex])
+			if err != nil {
+				it.valid = false
+				return err
+			}
+
+			// Keep descending to rightmost child
+			for !node.IsLeaf() {
+				lastChild := len(node.Children) - 1
+				it.stack = append(it.stack, path{node: node, childIndex: lastChild})
+				child, err := it.tx.loadNode(node.Children[lastChild])
+				if err != nil {
+					it.valid = false
+					return err
+				}
+				node = child
+			}
+
+			// Reached leaf
+			lastIndex := int(node.NumKeys) - 1
+			it.stack = append(it.stack, path{node: node, childIndex: lastIndex})
+
+			if lastIndex >= 0 {
+				it.key = node.Keys[lastIndex]
+				it.value = node.Values[lastIndex]
+				it.valid = true
+			} else {
+				it.valid = false
+			}
+
+			return nil
 		}
 	}
 
 	// Reached root with no more Children to the left
 	it.valid = false
-	return nil
-}
-
-// descendToFirstLeaf descends to the leftmost leaf from current stack top
-func (it *Cursor) descendToFirstLeaf() error {
-	parent := it.stack[len(it.stack)-1]
-	node, err := it.tx.loadNode(parent.node.Children[parent.childIndex])
-	if err != nil {
-		it.valid = false
-		return err
-	}
-
-	// Keep descending to leftmost child
-	for !node.IsLeaf() {
-		it.stack = append(it.stack, pathElement{node: node, childIndex: 0})
-		child, err := it.tx.loadNode(node.Children[0])
-		if err != nil {
-			it.valid = false
-			return err
-		}
-		node = child
-	}
-
-	// Reached leaf
-	it.stack = append(it.stack, pathElement{node: node, childIndex: 0})
-
-	if node.NumKeys > 0 {
-		it.key = node.Keys[0]
-		it.value = node.Values[0]
-		it.valid = true
-	} else {
-		it.valid = false
-	}
-
-	return nil
-}
-
-// descendToLastLeaf descends to the rightmost leaf from current stack top
-func (it *Cursor) descendToLastLeaf() error {
-	parent := it.stack[len(it.stack)-1]
-	node, err := it.tx.loadNode(parent.node.Children[parent.childIndex])
-	if err != nil {
-		it.valid = false
-		return err
-	}
-
-	// Keep descending to rightmost child
-	for !node.IsLeaf() {
-		lastChild := len(node.Children) - 1
-		it.stack = append(it.stack, pathElement{node: node, childIndex: lastChild})
-		child, err := it.tx.loadNode(node.Children[lastChild])
-		if err != nil {
-			it.valid = false
-			return err
-		}
-		node = child
-	}
-
-	// Reached leaf
-	lastIndex := int(node.NumKeys) - 1
-	it.stack = append(it.stack, pathElement{node: node, childIndex: lastIndex})
-
-	if lastIndex >= 0 {
-		it.key = node.Keys[lastIndex]
-		it.value = node.Values[lastIndex]
-		it.valid = true
-	} else {
-		it.valid = false
-	}
-
 	return nil
 }

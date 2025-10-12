@@ -37,7 +37,7 @@ func BenchmarkDBGet(b *testing.B) {
 
 	// Reset cache and disk I/O stats before benchmark
 	hitsBefore, missesBefore, evictionsBefore := db.cache.Stats()
-	diskReadsBefore, diskWritesBefore := db.pager.Stats()
+	diskReadsBefore, diskWritesBefore := db.coord.Stats()
 
 	b.ResetTimer()
 
@@ -52,7 +52,7 @@ func BenchmarkDBGet(b *testing.B) {
 
 	b.StopTimer()
 	hitsAfter, missesAfter, evictionsAfter := db.cache.Stats()
-	diskReadsAfter, diskWritesAfter := db.pager.Stats()
+	diskReadsAfter, diskWritesAfter := db.coord.Stats()
 
 	// Calculate benchmark-only stats
 	hits := hitsAfter - hitsBefore

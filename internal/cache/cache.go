@@ -16,19 +16,19 @@ type Cache struct {
 	mu       sync.RWMutex
 	maxSize  int                             // Max total versions (e.g., 1024)
 	lowWater int                             // Evict to this (80% of max)
-	entries  map[base.PageID][]*versionEntry // Multiple versions per Page
+	versions map[base.PageID][]*versionEntry // Multiple versions per Page
 	lruList  *list.List                      // Doubly-linked list (front=MRU, back=LRU)
-	pager    *coordinator.PageManager        // Sibling-reference not ownership
+	pager    *coordinator.Coordinator        // Sibling-reference not ownership
 
 	// Atomic GetOrLoad coordination
 	loadStates  sync.Map // map[PageID]*loadState - coordinate concurrent disk loads
 	generations sync.Map // map[PageID]uint64 - detect invalidation during load
 
 	// Stats
-	hits         atomic.Uint64
-	misses       atomic.Uint64
-	evictions    atomic.Uint64
-	totalEntries atomic.Int64 // Total number of cached versions
+	hits      atomic.Uint64
+	misses    atomic.Uint64
+	evictions atomic.Uint64
+	entries   atomic.Int64 // Total number of cached versions
 }
 
 // loadState coordinates concurrent disk loads for the same PageID
@@ -54,14 +54,14 @@ const (
 	MinCacheSize = 16 // Minimum: hold tree path + concurrent ops
 )
 
-// NewPageCache creates a new Page cache with the specified maximum size
-func NewPageCache(maxSize int, pagemanager *coordinator.PageManager) *Cache {
+// NewCache creates a new Page cache with the specified maximum size
+func NewCache(maxSize int, pagemanager *coordinator.Coordinator) *Cache {
 	maxSize = max(maxSize, MinCacheSize)
 
 	return &Cache{
 		maxSize:  maxSize,
 		lowWater: (maxSize * 4) / 5, // 80%
-		entries:  make(map[base.PageID][]*versionEntry),
+		versions: make(map[base.PageID][]*versionEntry),
 		lruList:  list.New(),
 		pager:    pagemanager,
 	}
@@ -74,7 +74,7 @@ func (c *Cache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 	defer c.mu.Unlock()
 
 	// Check if this exact version already exists (race condition protection)
-	if versions, exists := c.entries[pageID]; exists {
+	if versions, exists := c.versions[pageID]; exists {
 		for _, existing := range versions {
 			if existing.txnID == txnID {
 				// Version already cached, update LRU and return
@@ -94,25 +94,25 @@ func (c *Cache) Put(pageID base.PageID, txnID uint64, node *base.Node) {
 	entry.lruElement = c.lruList.PushFront(entry)
 
 	// Append to versions list (maintains sorted order if txnID is monotonic)
-	c.entries[pageID] = append(c.entries[pageID], entry)
-	c.totalEntries.Add(1)
+	c.versions[pageID] = append(c.versions[pageID], entry)
+	c.entries.Add(1)
 
 	// Trigger batch eviction if at or over limit
-	if int(c.totalEntries.Load()) >= c.maxSize {
+	if int(c.entries.Load()) >= c.maxSize {
 		c.evictToWaterMark()
 	}
 }
 
 // FlushDirty writes all Dirty cached Node versions to disk.
 // Returns the first error encountered, but attempts to flush all Dirty nodes.
-func (c *Cache) FlushDirty(pager *coordinator.PageManager) error {
+func (c *Cache) FlushDirty(pager *coordinator.Coordinator) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	var err error
 
 	// Iterate through all Page versions
-	for _, versions := range c.entries {
+	for _, versions := range c.versions {
 		for _, entry := range versions {
 			if !entry.node.Dirty {
 				continue
@@ -154,7 +154,7 @@ func (c *Cache) Size() int {
 	defer c.mu.RUnlock()
 
 	total := 0
-	for _, versions := range c.entries {
+	for _, versions := range c.versions {
 		total += len(versions)
 	}
 	return total
@@ -173,7 +173,7 @@ func (c *Cache) Invalidate(pageID base.PageID) {
 	// Clear any coordination state for in-flight loads
 	c.loadStates.Delete(pageID)
 
-	versions, exists := c.entries[pageID]
+	versions, exists := c.versions[pageID]
 	if !exists {
 		return
 	}
@@ -188,8 +188,8 @@ func (c *Cache) Invalidate(pageID base.PageID) {
 	}
 
 	// Remove PageID entirely from cache
-	delete(c.entries, pageID)
-	c.totalEntries.Add(-int64(numVersions))
+	delete(c.versions, pageID)
+	c.entries.Add(-int64(numVersions))
 }
 
 // EvictCheckpointed removes Page versions that have been checkpointed to disk
@@ -205,7 +205,7 @@ func (c *Cache) EvictCheckpointed(minReaderTxn uint64) int {
 	checkpointTxn := meta.CheckpointTxnID
 	evicted := 0
 
-	for pageID, versions := range c.entries {
+	for pageID, versions := range c.versions {
 		// Find the latest version visible to oldest reader (txnID <= minReaderTxn)
 		// This is the version readers actually see
 		latestVisibleIdx := -1
@@ -235,7 +235,7 @@ func (c *Cache) EvictCheckpointed(minReaderTxn uint64) int {
 				}
 				evicted++
 				c.evictions.Add(1)
-				c.totalEntries.Add(-1)
+				c.entries.Add(-1)
 			} else {
 				// Keep version
 				keep = append(keep, entry)
@@ -244,10 +244,10 @@ func (c *Cache) EvictCheckpointed(minReaderTxn uint64) int {
 
 		if len(keep) == 0 {
 			// All versions evicted, remove PageID
-			delete(c.entries, pageID)
+			delete(c.versions, pageID)
 		} else {
 			// Update versions list
-			c.entries[pageID] = keep
+			c.versions[pageID] = keep
 		}
 	}
 
@@ -373,7 +373,7 @@ func (c *Cache) get(pageID base.PageID, txnID uint64) (*base.Node, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	versions, exists := c.entries[pageID]
+	versions, exists := c.versions[pageID]
 	if !exists || len(versions) == 0 {
 		c.misses.Add(1)
 		return nil, false
@@ -450,7 +450,7 @@ func (c *Cache) canEvict(txnID uint64) bool {
 	return txnID <= meta.CheckpointTxnID
 }
 
-// CleanupRelocatedVersions removes VersionMap entries for versions older than minReaderTxn
+// CleanupRelocatedVersions removes VersionMap versions for versions older than minReaderTxn
 // and adds relocated pages to freelist.pending.
 // Called by background releaser when readers finish.
 // Returns the number of relocated versions cleaned up.
@@ -460,10 +460,10 @@ func (c *Cache) CleanupRelocatedVersions(minReaderTxn uint64) int {
 	return 0
 }
 
-// countEntries returns total number of cached entries across all pages
+// countEntries returns total number of cached versions across all pages
 func (c *Cache) countEntries() int {
 	total := 0
-	for _, versions := range c.entries {
+	for _, versions := range c.versions {
 		total += len(versions)
 	}
 	return total
@@ -494,7 +494,7 @@ func (c *Cache) flushDirtyPage(entry *versionEntry) bool {
 // Returns true if successfully relocated, false if should skip eviction.
 func (c *Cache) relocateVersion(entry *versionEntry) bool {
 	// Only relocate if there are multiple versions (readers might need old version)
-	if len(c.entries[entry.pageID]) <= 1 {
+	if len(c.versions[entry.pageID]) <= 1 {
 		return true // No need to relocate
 	}
 
@@ -527,20 +527,20 @@ func (c *Cache) removeEntry(entry *versionEntry) {
 	c.lruList.Remove(entry.lruElement)
 
 	// Remove from versions array
-	versions := c.entries[entry.pageID]
+	versions := c.versions[entry.pageID]
 	for i, v := range versions {
 		if v == entry {
-			c.entries[entry.pageID] = append(versions[:i], versions[i+1:]...)
+			c.versions[entry.pageID] = append(versions[:i], versions[i+1:]...)
 			break
 		}
 	}
 
 	// If no versions left, remove PageID entirely
-	if len(c.entries[entry.pageID]) == 0 {
-		delete(c.entries, entry.pageID)
+	if len(c.versions[entry.pageID]) == 0 {
+		delete(c.versions, entry.pageID)
 	}
 
-	c.totalEntries.Add(-1)
+	c.entries.Add(-1)
 	c.evictions.Add(1)
 }
 
@@ -551,7 +551,7 @@ func (c *Cache) evictToWaterMark() {
 	attempts := 0
 	maxAttempts := c.maxSize * 2
 
-	for int(c.totalEntries.Load()) > target && attempts < maxAttempts {
+	for int(c.entries.Load()) > target && attempts < maxAttempts {
 		elem := c.lruList.Back()
 		if elem == nil {
 			break
@@ -601,7 +601,7 @@ func (c *Cache) evictToWaterMark() {
 			}
 		}
 
-		// Evict from memory cache (removeEntry decrements totalEntries atomically)
+		// Evict from memory cache (removeEntry decrements entries atomically)
 		c.removeEntry(entry)
 	}
 }
