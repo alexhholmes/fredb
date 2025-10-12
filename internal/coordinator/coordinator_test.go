@@ -8,17 +8,35 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"fredb/internal/base"
+	"fredb/internal/cache"
+	"fredb/internal/storage"
 )
 
 var _ = flag.Bool("slow", false, "run slow tests")
+
+// Helper to create a coordinator with dependencies for testing
+func createTestCoordinator(t *testing.T, tmpFile string) (*Coordinator, func()) {
+	stor, err := storage.NewStorage(tmpFile)
+	require.NoError(t, err, "Failed to create storage")
+
+	cacheInstance := cache.NewCache(1024)
+
+	pm, err := NewCoordinator(stor, cacheInstance)
+	require.NoError(t, err, "Failed to create Coordinator")
+
+	cleanup := func() {
+		_ = pm.Close()
+	}
+
+	return pm, cleanup
+}
 
 func TestPageManagerFreeListPending(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewCoordinator(tmpFile)
-	require.NoError(t, err, "Failed to create Coordinator")
-	defer pm.Close()
+	pm, cleanup := createTestCoordinator(t, tmpFile)
+	defer cleanup()
 
 	// Add some pages to pending at different transactions
 	require.NoError(t, pm.FreePending(10, []base.PageID{100, 101, 102}), "FreePending failed")
@@ -52,9 +70,8 @@ func TestPageManagerFreeListReleaseOrder(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewCoordinator(tmpFile)
-	require.NoError(t, err, "Failed to create Coordinator")
-	defer pm.Close()
+	pm, cleanup := createTestCoordinator(t, tmpFile)
+	defer cleanup()
 
 	// Add pages at various transaction IDs
 	pm.FreePending(50, []base.PageID{500})
@@ -79,9 +96,8 @@ func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewCoordinator(tmpFile)
-	require.NoError(t, err, "Failed to create Coordinator")
-	defer pm.Close()
+	pm, cleanup := createTestCoordinator(t, tmpFile)
+	defer cleanup()
 
 	// Release on empty pending should do nothing
 	released := pm.ReleasePages(100)
@@ -102,8 +118,7 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 
 	// Create Coordinator and add data
 	{
-		pm, err := NewCoordinator(tmpFile)
-		require.NoError(t, err, "Failed to create Coordinator")
+		pm, cleanup := createTestCoordinator(t, tmpFile)
 
 		// Add some free pages
 		require.NoError(t, pm.FreePage(10), "FreePage failed")
@@ -115,14 +130,13 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		pm.FreePending(101, []base.PageID{2000, 2001})
 		pm.FreePending(105, []base.PageID{3000})
 
-		require.NoError(t, pm.Close(), "Close failed")
+		cleanup()
 	}
 
 	// Reopen and verify
 	{
-		pm, err := NewCoordinator(tmpFile)
-		require.NoError(t, err, "Failed to reopen Coordinator")
-		defer pm.Close()
+		pm, cleanup := createTestCoordinator(t, tmpFile)
+		defer cleanup()
 
 		// Try to allocate - should get freed pages first
 		allocated := make(map[base.PageID]bool)
@@ -141,9 +155,8 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewCoordinator(tmpFile)
-	require.NoError(t, err, "Failed to create Coordinator")
-	defer pm.Close()
+	pm, cleanup := createTestCoordinator(t, tmpFile)
+	defer cleanup()
 
 	// Allocate some pages
 	id1, err := pm.AllocatePage()
@@ -179,9 +192,8 @@ func TestPageManagerPreventAllocation(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, err := NewCoordinator(tmpFile)
-	require.NoError(t, err, "Failed to create Coordinator")
-	defer pm.Close()
+	pm, cleanup := createTestCoordinator(t, tmpFile)
+	defer cleanup()
 
 	// Allocate all initial free pages to empty the freelist
 	id1, _ := pm.AllocatePage() // page 3

@@ -9,6 +9,7 @@ import (
 	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/coordinator"
+	"fredb/internal/storage"
 )
 
 const (
@@ -26,7 +27,6 @@ const (
 type DB struct {
 	mu     sync.Mutex // Lock only for writers
 	coord  *coordinator.Coordinator
-	cache  *cache.Cache
 	closed atomic.Bool // Database closed flag
 
 	// Transaction state
@@ -49,13 +49,21 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		opt(&opts)
 	}
 
-	coord, err := coordinator.NewCoordinator(path)
+	// Create disk storage
+	store, err := storage.NewStorage(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Page size is 4096 bytes, so 256 pages per MB
-	c := cache.NewCache(opts.maxCacheSizeMB * 256)
+	// Create cache (Page size is 4096 bytes, so 256 pages per MB)
+	cacheInstance := cache.NewCache(opts.maxCacheSizeMB * 256)
+
+	// Create coordinator with dependencies
+	coord, err := coordinator.NewCoordinator(store, cacheInstance)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 
 	// Initialize root (was newTree logic)
 	var root *base.Node
@@ -225,7 +233,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	db := &DB{
 		coord:    coord,
-		cache:    c,
 		releaseC: make(chan uint64),
 		stopC:    make(chan struct{}),
 		options:  opts,
@@ -241,30 +248,28 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			case <-db.releaseC:
 				// Reader-triggered release - recalculate minimum
 				// Start with current next transaction ID
-				minTxnID := db.nextTxnID.Load()
+				minTxID := db.nextTxnID.Load()
 
 				// Consider active write transaction (atomic load)
 				if writerTx := db.writer.Load(); writerTx != nil {
-					if writerTx.txID < minTxnID {
-						minTxnID = writerTx.txID
+					if writerTx.txID < minTxID {
+						minTxID = writerTx.txID
 					}
 				}
 
 				// Consider all active read transactions (lock-free via sync.Map)
 				db.readers.Range(func(key, value interface{}) bool {
 					tx := key.(*Tx)
-					if tx.txID < minTxnID {
-						minTxnID = tx.txID
+					if tx.txID < minTxID {
+						minTxID = tx.txID
 					}
-					return true // continue iteration
+					return true // Continue iteration
 				})
 
-				db.coord.ReleasePages(minTxnID)
-				// TODO: Cache cleanup removed after simplification
+				db.coord.ReleasePages(minTxID)
 			case <-db.stopC:
 				// Shutdown - release everything
 				db.coord.ReleasePages(math.MaxUint64)
-				// TODO: Cache cleanup removed after simplification
 				return
 			}
 		}
@@ -427,9 +432,6 @@ func (db *DB) Close() error {
 		}
 		snapshot.Root.Dirty = false
 	}
-
-	// TODO: Cache flush removed after simplification
-	// The cache is now a pure LRU cache without dirty page tracking
 
 	// Final sync to ensure durability
 	if err := db.coord.Sync(); err != nil {

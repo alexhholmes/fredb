@@ -1,14 +1,22 @@
 package coordinator
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 
 	"fredb/internal/base"
-	storage2 "fredb/internal/storage"
+	"fredb/internal/cache"
+	"fredb/internal/storage"
 )
+
+// NodeVersion tracks a versioned node for MVCC
+type NodeVersion struct {
+	Node  *base.Node
+	TxnID uint64
+}
 
 // PendingVersion tracks a page version waiting for readers to finish
 type PendingVersion struct {
@@ -18,8 +26,8 @@ type PendingVersion struct {
 
 // Coordinator coordinates storage, cache, meta, and freelist
 type Coordinator struct {
-	mu      sync.Mutex        // Protects meta and freelist access
-	storage *storage2.Storage // File I/O backend
+	mu      sync.Mutex       // Protects meta and freelist access
+	storage *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
 	activeMeta atomic.Pointer[base.Snapshot]
@@ -33,36 +41,37 @@ type Coordinator struct {
 
 	// Page allocation tracking (separate from meta to avoid data races)
 	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
+
+	// Version tracking (moved from cache)
+	versionsMu sync.RWMutex
+	versions   map[base.PageID][]NodeVersion // Multiple versions per page
+
+	// Cache reference
+	cache *cache.Cache // Simple LRU cache
 }
 
-// NewCoordinator opens or creates a database file
-func NewCoordinator(path string) (*Coordinator, error) {
-	storage, err := storage2.NewStorage(path)
-	if err != nil {
-		return nil, err
-	}
-
+// NewCoordinator creates a coordinator with injected dependencies
+func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator, error) {
 	pm := &Coordinator{
 		storage:         storage,
 		freePages:       make([]base.PageID, 0),
 		pendingVersions: make(map[uint64][]PendingVersion),
+		versions:        make(map[base.PageID][]NodeVersion),
+		cache:           cache,
 	}
 
 	// Check if new file (empty)
 	empty, err := storage.Empty()
 	if err != nil {
-		_ = storage.Close()
 		return nil, err
 	} else if empty {
 		// New database - initialize
 		if err := pm.initializeNewDB(); err != nil {
-			_ = storage.Close()
 			return nil, err
 		}
 	} else {
 		// Existing database - load meta and freelist
 		if err := pm.loadExistingDB(); err != nil {
-			_ = storage.Close()
 			return nil, err
 		}
 	}
@@ -721,14 +730,108 @@ func (pm *Coordinator) deserializeFreelist(pages []*base.Page) {
 	}
 }
 
+// ErrPageNotVisible indicates page version not visible to transaction
+var ErrPageNotVisible = errors.New("page version not visible to transaction")
+
+// GetNode retrieves a node version visible to the transaction (MVCC snapshot isolation).
+// Returns the latest version where version.TxnID <= txnID.
+func (pm *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, error) {
+	// Check cache first
+	if node, hit := pm.cache.Get(pageID); hit {
+		return node, nil
+	}
+
+	// Check versions for relocated/older versions
+	pm.versionsMu.RLock()
+	versions, exists := pm.versions[pageID]
+	pm.versionsMu.RUnlock()
+
+	if exists && len(versions) > 0 {
+		// Find latest version visible to this transaction
+		var found *NodeVersion
+		for i := len(versions) - 1; i >= 0; i-- {
+			if versions[i].TxnID <= txnID {
+				found = &versions[i]
+				break
+			}
+		}
+		if found != nil {
+			pm.cache.Put(pageID, found.Node)
+			return found.Node, nil
+		}
+	}
+
+	// Load from disk
+	return pm.LoadNodeWithCache(pageID, txnID)
+}
+
+// PutNodeVersion adds a new version of a node for MVCC.
+func (pm *Coordinator) PutNodeVersion(pageID base.PageID, txnID uint64, node *base.Node) {
+	pm.versionsMu.Lock()
+	defer pm.versionsMu.Unlock()
+
+	// Check if this exact version already exists
+	if versions, exists := pm.versions[pageID]; exists {
+		for i := range versions {
+			if versions[i].TxnID == txnID {
+				// Version already tracked, update node
+				versions[i].Node = node
+				pm.cache.Put(pageID, node)
+				return
+			}
+		}
+	}
+
+	// Add new version (maintain sorted order if txnID is monotonic)
+	pm.versions[pageID] = append(pm.versions[pageID], NodeVersion{
+		Node:  node,
+		TxnID: txnID,
+	})
+
+	// Also update cache with latest version
+	pm.cache.Put(pageID, node)
+}
+
+// LoadNodeWithCache loads a node from disk and caches it.
+func (pm *Coordinator) LoadNodeWithCache(pageID base.PageID, txnID uint64) (*base.Node, error) {
+	// Check for relocated versions first
+	relocatedPageID, relocatedTxnID := pm.GetLatestVisible(pageID, txnID)
+	if relocatedPageID != 0 {
+		// Load relocated version
+		node, err := pm.LoadRelocatedNode(pageID, relocatedPageID)
+		if err != nil {
+			return nil, err
+		}
+		pm.PutNodeVersion(pageID, relocatedTxnID, node)
+		return node, nil
+	}
+
+	// Load from disk
+	node, diskTxnID, err := pm.LoadNodeFromDisk(pageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check visibility
+	if diskTxnID > txnID {
+		// Disk version is too new for this transaction
+		return nil, ErrPageNotVisible
+	}
+
+	// Cache and return
+	pm.PutNodeVersion(pageID, diskTxnID, node)
+	return node, nil
+}
+
 // LoadNode loads a node, coordinating cache and disk I/O.
 // Routes TX calls through Coordinator instead of direct cache access.
-// TODO: Temporarily commented out - needs refactoring after cache simplification
-// func (pm *Coordinator) LoadNode(pageID base.PageID, txnID uint64, cache interface {
-// 	GetOrLoad(base.PageID, uint64) (*base.Node, bool)
-// }) (*base.Node, bool) {
-// 	return cache.GetOrLoad(pageID, txnID)
-// }
+func (pm *Coordinator) LoadNode(pageID base.PageID, txnID uint64) (*base.Node, bool) {
+	node, err := pm.GetNode(pageID, txnID)
+	if err != nil {
+		return nil, false
+	}
+	return node, true
+}
 
 // LoadNodeFromDisk reads a page from disk and deserializes it to a Node.
 // This centralizes disk I/O + deserialization in coordinator layer.
@@ -831,9 +934,6 @@ func (pm *Coordinator) CommitTransaction(
 	freed map[base.PageID]struct{},
 	txnID uint64,
 	syncMode SyncMode,
-	cache interface {
-		Put(base.PageID, *base.Node)
-	},
 ) error {
 	// Caller must hold db.mu
 
@@ -915,7 +1015,7 @@ func (pm *Coordinator) CommitTransaction(
 		}
 
 		node.Dirty = false
-		cache.Put(node.PageID, node)
+		pm.PutNodeVersion(node.PageID, txnID, node)
 	}
 
 	// Write root separately
@@ -930,7 +1030,7 @@ func (pm *Coordinator) CommitTransaction(
 		}
 
 		root.Dirty = false
-		cache.Put(root.PageID, root)
+		pm.PutNodeVersion(root.PageID, txnID, root)
 	}
 
 	// Pass 5: Add freed pages to pending

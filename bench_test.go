@@ -35,8 +35,8 @@ func BenchmarkDBGet(b *testing.B) {
 		b.Fatalf("Failed to populate DB in transaction: %v", err)
 	}
 
-	// Reset cache and disk I/O stats before benchmark
-	hitsBefore, missesBefore, evictionsBefore := db.cache.Stats()
+	// Reset disk I/O stats before benchmark
+	// Cache stats are now internal to coordinator
 	diskReadsBefore, diskWritesBefore := db.coord.Stats()
 
 	b.ResetTimer()
@@ -51,18 +51,12 @@ func BenchmarkDBGet(b *testing.B) {
 	}
 
 	b.StopTimer()
-	hitsAfter, missesAfter, evictionsAfter := db.cache.Stats()
 	diskReadsAfter, diskWritesAfter := db.coord.Stats()
 
 	// Calculate benchmark-only stats
-	hits := hitsAfter - hitsBefore
-	misses := missesAfter - missesBefore
-	evictions := evictionsAfter - evictionsBefore
 	diskReads := diskReadsAfter - diskReadsBefore
 	diskWrites := diskWritesAfter - diskWritesBefore
 
-	b.Logf("Cache - Hits: %d, Misses: %d, Evictions: %d, Hit Rate: %.2f%%",
-		hits, misses, evictions, float64(hits)*100.0/float64(hits+misses))
 	b.Logf("Disk I/O - Reads: %d, Writes: %d (from start of benchmark)", diskReads, diskWrites)
 }
 

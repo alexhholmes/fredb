@@ -164,7 +164,6 @@ func (tx *Tx) Commit() error {
 		tx.freed,
 		tx.txID,
 		syncMode,
-		tx.db.cache,
 	)
 	if err != nil {
 		return err
@@ -271,7 +270,6 @@ func (tx *Tx) Commit() error {
 		nil, // No new freed pages in phase 2
 		tx.txID,
 		syncMode,
-		tx.db.cache,
 	)
 	if err != nil {
 		return err
@@ -463,7 +461,7 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
-// loadNode loads a node using simplified cache: tx.pages → Cache → Storage
+// loadNode loads a node using version-aware coordinator: tx.pages → Coordinator → Storage
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
@@ -472,19 +470,11 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 		}
 	}
 
-	// Check simplified cache (no version tracking)
-	if node, found := tx.db.cache.Get(pageID); found {
-		return node, nil
-	}
-
-	// Cache miss - load from disk
-	node, _, err := tx.db.coord.LoadNodeFromDisk(pageID)
+	// Use coordinator's version-aware loading
+	node, err := tx.db.coord.GetNode(pageID, tx.txID)
 	if err != nil {
 		return nil, err
 	}
-
-	// Populate cache for future reads
-	tx.db.cache.Put(pageID, node)
 
 	return node, nil
 }
