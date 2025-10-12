@@ -139,25 +139,24 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 // Assumes left node is already writable
 // Does NOT update parent - caller must call ApplyBranchRemoveSeparator
 func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
-	// B+ tree: only pull down separator for branch nodes
-	if !leftNode.IsLeaf() {
+	// Determine node type by checking for children (more reliable than IsLeaf())
+	// This handles corrupted nodes where Values might be incorrectly set
+	hasChildren := len(leftNode.Children) > 0
+
+	if hasChildren {
+		// Branch node: pull down separator key
 		leftNode.Keys = append(leftNode.Keys, separatorKey)
-	}
+		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
 
-	// Add all keys from right node to left node
-	leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
-
-	// Add values for leaf nodes only
-	if leftNode.IsLeaf() {
-		leftNode.Values = append(leftNode.Values, rightNode.Values...)
-	} else {
-		// Branch nodes should have no values
+		// Always clear Values for branch nodes (defensive against corruption)
 		leftNode.Values = nil
-	}
 
-	// Copy children pointers for branch nodes
-	if !leftNode.IsLeaf() {
+		// Merge children pointers
 		leftNode.Children = append(leftNode.Children, rightNode.Children...)
+	} else {
+		// Leaf node: no separator, merge keys and values
+		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
+		leftNode.Values = append(leftNode.Values, rightNode.Values...)
 	}
 
 	// Update left node's key count
@@ -166,13 +165,13 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 }
 
 // NewBranchRoot creates a new branch root node from two children after split
-func NewBranchRoot(leftChild, rightChild *base.Node, midKey, midVal []byte, pageID base.PageID) *base.Node {
+func NewBranchRoot(leftChild, rightChild *base.Node, midKey []byte, pageID base.PageID) *base.Node {
 	return &base.Node{
 		PageID:   pageID,
 		Dirty:    true,
 		NumKeys:  1,
 		Keys:     [][]byte{midKey},
-		Values:   [][]byte{midVal},
+		Values:   nil,
 		Children: []base.PageID{leftChild.PageID, rightChild.PageID},
 	}
 }

@@ -110,7 +110,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Handle root split with COW
 	if root.IsFull() {
 		// Split root using COW
-		leftChild, rightChild, midKey, midVal, err := tx.splitChild(root)
+		leftChild, rightChild, midKey, _, err := tx.splitChild(root)
 		if err != nil {
 			return err
 		}
@@ -121,7 +121,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, midVal, newRootID)
+		newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 		// Don't add root to tx.pages - root is tracked separately in tx.root
 		// The split Children were already stored in splitChild()
@@ -144,7 +144,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		}
 
 		// Root couldn't fit the new entry - split it
-		leftChild, rightChild, midKey, midVal, err := tx.splitChild(root)
+		leftChild, rightChild, midKey, _, err := tx.splitChild(root)
 		if err != nil {
 			return err
 		}
@@ -155,7 +155,7 @@ func (tx *Tx) Set(key, value []byte) error {
 			return err
 		}
 
-		root = algo.NewBranchRoot(leftChild, rightChild, midKey, midVal, newRootID)
+		root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 		// Don't add root to tx.pages - root is tracked separately in tx.root
 		// Use new root for next retry (already assigned to root)

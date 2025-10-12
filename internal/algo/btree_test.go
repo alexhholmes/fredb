@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"fredb/internal/base"
+
+	"github.com/stretchr/testify/assert"
 )
 
 var _ = flag.Bool("slow", false, "run slow tests")
@@ -81,9 +83,7 @@ func TestFindChildIndex(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := FindChildIndex(tt.node, tt.key)
-			if got != tt.want {
-				t.Errorf("FindChildIndex() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "FindChildIndex should return correct child index")
 		})
 	}
 }
@@ -148,9 +148,7 @@ func TestFindKeyInLeaf(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := FindKeyInLeaf(tt.node, tt.key)
-			if got != tt.want {
-				t.Errorf("FindKeyInLeaf() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "FindKeyInLeaf should return correct index")
 		})
 	}
 }

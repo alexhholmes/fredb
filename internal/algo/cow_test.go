@@ -3,9 +3,10 @@ package algo
 import (
 	"testing"
 
-	"fredb/internal/base"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"fredb/internal/base"
 )
 
 // Helper: compare byte slice arrays
@@ -14,8 +15,13 @@ func equalByteSlices(a, b [][]byte) bool {
 		return false
 	}
 	for i := range a {
-		if !bytes.Equal(a[i], b[i]) {
+		if len(a[i]) != len(b[i]) {
 			return false
+		}
+		for j := range a[i] {
+			if a[i][j] != b[i][j] {
+				return false
+			}
 		}
 	}
 	return true
@@ -53,25 +59,13 @@ func TestApplyLeafUpdate_BasicUpdate(t *testing.T) {
 
 	ApplyLeafUpdate(node, 1, []byte("v2-updated"))
 
-	if !bytes.Equal(node.Values[1], []byte("v2-updated")) {
-		t.Errorf("expected Values[1] = 'v2-updated', got '%s'", node.Values[1])
-	}
-	if !bytes.Equal(node.Values[0], []byte("v1")) {
-		t.Errorf("expected Values[0] = 'v1', got '%s'", node.Values[0])
-	}
-	if !bytes.Equal(node.Values[2], []byte("v3")) {
-		t.Errorf("expected Values[2] = 'v3', got '%s'", node.Values[2])
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("expected NumKeys = 3, got %d", node.NumKeys)
-	}
+	assert.Equal(t, []byte("v2-updated"), node.Values[1], "Values[1] should be updated")
+	assert.Equal(t, []byte("v1"), node.Values[0], "Values[0] should remain unchanged")
+	assert.Equal(t, []byte("v3"), node.Values[2], "Values[2] should remain unchanged")
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should remain 3")
 	expectedKeys := [][]byte{[]byte("apple"), []byte("banana"), []byte("cherry")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("keys should remain unchanged")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should remain unchanged")
 }
 
 func TestApplyLeafUpdate_FirstPosition(t *testing.T) {
@@ -82,18 +76,10 @@ func TestApplyLeafUpdate_FirstPosition(t *testing.T) {
 
 	ApplyLeafUpdate(node, 0, []byte("new-val1"))
 
-	if !bytes.Equal(node.Values[0], []byte("new-val1")) {
-		t.Errorf("expected Values[0] = 'new-val1', got '%s'", node.Values[0])
-	}
-	if !bytes.Equal(node.Values[1], []byte("val2")) {
-		t.Errorf("expected Values[1] = 'val2', got '%s'", node.Values[1])
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("expected NumKeys = 2, got %d", node.NumKeys)
-	}
+	assert.Equal(t, []byte("new-val1"), node.Values[0], "Values[0] should be updated")
+	assert.Equal(t, []byte("val2"), node.Values[1], "Values[1] should remain unchanged")
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should remain 2")
 }
 
 func TestApplyLeafUpdate_LastPosition(t *testing.T) {
@@ -104,18 +90,10 @@ func TestApplyLeafUpdate_LastPosition(t *testing.T) {
 
 	ApplyLeafUpdate(node, 2, []byte("v3-new"))
 
-	if !bytes.Equal(node.Values[2], []byte("v3-new")) {
-		t.Errorf("expected Values[2] = 'v3-new', got '%s'", node.Values[2])
-	}
-	if !bytes.Equal(node.Values[0], []byte("v1")) {
-		t.Errorf("expected Values[0] = 'v1', got '%s'", node.Values[0])
-	}
-	if !bytes.Equal(node.Values[1], []byte("v2")) {
-		t.Errorf("expected Values[1] = 'v2', got '%s'", node.Values[1])
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.Equal(t, []byte("v3-new"), node.Values[2], "Values[2] should be updated")
+	assert.Equal(t, []byte("v1"), node.Values[0], "Values[0] should remain unchanged")
+	assert.Equal(t, []byte("v2"), node.Values[1], "Values[1] should remain unchanged")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafUpdate_EmptyValue(t *testing.T) {
@@ -126,15 +104,9 @@ func TestApplyLeafUpdate_EmptyValue(t *testing.T) {
 
 	ApplyLeafUpdate(node, 0, []byte(""))
 
-	if !bytes.Equal(node.Values[0], []byte("")) {
-		t.Errorf("expected Values[0] = '', got '%s'", node.Values[0])
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
-	if node.NumKeys != 1 {
-		t.Errorf("expected NumKeys = 1, got %d", node.NumKeys)
-	}
+	assert.Equal(t, []byte(""), node.Values[0], "Values[0] should be empty")
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should remain 1")
 }
 
 // ApplyLeafInsert Tests
@@ -150,18 +122,10 @@ func TestApplyLeafInsert_Middle(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v3")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a', 'b', 'c'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1', 'v2', 'v3'], got %v", node.Values)
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("expected NumKeys = 3, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b', 'c']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2', 'v3']")
+	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should be 3")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafInsert_Beginning(t *testing.T) {
@@ -175,18 +139,10 @@ func TestApplyLeafInsert_Beginning(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v3")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a', 'b', 'c'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1', 'v2', 'v3'], got %v", node.Values)
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("expected NumKeys = 3, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b', 'c']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2', 'v3']")
+	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should be 3")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafInsert_End(t *testing.T) {
@@ -200,18 +156,10 @@ func TestApplyLeafInsert_End(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v3")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a', 'b', 'c'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1', 'v2', 'v3'], got %v", node.Values)
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("expected NumKeys = 3, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b', 'c']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2', 'v3']")
+	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should be 3")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafInsert_EmptyNode(t *testing.T) {
@@ -225,18 +173,10 @@ func TestApplyLeafInsert_EmptyNode(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("first")}
 	expectedValues := [][]byte{[]byte("value1")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['first'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['value1'], got %v", node.Values)
-	}
-	if node.NumKeys != 1 {
-		t.Errorf("expected NumKeys = 1, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['first']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['value1']")
+	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafInsert_SingleElement(t *testing.T) {
@@ -250,18 +190,10 @@ func TestApplyLeafInsert_SingleElement(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a"), []byte("b")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a', 'b'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1', 'v2'], got %v", node.Values)
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("expected NumKeys = 2, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2']")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 // ApplyLeafDelete Tests
@@ -277,18 +209,10 @@ func TestApplyLeafDelete_Middle(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v3")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a', 'c'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1', 'v3'], got %v", node.Values)
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("expected NumKeys = 2, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'c']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v3']")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafDelete_First(t *testing.T) {
@@ -302,18 +226,10 @@ func TestApplyLeafDelete_First(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("b"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v2"), []byte("v3")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['b', 'c'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v2', 'v3'], got %v", node.Values)
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("expected NumKeys = 2, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['b', 'c']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v2', 'v3']")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafDelete_Last(t *testing.T) {
@@ -327,18 +243,10 @@ func TestApplyLeafDelete_Last(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a"), []byte("b")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a', 'b'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1', 'v2'], got %v", node.Values)
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("expected NumKeys = 2, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2']")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafDelete_OnlyElement(t *testing.T) {
@@ -352,18 +260,10 @@ func TestApplyLeafDelete_OnlyElement(t *testing.T) {
 	expectedKeys := [][]byte{}
 	expectedValues := [][]byte{}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = [], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = [], got %v", node.Values)
-	}
-	if node.NumKeys != 0 {
-		t.Errorf("expected NumKeys = 0, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be empty")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be empty")
+	assert.Equal(t, uint16(0), node.NumKeys, "NumKeys should be 0")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyLeafDelete_DownToOne(t *testing.T) {
@@ -377,18 +277,10 @@ func TestApplyLeafDelete_DownToOne(t *testing.T) {
 	expectedKeys := [][]byte{[]byte("a")}
 	expectedValues := [][]byte{[]byte("v1")}
 
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("expected Keys = ['a'], got %v", node.Keys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("expected Values = ['v1'], got %v", node.Values)
-	}
-	if node.NumKeys != 1 {
-		t.Errorf("expected NumKeys = 1, got %d", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Errorf("expected Dirty = true, got false")
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1']")
+	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 // ApplyBranchRemoveSeparator Tests
@@ -402,31 +294,14 @@ func TestApplyBranchRemoveSeparator_BranchNode_Middle(t *testing.T) {
 	ApplyBranchRemoveSeparator(node, 1)
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k3")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
-
-	if node.Values != nil {
-		t.Errorf("Values = %v, want nil", node.Values)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['k1', 'k3']")
+	assert.Nil(t, node.Values, "values should be nil for branch node")
 
 	expectedChildren := []base.PageID{1, 2, 4}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("Children length = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i := range expectedChildren {
-		if node.Children[i] != expectedChildren[i] {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], expectedChildren[i])
-		}
-	}
-
-	if node.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", node.NumKeys)
-	}
-
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyBranchRemoveSeparator_BranchNode_First(t *testing.T) {
@@ -438,27 +313,13 @@ func TestApplyBranchRemoveSeparator_BranchNode_First(t *testing.T) {
 	ApplyBranchRemoveSeparator(node, 0)
 
 	expectedKeys := [][]byte{[]byte("k2")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['k2']")
 
 	expectedChildren := []base.PageID{10, 30}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("Children length = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i := range expectedChildren {
-		if node.Children[i] != expectedChildren[i] {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], expectedChildren[i])
-		}
-	}
-
-	if node.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", node.NumKeys)
-	}
-
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
+	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyBranchRemoveSeparator_BranchNode_Last(t *testing.T) {
@@ -470,27 +331,13 @@ func TestApplyBranchRemoveSeparator_BranchNode_Last(t *testing.T) {
 	ApplyBranchRemoveSeparator(node, 2)
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['k1', 'k2']")
 
 	expectedChildren := []base.PageID{1, 2, 3}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("Children length = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i := range expectedChildren {
-		if node.Children[i] != expectedChildren[i] {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], expectedChildren[i])
-		}
-	}
-
-	if node.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", node.NumKeys)
-	}
-
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyBranchRemoveSeparator_LeafNode(t *testing.T) {
@@ -503,32 +350,16 @@ func TestApplyBranchRemoveSeparator_LeafNode(t *testing.T) {
 	ApplyBranchRemoveSeparator(node, 1)
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k3")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['k1', 'k3']")
 
 	expectedValues := [][]byte{[]byte("v1"), []byte("v3")}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("Values = %v, want %v", node.Values, expectedValues)
-	}
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v3']")
 
 	expectedChildren := []base.PageID{1, 2, 4}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("Children length = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i := range expectedChildren {
-		if node.Children[i] != expectedChildren[i] {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], expectedChildren[i])
-		}
-	}
-
-	if node.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", node.NumKeys)
-	}
-
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
+	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestApplyBranchRemoveSeparator_DownToOneKey(t *testing.T) {
@@ -540,27 +371,13 @@ func TestApplyBranchRemoveSeparator_DownToOneKey(t *testing.T) {
 	ApplyBranchRemoveSeparator(node, 0)
 
 	expectedKeys := [][]byte{[]byte("k2")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['k2']")
 
 	expectedChildren := []base.PageID{1, 3}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("Children length = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i := range expectedChildren {
-		if node.Children[i] != expectedChildren[i] {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], expectedChildren[i])
-		}
-	}
-
-	if node.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", node.NumKeys)
-	}
-
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
+	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 // BorrowFromLeft Tests
@@ -585,49 +402,27 @@ func TestBorrowFromLeft_LeafNodes(t *testing.T) {
 
 	// Verify node
 	expectedNodeKeys := [][]byte{[]byte("c"), []byte("e"), []byte("f")}
-	if !equalByteSlices(node.Keys, expectedNodeKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedNodeKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedNodeKeys), "node keys should be ['c', 'e', 'f']")
 
 	expectedNodeValues := [][]byte{[]byte("v3"), []byte("v5"), []byte("v6")}
-	if !equalByteSlices(node.Values, expectedNodeValues) {
-		t.Errorf("node.Values = %v, want %v", node.Values, expectedNodeValues)
-	}
-
-	if node.NumKeys != 3 {
-		t.Errorf("node.NumKeys = %v, want 3", node.NumKeys)
-	}
+	assert.True(t, equalByteSlices(node.Values, expectedNodeValues), "node values should be ['v3', 'v5', 'v6']")
+	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("a"), []byte("b")}
-	if !equalByteSlices(leftSibling.Keys, expectedLeftKeys) {
-		t.Errorf("leftSibling.Keys = %v, want %v", leftSibling.Keys, expectedLeftKeys)
-	}
+	assert.True(t, equalByteSlices(leftSibling.Keys, expectedLeftKeys), "leftSibling keys should be ['a', 'b']")
 
 	expectedLeftValues := [][]byte{[]byte("v1"), []byte("v2")}
-	if !equalByteSlices(leftSibling.Values, expectedLeftValues) {
-		t.Errorf("leftSibling.Values = %v, want %v", leftSibling.Values, expectedLeftValues)
-	}
-
-	if leftSibling.NumKeys != 2 {
-		t.Errorf("leftSibling.NumKeys = %v, want 2", leftSibling.NumKeys)
-	}
+	assert.True(t, equalByteSlices(leftSibling.Values, expectedLeftValues), "leftSibling values should be ['v1', 'v2']")
+	assert.Equal(t, uint16(2), leftSibling.NumKeys, "leftSibling NumKeys should be 2")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("c")) {
-		t.Errorf("parent.Keys[0] = %v, want 'c'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("c"), parent.Keys[0], "parent separator key should be 'c'")
 
 	// Verify all dirty
-	if !node.Dirty {
-		t.Error("node.Dirty = false, want true")
-	}
-	if !leftSibling.Dirty {
-		t.Error("leftSibling.Dirty = false, want true")
-	}
-	if !parent.Dirty {
-		t.Error("parent.Dirty = false, want true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, leftSibling.Dirty, "leftSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromLeft_LeafNodes_SingleElementRight(t *testing.T) {
@@ -650,38 +445,24 @@ func TestBorrowFromLeft_LeafNodes_SingleElementRight(t *testing.T) {
 
 	// Verify node
 	expectedNodeKeys := [][]byte{[]byte("b"), []byte("d")}
-	if !equalByteSlices(node.Keys, expectedNodeKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedNodeKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedNodeKeys), "node keys should be ['b', 'd']")
 
 	expectedNodeValues := [][]byte{[]byte("v2"), []byte("v4")}
-	if !equalByteSlices(node.Values, expectedNodeValues) {
-		t.Errorf("node.Values = %v, want %v", node.Values, expectedNodeValues)
-	}
-
-	if node.NumKeys != 2 {
-		t.Errorf("node.NumKeys = %v, want 2", node.NumKeys)
-	}
+	assert.True(t, equalByteSlices(node.Values, expectedNodeValues), "node values should be ['v2', 'v4']")
+	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("a")}
-	if !equalByteSlices(leftSibling.Keys, expectedLeftKeys) {
-		t.Errorf("leftSibling.Keys = %v, want %v", leftSibling.Keys, expectedLeftKeys)
-	}
-
-	if leftSibling.NumKeys != 1 {
-		t.Errorf("leftSibling.NumKeys = %v, want 1", leftSibling.NumKeys)
-	}
+	assert.True(t, equalByteSlices(leftSibling.Keys, expectedLeftKeys), "leftSibling keys should be ['a']")
+	assert.Equal(t, uint16(1), leftSibling.NumKeys, "leftSibling NumKeys should be 1")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("b")) {
-		t.Errorf("parent.Keys[0] = %v, want 'b'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("b"), parent.Keys[0], "parent separator key should be 'b'")
 
 	// Verify all dirty
-	if !node.Dirty || !leftSibling.Dirty || !parent.Dirty {
-		t.Error("All Dirty flags should be true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, leftSibling.Dirty, "leftSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromLeft_BranchNodes(t *testing.T) {
@@ -704,53 +485,29 @@ func TestBorrowFromLeft_BranchNodes(t *testing.T) {
 
 	// Verify node
 	expectedNodeKeys := [][]byte{[]byte("k5"), []byte("k6"), []byte("k7")}
-	if !equalByteSlices(node.Keys, expectedNodeKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedNodeKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedNodeKeys), "node keys should be ['k5', 'k6', 'k7']")
 
 	expectedNodeChildren := []base.PageID{4, 10, 11, 12}
-	if len(node.Children) != len(expectedNodeChildren) {
-		t.Fatalf("node.Children length = %v, want %v", len(node.Children), len(expectedNodeChildren))
-	}
-	for i := range expectedNodeChildren {
-		if node.Children[i] != expectedNodeChildren[i] {
-			t.Errorf("node.Children[%d] = %v, want %v", i, node.Children[i], expectedNodeChildren[i])
-		}
-	}
-
-	if node.NumKeys != 3 {
-		t.Errorf("node.NumKeys = %v, want 3", node.NumKeys)
-	}
+	require.Equal(t, len(expectedNodeChildren), len(node.Children), "node children length should match")
+	assert.Equal(t, expectedNodeChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("k1"), []byte("k2")}
-	if !equalByteSlices(leftSibling.Keys, expectedLeftKeys) {
-		t.Errorf("leftSibling.Keys = %v, want %v", leftSibling.Keys, expectedLeftKeys)
-	}
+	assert.True(t, equalByteSlices(leftSibling.Keys, expectedLeftKeys), "leftSibling keys should be ['k1', 'k2']")
 
 	expectedLeftChildren := []base.PageID{1, 2, 3}
-	if len(leftSibling.Children) != len(expectedLeftChildren) {
-		t.Fatalf("leftSibling.Children length = %v, want %v", len(leftSibling.Children), len(expectedLeftChildren))
-	}
-	for i := range expectedLeftChildren {
-		if leftSibling.Children[i] != expectedLeftChildren[i] {
-			t.Errorf("leftSibling.Children[%d] = %v, want %v", i, leftSibling.Children[i], expectedLeftChildren[i])
-		}
-	}
-
-	if leftSibling.NumKeys != 2 {
-		t.Errorf("leftSibling.NumKeys = %v, want 2", leftSibling.NumKeys)
-	}
+	require.Equal(t, len(expectedLeftChildren), len(leftSibling.Children), "leftSibling children length should match")
+	assert.Equal(t, expectedLeftChildren, leftSibling.Children, "leftSibling children should match expected")
+	assert.Equal(t, uint16(2), leftSibling.NumKeys, "leftSibling NumKeys should be 2")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("k3")) {
-		t.Errorf("parent.Keys[0] = %v, want 'k3'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("k3"), parent.Keys[0], "parent separator key should be 'k3'")
 
 	// Verify all dirty
-	if !node.Dirty || !leftSibling.Dirty || !parent.Dirty {
-		t.Error("All Dirty flags should be true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, leftSibling.Dirty, "leftSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromLeft_BranchNodes_SingleElementRight(t *testing.T) {
@@ -773,53 +530,29 @@ func TestBorrowFromLeft_BranchNodes_SingleElementRight(t *testing.T) {
 
 	// Verify node
 	expectedNodeKeys := [][]byte{[]byte("k4"), []byte("k5")}
-	if !equalByteSlices(node.Keys, expectedNodeKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedNodeKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedNodeKeys), "node keys should be ['k4', 'k5']")
 
 	expectedNodeChildren := []base.PageID{3, 10, 11}
-	if len(node.Children) != len(expectedNodeChildren) {
-		t.Fatalf("node.Children length = %v, want %v", len(node.Children), len(expectedNodeChildren))
-	}
-	for i := range expectedNodeChildren {
-		if node.Children[i] != expectedNodeChildren[i] {
-			t.Errorf("node.Children[%d] = %v, want %v", i, node.Children[i], expectedNodeChildren[i])
-		}
-	}
-
-	if node.NumKeys != 2 {
-		t.Errorf("node.NumKeys = %v, want 2", node.NumKeys)
-	}
+	require.Equal(t, len(expectedNodeChildren), len(node.Children), "node children length should match")
+	assert.Equal(t, expectedNodeChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("k1")}
-	if !equalByteSlices(leftSibling.Keys, expectedLeftKeys) {
-		t.Errorf("leftSibling.Keys = %v, want %v", leftSibling.Keys, expectedLeftKeys)
-	}
+	assert.True(t, equalByteSlices(leftSibling.Keys, expectedLeftKeys), "leftSibling keys should be ['k1']")
 
 	expectedLeftChildren := []base.PageID{1, 2}
-	if len(leftSibling.Children) != len(expectedLeftChildren) {
-		t.Fatalf("leftSibling.Children length = %v, want %v", len(leftSibling.Children), len(expectedLeftChildren))
-	}
-	for i := range expectedLeftChildren {
-		if leftSibling.Children[i] != expectedLeftChildren[i] {
-			t.Errorf("leftSibling.Children[%d] = %v, want %v", i, leftSibling.Children[i], expectedLeftChildren[i])
-		}
-	}
-
-	if leftSibling.NumKeys != 1 {
-		t.Errorf("leftSibling.NumKeys = %v, want 1", leftSibling.NumKeys)
-	}
+	require.Equal(t, len(expectedLeftChildren), len(leftSibling.Children), "leftSibling children length should match")
+	assert.Equal(t, expectedLeftChildren, leftSibling.Children, "leftSibling children should match expected")
+	assert.Equal(t, uint16(1), leftSibling.NumKeys, "leftSibling NumKeys should be 1")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("k2")) {
-		t.Errorf("parent.Keys[0] = %v, want 'k2'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("k2"), parent.Keys[0], "parent separator key should be 'k2'")
 
 	// Verify all dirty
-	if !node.Dirty || !leftSibling.Dirty || !parent.Dirty {
-		t.Error("All Dirty flags should be true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, leftSibling.Dirty, "leftSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromLeft_ParentKeyIdx_NonZero(t *testing.T) {
@@ -841,18 +574,11 @@ func TestBorrowFromLeft_ParentKeyIdx_NonZero(t *testing.T) {
 	BorrowFromLeft(node, leftSibling, parent, 1)
 
 	// Verify parent key at index 1 is updated
-	if !bytes.Equal(parent.Keys[1], []byte("n")) {
-		t.Errorf("parent.Keys[1] = %v, want 'n'", parent.Keys[1])
-	}
+	assert.Equal(t, []byte("n"), parent.Keys[1], "parent.Keys[1] should be 'n'")
 
 	// Verify other parent keys are unchanged
-	if !bytes.Equal(parent.Keys[0], []byte("e")) {
-		t.Errorf("parent.Keys[0] = %v, want 'e'", parent.Keys[0])
-	}
-
-	if !bytes.Equal(parent.Keys[2], []byte("z")) {
-		t.Errorf("parent.Keys[2] = %v, want 'z'", parent.Keys[2])
-	}
+	assert.Equal(t, []byte("e"), parent.Keys[0], "parent.Keys[0] should remain 'e'")
+	assert.Equal(t, []byte("z"), parent.Keys[2], "parent.Keys[2] should remain 'z'")
 }
 
 // BorrowFromRight Tests
@@ -876,44 +602,24 @@ func TestBorrowFromRight_LeafNodes(t *testing.T) {
 	// Verify node
 	expectedKeys := [][]byte{[]byte("a"), []byte("b"), []byte("e")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v5")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedKeys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("node.Values = %v, want %v", node.Values, expectedValues)
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("node.NumKeys = %v, want 3", node.NumKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a', 'b', 'e']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v2', 'v5']")
+	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("f"), []byte("g")}
 	expectedRightValues := [][]byte{[]byte("v6"), []byte("v7")}
-	if !equalByteSlices(rightSibling.Keys, expectedRightKeys) {
-		t.Errorf("rightSibling.Keys = %v, want %v", rightSibling.Keys, expectedRightKeys)
-	}
-	if !equalByteSlices(rightSibling.Values, expectedRightValues) {
-		t.Errorf("rightSibling.Values = %v, want %v", rightSibling.Values, expectedRightValues)
-	}
-	if rightSibling.NumKeys != 2 {
-		t.Errorf("rightSibling.NumKeys = %v, want 2", rightSibling.NumKeys)
-	}
+	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['f', 'g']")
+	assert.True(t, equalByteSlices(rightSibling.Values, expectedRightValues), "rightSibling values should be ['v6', 'v7']")
+	assert.Equal(t, uint16(2), rightSibling.NumKeys, "rightSibling NumKeys should be 2")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("f")) {
-		t.Errorf("parent.Keys[0] = %v, want 'f'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("f"), parent.Keys[0], "parent separator key should be 'f'")
 
 	// Verify dirty flags
-	if !node.Dirty {
-		t.Error("node.Dirty = false, want true")
-	}
-	if !rightSibling.Dirty {
-		t.Error("rightSibling.Dirty = false, want true")
-	}
-	if !parent.Dirty {
-		t.Error("parent.Dirty = false, want true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, rightSibling.Dirty, "rightSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromRight_LeafNodes_SingleElementLeft(t *testing.T) {
@@ -935,40 +641,22 @@ func TestBorrowFromRight_LeafNodes_SingleElementLeft(t *testing.T) {
 	// Verify node
 	expectedKeys := [][]byte{[]byte("a"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v3")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedKeys)
-	}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("node.Values = %v, want %v", node.Values, expectedValues)
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("node.NumKeys = %v, want 2", node.NumKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a', 'c']")
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v3']")
+	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("d")}
-	if !equalByteSlices(rightSibling.Keys, expectedRightKeys) {
-		t.Errorf("rightSibling.Keys = %v, want %v", rightSibling.Keys, expectedRightKeys)
-	}
-	if rightSibling.NumKeys != 1 {
-		t.Errorf("rightSibling.NumKeys = %v, want 1", rightSibling.NumKeys)
-	}
+	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['d']")
+	assert.Equal(t, uint16(1), rightSibling.NumKeys, "rightSibling NumKeys should be 1")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("d")) {
-		t.Errorf("parent.Keys[0] = %v, want 'd'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("d"), parent.Keys[0], "parent separator key should be 'd'")
 
 	// Verify dirty flags
-	if !node.Dirty {
-		t.Error("node.Dirty = false, want true")
-	}
-	if !rightSibling.Dirty {
-		t.Error("rightSibling.Dirty = false, want true")
-	}
-	if !parent.Dirty {
-		t.Error("parent.Dirty = false, want true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, rightSibling.Dirty, "rightSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromRight_BranchNodes(t *testing.T) {
@@ -990,54 +678,26 @@ func TestBorrowFromRight_BranchNodes(t *testing.T) {
 	// Verify node
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k5")}
 	expectedChildren := []base.PageID{1, 2, 3, 10}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedKeys)
-	}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("len(node.Children) = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i, c := range node.Children {
-		if c != expectedChildren[i] {
-			t.Errorf("node.Children[%d] = %v, want %v", i, c, expectedChildren[i])
-		}
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("node.NumKeys = %v, want 3", node.NumKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1', 'k2', 'k5']")
+	require.Equal(t, len(expectedChildren), len(node.Children), "node children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("k7"), []byte("k8")}
 	expectedRightChildren := []base.PageID{11, 12, 13}
-	if !equalByteSlices(rightSibling.Keys, expectedRightKeys) {
-		t.Errorf("rightSibling.Keys = %v, want %v", rightSibling.Keys, expectedRightKeys)
-	}
-	if len(rightSibling.Children) != len(expectedRightChildren) {
-		t.Fatalf("len(rightSibling.Children) = %v, want %v", len(rightSibling.Children), len(expectedRightChildren))
-	}
-	for i, c := range rightSibling.Children {
-		if c != expectedRightChildren[i] {
-			t.Errorf("rightSibling.Children[%d] = %v, want %v", i, c, expectedRightChildren[i])
-		}
-	}
-	if rightSibling.NumKeys != 2 {
-		t.Errorf("rightSibling.NumKeys = %v, want 2", rightSibling.NumKeys)
-	}
+	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['k7', 'k8']")
+	require.Equal(t, len(expectedRightChildren), len(rightSibling.Children), "rightSibling children length should match")
+	assert.Equal(t, expectedRightChildren, rightSibling.Children, "rightSibling children should match expected")
+	assert.Equal(t, uint16(2), rightSibling.NumKeys, "rightSibling NumKeys should be 2")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("k6")) {
-		t.Errorf("parent.Keys[0] = %v, want 'k6'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("k6"), parent.Keys[0], "parent separator key should be 'k6'")
 
 	// Verify dirty flags
-	if !node.Dirty {
-		t.Error("node.Dirty = false, want true")
-	}
-	if !rightSibling.Dirty {
-		t.Error("rightSibling.Dirty = false, want true")
-	}
-	if !parent.Dirty {
-		t.Error("parent.Dirty = false, want true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, rightSibling.Dirty, "rightSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromRight_BranchNodes_SingleElementLeft(t *testing.T) {
@@ -1059,54 +719,26 @@ func TestBorrowFromRight_BranchNodes_SingleElementLeft(t *testing.T) {
 	// Verify node
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k3")}
 	expectedChildren := []base.PageID{1, 2, 10}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("node.Keys = %v, want %v", node.Keys, expectedKeys)
-	}
-	if len(node.Children) != len(expectedChildren) {
-		t.Fatalf("len(node.Children) = %v, want %v", len(node.Children), len(expectedChildren))
-	}
-	for i, c := range node.Children {
-		if c != expectedChildren[i] {
-			t.Errorf("node.Children[%d] = %v, want %v", i, c, expectedChildren[i])
-		}
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("node.NumKeys = %v, want 2", node.NumKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1', 'k3']")
+	require.Equal(t, len(expectedChildren), len(node.Children), "node children length should match")
+	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("k5")}
 	expectedRightChildren := []base.PageID{11, 12}
-	if !equalByteSlices(rightSibling.Keys, expectedRightKeys) {
-		t.Errorf("rightSibling.Keys = %v, want %v", rightSibling.Keys, expectedRightKeys)
-	}
-	if len(rightSibling.Children) != len(expectedRightChildren) {
-		t.Fatalf("len(rightSibling.Children) = %v, want %v", len(rightSibling.Children), len(expectedRightChildren))
-	}
-	for i, c := range rightSibling.Children {
-		if c != expectedRightChildren[i] {
-			t.Errorf("rightSibling.Children[%d] = %v, want %v", i, c, expectedRightChildren[i])
-		}
-	}
-	if rightSibling.NumKeys != 1 {
-		t.Errorf("rightSibling.NumKeys = %v, want 1", rightSibling.NumKeys)
-	}
+	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['k5']")
+	require.Equal(t, len(expectedRightChildren), len(rightSibling.Children), "rightSibling children length should match")
+	assert.Equal(t, expectedRightChildren, rightSibling.Children, "rightSibling children should match expected")
+	assert.Equal(t, uint16(1), rightSibling.NumKeys, "rightSibling NumKeys should be 1")
 
 	// Verify parent
-	if !bytes.Equal(parent.Keys[0], []byte("k4")) {
-		t.Errorf("parent.Keys[0] = %v, want 'k4'", parent.Keys[0])
-	}
+	assert.Equal(t, []byte("k4"), parent.Keys[0], "parent separator key should be 'k4'")
 
 	// Verify dirty flags
-	if !node.Dirty {
-		t.Error("node.Dirty = false, want true")
-	}
-	if !rightSibling.Dirty {
-		t.Error("rightSibling.Dirty = false, want true")
-	}
-	if !parent.Dirty {
-		t.Error("parent.Dirty = false, want true")
-	}
+	assert.True(t, node.Dirty, "node should be marked dirty")
+	assert.True(t, rightSibling.Dirty, "rightSibling should be marked dirty")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestBorrowFromRight_ParentKeyIdx_NonZero(t *testing.T) {
@@ -1126,17 +758,11 @@ func TestBorrowFromRight_ParentKeyIdx_NonZero(t *testing.T) {
 	BorrowFromRight(node, rightSibling, parent, 1)
 
 	// Verify parent.Keys[1] changed to "q"
-	if !bytes.Equal(parent.Keys[1], []byte("q")) {
-		t.Errorf("parent.Keys[1] = %v, want 'q'", parent.Keys[1])
-	}
+	assert.Equal(t, []byte("q"), parent.Keys[1], "parent.Keys[1] should be 'q'")
 
 	// Verify other parent keys unchanged
-	if !bytes.Equal(parent.Keys[0], []byte("e")) {
-		t.Errorf("parent.Keys[0] = %v, want 'e'", parent.Keys[0])
-	}
-	if !bytes.Equal(parent.Keys[2], []byte("z")) {
-		t.Errorf("parent.Keys[2] = %v, want 'z'", parent.Keys[2])
-	}
+	assert.Equal(t, []byte("e"), parent.Keys[0], "parent.Keys[0] should remain 'e'")
+	assert.Equal(t, []byte("z"), parent.Keys[2], "parent.Keys[2] should remain 'z'")
 }
 
 // MergeNodes Tests
@@ -1156,18 +782,10 @@ func TestMergeNodes_LeafNodes(t *testing.T) {
 	// Verify left
 	expectedKeys := [][]byte{[]byte("a"), []byte("b"), []byte("d"), []byte("e")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v4"), []byte("v5")}
-	if !equalByteSlices(left.Keys, expectedKeys) {
-		t.Errorf("left.Keys = %v, want %v", left.Keys, expectedKeys)
-	}
-	if !equalByteSlices(left.Values, expectedValues) {
-		t.Errorf("left.Values = %v, want %v", left.Values, expectedValues)
-	}
-	if left.NumKeys != 4 {
-		t.Errorf("left.NumKeys = %v, want 4", left.NumKeys)
-	}
-	if !left.Dirty {
-		t.Error("left.Dirty = false, want true")
-	}
+	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['a', 'b', 'd', 'e']")
+	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v1', 'v2', 'v4', 'v5']")
+	assert.Equal(t, uint16(4), left.NumKeys, "left NumKeys should be 4")
+	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
 func TestMergeNodes_LeafNodes_SingleElementEach(t *testing.T) {
@@ -1185,18 +803,10 @@ func TestMergeNodes_LeafNodes_SingleElementEach(t *testing.T) {
 	// Verify left
 	expectedKeys := [][]byte{[]byte("a"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v1"), []byte("v3")}
-	if !equalByteSlices(left.Keys, expectedKeys) {
-		t.Errorf("left.Keys = %v, want %v", left.Keys, expectedKeys)
-	}
-	if !equalByteSlices(left.Values, expectedValues) {
-		t.Errorf("left.Values = %v, want %v", left.Values, expectedValues)
-	}
-	if left.NumKeys != 2 {
-		t.Errorf("left.NumKeys = %v, want 2", left.NumKeys)
-	}
-	if !left.Dirty {
-		t.Error("left.Dirty = false, want true")
-	}
+	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['a', 'c']")
+	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v1', 'v3']")
+	assert.Equal(t, uint16(2), left.NumKeys, "left NumKeys should be 2")
+	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
 func TestMergeNodes_LeafNodes_EmptyLeft(t *testing.T) {
@@ -1214,18 +824,10 @@ func TestMergeNodes_LeafNodes_EmptyLeft(t *testing.T) {
 	// Verify left
 	expectedKeys := [][]byte{[]byte("b"), []byte("c")}
 	expectedValues := [][]byte{[]byte("v2"), []byte("v3")}
-	if !equalByteSlices(left.Keys, expectedKeys) {
-		t.Errorf("left.Keys = %v, want %v", left.Keys, expectedKeys)
-	}
-	if !equalByteSlices(left.Values, expectedValues) {
-		t.Errorf("left.Values = %v, want %v", left.Values, expectedValues)
-	}
-	if left.NumKeys != 2 {
-		t.Errorf("left.NumKeys = %v, want 2", left.NumKeys)
-	}
-	if !left.Dirty {
-		t.Error("left.Dirty = false, want true")
-	}
+	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['b', 'c']")
+	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v2', 'v3']")
+	assert.Equal(t, uint16(2), left.NumKeys, "left NumKeys should be 2")
+	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
 func TestMergeNodes_BranchNodes(t *testing.T) {
@@ -1242,27 +844,14 @@ func TestMergeNodes_BranchNodes(t *testing.T) {
 
 	// Verify left
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k4"), []byte("k5"), []byte("k6")}
-	if !equalByteSlices(left.Keys, expectedKeys) {
-		t.Errorf("left.Keys = %v, want %v", left.Keys, expectedKeys)
-	}
-	if left.Values != nil {
-		t.Errorf("left.Values = %v, want nil", left.Values)
-	}
+	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should include separator")
+	assert.Nil(t, left.Values, "left values should be nil for branch node")
+
 	expectedChildren := []base.PageID{1, 2, 3, 10, 11, 12}
-	if len(left.Children) != len(expectedChildren) {
-		t.Fatalf("len(left.Children) = %v, want %v", len(left.Children), len(expectedChildren))
-	}
-	for i, c := range left.Children {
-		if c != expectedChildren[i] {
-			t.Errorf("left.Children[%d] = %v, want %v", i, c, expectedChildren[i])
-		}
-	}
-	if left.NumKeys != 5 {
-		t.Errorf("left.NumKeys = %v, want 5", left.NumKeys)
-	}
-	if !left.Dirty {
-		t.Error("left.Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
+	assert.Equal(t, expectedChildren, left.Children, "left children should match expected")
+	assert.Equal(t, uint16(5), left.NumKeys, "left NumKeys should be 5")
+	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
 func TestMergeNodes_BranchNodes_SingleElementEach(t *testing.T) {
@@ -1279,24 +868,13 @@ func TestMergeNodes_BranchNodes_SingleElementEach(t *testing.T) {
 
 	// Verify left
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k3")}
-	if !equalByteSlices(left.Keys, expectedKeys) {
-		t.Errorf("left.Keys = %v, want %v", left.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['k1', 'k2', 'k3']")
+
 	expectedChildren := []base.PageID{1, 2, 10, 11}
-	if len(left.Children) != len(expectedChildren) {
-		t.Fatalf("len(left.Children) = %v, want %v", len(left.Children), len(expectedChildren))
-	}
-	for i, c := range left.Children {
-		if c != expectedChildren[i] {
-			t.Errorf("left.Children[%d] = %v, want %v", i, c, expectedChildren[i])
-		}
-	}
-	if left.NumKeys != 3 {
-		t.Errorf("left.NumKeys = %v, want 3", left.NumKeys)
-	}
-	if !left.Dirty {
-		t.Error("left.Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
+	assert.Equal(t, expectedChildren, left.Children, "left children should match expected")
+	assert.Equal(t, uint16(3), left.NumKeys, "left NumKeys should be 3")
+	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
 func TestMergeNodes_BranchNodes_EmptyLeft(t *testing.T) {
@@ -1313,24 +891,13 @@ func TestMergeNodes_BranchNodes_EmptyLeft(t *testing.T) {
 
 	// Verify left
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2")}
-	if !equalByteSlices(left.Keys, expectedKeys) {
-		t.Errorf("left.Keys = %v, want %v", left.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['k1', 'k2']")
+
 	expectedChildren := []base.PageID{1, 10, 11}
-	if len(left.Children) != len(expectedChildren) {
-		t.Fatalf("len(left.Children) = %v, want %v", len(left.Children), len(expectedChildren))
-	}
-	for i, c := range left.Children {
-		if c != expectedChildren[i] {
-			t.Errorf("left.Children[%d] = %v, want %v", i, c, expectedChildren[i])
-		}
-	}
-	if left.NumKeys != 2 {
-		t.Errorf("left.NumKeys = %v, want 2", left.NumKeys)
-	}
-	if !left.Dirty {
-		t.Error("left.Dirty = false, want true")
-	}
+	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
+	assert.Equal(t, expectedChildren, left.Children, "left children should match expected")
+	assert.Equal(t, uint16(2), left.NumKeys, "left NumKeys should be 2")
+	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
 func TestMergeNodes_LeafNodes_ValuesNilCheck(t *testing.T) {
@@ -1346,15 +913,11 @@ func TestMergeNodes_LeafNodes_ValuesNilCheck(t *testing.T) {
 	MergeNodes(left, right, []byte("sep"))
 
 	// Verify left.Values is not nil
-	if left.Values == nil {
-		t.Error("left.Values = nil, want not nil")
-	}
+	assert.NotNil(t, left.Values, "left values should not be nil for leaf node")
 
 	// Verify values are correct
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2")}
-	if !equalByteSlices(left.Values, expectedValues) {
-		t.Errorf("left.Values = %v, want %v", left.Values, expectedValues)
-	}
+	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v1', 'v2']")
 }
 
 func TestMergeNodes_BranchNodes_ValuesNilCheck(t *testing.T) {
@@ -1373,9 +936,7 @@ func TestMergeNodes_BranchNodes_ValuesNilCheck(t *testing.T) {
 	MergeNodes(left, right, []byte("sep"))
 
 	// Verify left.Values is nil
-	if left.Values != nil {
-		t.Errorf("left.Values = %v, want nil", left.Values)
-	}
+	assert.Nil(t, left.Values, "left values should be nil for branch node")
 }
 
 // NewBranchRoot Tests
@@ -1384,66 +945,46 @@ func TestNewBranchRoot_Basic(t *testing.T) {
 	leftChild := &base.Node{PageID: 10}
 	rightChild := &base.Node{PageID: 20}
 
-	root := NewBranchRoot(leftChild, rightChild, []byte("m"), []byte("mid-value"), 100)
+	root := NewBranchRoot(leftChild, rightChild, []byte("m"), 100)
 
-	if root.PageID != 100 {
-		t.Errorf("PageID = %v, want 100", root.PageID)
-	}
-	if !root.Dirty {
-		t.Error("Dirty = false, want true")
-	}
-	if root.IsLeaf() {
-		t.Error("IsLeaf = true, want false")
-	}
-	if root.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", root.NumKeys)
-	}
-	if !equalByteSlices(root.Keys, [][]byte{[]byte("m")}) {
-		t.Errorf("Keys = %v, want [[m]]", root.Keys)
-	}
-	if !equalByteSlices(root.Values, [][]byte{[]byte("mid-value")}) {
-		t.Errorf("Values = %v, want [[mid-value]]", root.Values)
-	}
-	if len(root.Children) != 2 || root.Children[0] != 10 || root.Children[1] != 20 {
-		t.Errorf("Children = %v, want [10 20]", root.Children)
-	}
+	assert.Equal(t, base.PageID(100), root.PageID, "root PageID should be 100")
+	assert.True(t, root.Dirty, "root should be marked dirty")
+	assert.False(t, root.IsLeaf(), "root should not be a leaf")
+	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
+	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("m")}), "root keys should contain separator")
+	assert.Nil(t, root.Values, "root values should be nil for branch node")
+
+	expectedChildren := []base.PageID{10, 20}
+	require.Equal(t, 2, len(root.Children), "root should have 2 children")
+	assert.Equal(t, expectedChildren, root.Children, "root children should match expected")
 }
 
 func TestNewBranchRoot_EmptyKey(t *testing.T) {
 	leftChild := &base.Node{PageID: 5}
 	rightChild := &base.Node{PageID: 6}
 
-	root := NewBranchRoot(leftChild, rightChild, []byte(""), []byte(""), 1)
+	root := NewBranchRoot(leftChild, rightChild, []byte(""), 1)
 
-	if !equalByteSlices(root.Keys, [][]byte{[]byte("")}) {
-		t.Errorf("Keys = %v, want [[]]", root.Keys)
-	}
-	if !equalByteSlices(root.Values, [][]byte{[]byte("")}) {
-		t.Errorf("Values = %v, want [[]]", root.Values)
-	}
-	if len(root.Children) != 2 || root.Children[0] != 5 || root.Children[1] != 6 {
-		t.Errorf("Children = %v, want [5 6]", root.Children)
-	}
-	if root.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", root.NumKeys)
-	}
-	if root.IsLeaf() {
-		t.Error("IsLeaf = true, want false")
-	}
+	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("")}), "root keys should contain empty separator")
+	assert.Nil(t, root.Values, "root values should be nil for branch node")
+
+	expectedChildren := []base.PageID{5, 6}
+	require.Equal(t, 2, len(root.Children), "root should have 2 children")
+	assert.Equal(t, expectedChildren, root.Children, "root children should be [5, 6]")
+	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
+	assert.False(t, root.IsLeaf(), "root should not be a leaf")
 }
 
 func TestNewBranchRoot_LargePageIDs(t *testing.T) {
 	leftChild := &base.Node{PageID: 999999}
 	rightChild := &base.Node{PageID: 1000000}
 
-	root := NewBranchRoot(leftChild, rightChild, []byte("sep"), []byte("v"), 1)
+	root := NewBranchRoot(leftChild, rightChild, []byte("sep"), 1)
 
-	if len(root.Children) != 2 || root.Children[0] != 999999 || root.Children[1] != 1000000 {
-		t.Errorf("Children = %v, want [999999 1000000]", root.Children)
-	}
-	if root.PageID != 1 {
-		t.Errorf("PageID = %v, want 1", root.PageID)
-	}
+	expectedChildren := []base.PageID{999999, 1000000}
+	require.Equal(t, 2, len(root.Children), "root should have 2 children")
+	assert.Equal(t, expectedChildren, root.Children, "root children should be [999999, 1000000]")
+	assert.Equal(t, base.PageID(1), root.PageID, "root PageID should be 1")
 }
 
 // ApplyChildSplit Tests
@@ -1462,24 +1003,13 @@ func TestApplyChildSplit_Middle(t *testing.T) {
 	ApplyChildSplit(parent, 1, leftChild, rightChild, []byte("k2"), []byte("v2"))
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k3")}
-	if !equalByteSlices(parent.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", parent.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(parent.Keys, expectedKeys), "parent keys should be ['k1', 'k2', 'k3']")
+
 	expectedChildren := []base.PageID{1, 10, 11, 3}
-	if len(parent.Children) != 4 {
-		t.Fatalf("Children length = %v, want 4", len(parent.Children))
-	}
-	for i, c := range expectedChildren {
-		if parent.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, parent.Children[i], c)
-		}
-	}
-	if parent.NumKeys != 3 {
-		t.Errorf("NumKeys = %v, want 3", parent.NumKeys)
-	}
-	if !parent.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 4, len(parent.Children), "parent should have 4 children")
+	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
+	assert.Equal(t, uint16(3), parent.NumKeys, "parent NumKeys should be 3")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestApplyChildSplit_Beginning(t *testing.T) {
@@ -1496,24 +1026,13 @@ func TestApplyChildSplit_Beginning(t *testing.T) {
 	ApplyChildSplit(parent, 0, leftChild, rightChild, []byte("k1"), nil)
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2")}
-	if !equalByteSlices(parent.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", parent.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(parent.Keys, expectedKeys), "parent keys should be ['k1', 'k2']")
+
 	expectedChildren := []base.PageID{10, 11, 2}
-	if len(parent.Children) != 3 {
-		t.Fatalf("Children length = %v, want 3", len(parent.Children))
-	}
-	for i, c := range expectedChildren {
-		if parent.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, parent.Children[i], c)
-		}
-	}
-	if parent.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", parent.NumKeys)
-	}
-	if !parent.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 3, len(parent.Children), "parent should have 3 children")
+	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
+	assert.Equal(t, uint16(2), parent.NumKeys, "parent NumKeys should be 2")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestApplyChildSplit_End(t *testing.T) {
@@ -1529,24 +1048,13 @@ func TestApplyChildSplit_End(t *testing.T) {
 	ApplyChildSplit(parent, 2, leftChild, rightChild, []byte("k3"), nil)
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k3")}
-	if !equalByteSlices(parent.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", parent.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(parent.Keys, expectedKeys), "parent keys should be ['k1', 'k2', 'k3']")
+
 	expectedChildren := []base.PageID{1, 2, 10, 11}
-	if len(parent.Children) != 4 {
-		t.Fatalf("Children length = %v, want 4", len(parent.Children))
-	}
-	for i, c := range expectedChildren {
-		if parent.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, parent.Children[i], c)
-		}
-	}
-	if parent.NumKeys != 3 {
-		t.Errorf("NumKeys = %v, want 3", parent.NumKeys)
-	}
-	if !parent.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 4, len(parent.Children), "parent should have 4 children")
+	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
+	assert.Equal(t, uint16(3), parent.NumKeys, "parent NumKeys should be 3")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestApplyChildSplit_LeafParent(t *testing.T) {
@@ -1564,28 +1072,16 @@ func TestApplyChildSplit_LeafParent(t *testing.T) {
 	ApplyChildSplit(parent, 0, leftChild, rightChild, []byte("k1"), []byte("v1"))
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2")}
-	if !equalByteSlices(parent.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", parent.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(parent.Keys, expectedKeys), "parent keys should be ['k1', 'k2']")
+
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2")}
-	if !equalByteSlices(parent.Values, expectedValues) {
-		t.Errorf("Values = %v, want %v", parent.Values, expectedValues)
-	}
+	assert.True(t, equalByteSlices(parent.Values, expectedValues), "parent values should be ['v1', 'v2']")
+
 	expectedChildren := []base.PageID{10, 11, 2}
-	if len(parent.Children) != 3 {
-		t.Fatalf("Children length = %v, want 3", len(parent.Children))
-	}
-	for i, c := range expectedChildren {
-		if parent.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, parent.Children[i], c)
-		}
-	}
-	if parent.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", parent.NumKeys)
-	}
-	if !parent.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 3, len(parent.Children), "parent should have 3 children")
+	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
+	assert.Equal(t, uint16(2), parent.NumKeys, "parent NumKeys should be 2")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 func TestApplyChildSplit_SingleKeyParent(t *testing.T) {
@@ -1601,24 +1097,13 @@ func TestApplyChildSplit_SingleKeyParent(t *testing.T) {
 	ApplyChildSplit(parent, 1, leftChild, rightChild, []byte("k3"), nil)
 
 	expectedKeys := [][]byte{[]byte("k2"), []byte("k3")}
-	if !equalByteSlices(parent.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", parent.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(parent.Keys, expectedKeys), "parent keys should be ['k2', 'k3']")
+
 	expectedChildren := []base.PageID{1, 10, 11}
-	if len(parent.Children) != 3 {
-		t.Fatalf("Children length = %v, want 3", len(parent.Children))
-	}
-	for i, c := range expectedChildren {
-		if parent.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, parent.Children[i], c)
-		}
-	}
-	if parent.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", parent.NumKeys)
-	}
-	if !parent.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 3, len(parent.Children), "parent should have 3 children")
+	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
+	assert.Equal(t, uint16(2), parent.NumKeys, "parent NumKeys should be 2")
+	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
 // TruncateLeft Tests
@@ -1635,19 +1120,12 @@ func TestTruncateLeft_LeafNode(t *testing.T) {
 	TruncateLeft(node, sp)
 
 	expectedKeys := [][]byte{[]byte("a"), []byte("b")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a', 'b']")
+
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2")}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("Values = %v, want %v", node.Values, expectedValues)
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v2']")
+	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestTruncateLeft_LeafNode_SingleElement(t *testing.T) {
@@ -1661,19 +1139,12 @@ func TestTruncateLeft_LeafNode_SingleElement(t *testing.T) {
 	TruncateLeft(node, sp)
 
 	expectedKeys := [][]byte{[]byte("a")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a']")
+
 	expectedValues := [][]byte{[]byte("v1")}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("Values = %v, want %v", node.Values, expectedValues)
-	}
-	if node.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1']")
+	assert.Equal(t, uint16(1), node.NumKeys, "node NumKeys should be 1")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestTruncateLeft_BranchNode(t *testing.T) {
@@ -1688,27 +1159,14 @@ func TestTruncateLeft_BranchNode(t *testing.T) {
 	TruncateLeft(node, sp)
 
 	expectedKeys := [][]byte{[]byte("k1")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
-	if node.Values != nil {
-		t.Errorf("Values = %v, want nil", node.Values)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1']")
+	assert.Nil(t, node.Values, "node values should be nil for branch node")
+
 	expectedChildren := []base.PageID{1, 2}
-	if len(node.Children) != 2 {
-		t.Fatalf("Children length = %v, want 2", len(node.Children))
-	}
-	for i, c := range expectedChildren {
-		if node.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], c)
-		}
-	}
-	if node.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 2, len(node.Children), "node should have 2 children")
+	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(1), node.NumKeys, "node NumKeys should be 1")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestTruncateLeft_BranchNode_MultipleElements(t *testing.T) {
@@ -1723,24 +1181,13 @@ func TestTruncateLeft_BranchNode_MultipleElements(t *testing.T) {
 	TruncateLeft(node, sp)
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1', 'k2']")
+
 	expectedChildren := []base.PageID{1, 2, 3}
-	if len(node.Children) != 3 {
-		t.Fatalf("Children length = %v, want 3", len(node.Children))
-	}
-	for i, c := range expectedChildren {
-		if node.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], c)
-		}
-	}
-	if node.NumKeys != 2 {
-		t.Errorf("NumKeys = %v, want 2", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	require.Equal(t, 3, len(node.Children), "node should have 3 children")
+	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestTruncateLeft_LeafNode_AllButOne(t *testing.T) {
@@ -1754,19 +1201,12 @@ func TestTruncateLeft_LeafNode_AllButOne(t *testing.T) {
 	TruncateLeft(node, sp)
 
 	expectedKeys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a', 'b', 'c']")
+
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v3")}
-	if !equalByteSlices(node.Values, expectedValues) {
-		t.Errorf("Values = %v, want %v", node.Values, expectedValues)
-	}
-	if node.NumKeys != 3 {
-		t.Errorf("NumKeys = %v, want 3", node.NumKeys)
-	}
-	if !node.Dirty {
-		t.Error("Dirty = false, want true")
-	}
+	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v2', 'v3']")
+	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
+	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
 func TestTruncateLeft_BranchNode_ChildrenAlignment(t *testing.T) {
@@ -1780,22 +1220,11 @@ func TestTruncateLeft_BranchNode_ChildrenAlignment(t *testing.T) {
 	TruncateLeft(node, sp)
 
 	expectedKeys := [][]byte{[]byte("k1")}
-	if !equalByteSlices(node.Keys, expectedKeys) {
-		t.Errorf("Keys = %v, want %v", node.Keys, expectedKeys)
-	}
+	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1']")
+
 	expectedChildren := []base.PageID{10, 20}
-	if len(node.Children) != 2 {
-		t.Fatalf("Children length = %v, want 2", len(node.Children))
-	}
-	for i, c := range expectedChildren {
-		if node.Children[i] != c {
-			t.Errorf("Children[%d] = %v, want %v", i, node.Children[i], c)
-		}
-	}
-	if node.NumKeys != 1 {
-		t.Errorf("NumKeys = %v, want 1", node.NumKeys)
-	}
-	if len(node.Children) != len(node.Keys)+1 {
-		t.Errorf("len(Children) = %v, want len(Keys)+1 = %v", len(node.Children), len(node.Keys)+1)
-	}
+	require.Equal(t, 2, len(node.Children), "node should have 2 children")
+	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
+	assert.Equal(t, uint16(1), node.NumKeys, "node NumKeys should be 1")
+	assert.Equal(t, len(node.Keys)+1, len(node.Children), "children count should be keys + 1")
 }
