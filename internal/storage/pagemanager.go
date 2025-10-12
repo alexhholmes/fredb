@@ -11,12 +11,6 @@ import (
 	"fredb/internal/directio"
 )
 
-// Snapshot bundles metadata and root pointer for atomic visibility
-type Snapshot struct {
-	Meta base.MetaPage
-	Root *base.Node
-}
-
 // PendingVersion tracks a page version waiting for readers to finish
 type PendingVersion struct {
 	OriginalPageID base.PageID // Logical page ID
@@ -29,9 +23,9 @@ type PageManager struct {
 	file *os.File
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
-	activeMeta atomic.Pointer[Snapshot]
-	meta0      Snapshot
-	meta1      Snapshot
+	activeMeta atomic.Pointer[base.Snapshot]
+	meta0      base.Snapshot
+	meta1      base.Snapshot
 
 	// Direct I/O buffer pool
 	bufPool *sync.Pool // Pool of aligned []byte buffers for direct I/O
@@ -248,7 +242,7 @@ func (pm *PageManager) GetMeta() base.MetaPage {
 
 // GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
 // Returns by value to prevent data races with concurrent PutSnapshot updates
-func (pm *PageManager) GetSnapshot() Snapshot {
+func (pm *PageManager) GetSnapshot() base.Snapshot {
 	return *pm.activeMeta.Load()
 }
 

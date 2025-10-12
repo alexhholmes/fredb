@@ -15,8 +15,8 @@ func TestPageHeaderAlignment(t *testing.T) {
 	t.Parallel()
 
 	// Verify struct sizes match expectations (no padding)
-	assert.Equal(t, uintptr(8), unsafe.Sizeof(PageID(0)), "PageID size")
-	assert.Equal(t, uintptr(40), unsafe.Sizeof(PageHeader{}), "PageHeader size")
+	assert.Equal(t, uintptr(8), unsafe.Sizeof(PageID(0)), "PageID Size")
+	assert.Equal(t, uintptr(40), unsafe.Sizeof(PageHeader{}), "PageHeader Size")
 
 	// Verify field offsets (no padding needed)
 	var h PageHeader
@@ -97,7 +97,7 @@ func TestPageHeaderByteLayout(t *testing.T) {
 func TestLeafElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, uintptr(12), unsafe.Sizeof(LeafElement{}), "LeafElement size")
+	assert.Equal(t, uintptr(12), unsafe.Sizeof(LeafElement{}), "LeafElement Size")
 }
 
 func TestLeafElementByteLayout(t *testing.T) {
@@ -192,7 +192,7 @@ func TestLeafElementRoundTrip(t *testing.T) {
 func TestBranchElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, uintptr(16), unsafe.Sizeof(BranchElement{}), "BranchElement size")
+	assert.Equal(t, uintptr(16), unsafe.Sizeof(BranchElement{}), "BranchElement Size")
 }
 
 func TestBranchElementByteLayout(t *testing.T) {
@@ -433,7 +433,7 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "zero size at data start",
+			name:    "zero Size at data start",
 			offset:  uint16(dataStart),
 			size:    0,
 			wantErr: false,

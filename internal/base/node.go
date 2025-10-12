@@ -26,8 +26,8 @@ type Node struct {
 
 // Serialize encodes the Node data into a fresh Page
 func (n *Node) Serialize(txnID uint64) (*Page, error) {
-	// Check size
-	if n.size() > PageSize {
+	// Check Size
+	if n.Size() > PageSize {
 		return nil, ErrPageOverflow
 	}
 
@@ -226,8 +226,8 @@ func (n *Node) IsFull() bool {
 	return int(n.NumKeys) >= MaxKeysPerNode
 }
 
-// size calculates the size of the serialized Node
-func (n *Node) size() int {
+// Size calculates the Size of the serialized Node
+func (n *Node) Size() int {
 	size := PageHeaderSize
 
 	if n.IsLeaf {

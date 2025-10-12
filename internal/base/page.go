@@ -7,11 +7,11 @@ import (
 )
 
 var (
-	ErrPageOverflow       = errors.New("pages overflow: serialized data exceeds pages size")
+	ErrPageOverflow       = errors.New("pages overflow: serialized data exceeds pages Size")
 	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
 	ErrInvalidMagicNumber = errors.New("invalid magic number")
 	ErrInvalidVersion     = errors.New("invalid format version")
-	ErrInvalidPageSize    = errors.New("invalid Page size")
+	ErrInvalidPageSize    = errors.New("invalid Page Size")
 	ErrInvalidChecksum    = errors.New("invalid checksum")
 )
 
@@ -78,7 +78,7 @@ type Page struct {
 	Data [PageSize]byte
 }
 
-// PageHeader represents the fixed-size Header at the start of each Page
+// PageHeader represents the fixed-Size Header at the start of each Page
 // Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8][_NextLeaf: 8][_PrevLeaf: 8]
 type PageHeader struct {
 	PageID    PageID // 8 bytes
@@ -152,7 +152,7 @@ func (p *Page) WriteBranchElement(idx int, e *BranchElement) {
 	*(*BranchElement)(ptr) = *e
 }
 
-// GetKey retrieves a key from the data area given an absolute offset and size
+// GetKey retrieves a key from the data area given an absolute offset and Size
 func (p *Page) GetKey(offset, size uint16) ([]byte, error) {
 	start := int(offset)
 	end := start + int(size)
@@ -167,7 +167,7 @@ func (p *Page) GetKey(offset, size uint16) ([]byte, error) {
 	return p.Data[start:end], nil
 }
 
-// GetValue retrieves a value from the data area given an absolute offset and size
+// GetValue retrieves a value from the data area given an absolute offset and Size
 func (p *Page) GetValue(offset, size uint16) ([]byte, error) {
 	start := int(offset)
 	end := start + int(size)
@@ -209,7 +209,7 @@ func (p *Page) dataAreaStart() int {
 type MetaPage struct {
 	Magic           uint32 // 4 bytes: 0x66726462 ("frdb")
 	Version         uint16 // 2 bytes: format version (1)
-	PageSize        uint16 // 2 bytes: Page size (4096)
+	PageSize        uint16 // 2 bytes: Page Size (4096)
 	RootPageID      PageID // 8 bytes: root of B-tree
 	FreelistID      PageID // 8 bytes: start of freelist
 	FreelistPages   uint64 // 8 bytes: number of contiguous freelist pages
