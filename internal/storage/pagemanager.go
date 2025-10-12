@@ -120,6 +120,11 @@ func (pm *PageManager) ReadPage(id base.PageID) (*base.Page, error) {
 
 // WritePage writes a Page to a specific offset (with locking)
 func (pm *PageManager) WritePage(id base.PageID, page *base.Page) error {
+	// Defensive check: virtual page IDs (negative when cast to int64) should never reach WritePage
+	if int64(id) < 0 {
+		return fmt.Errorf("FATAL: attempting to write virtual page ID %d (0x%x) to disk - page IDs must be remapped before writing", int64(id), id)
+	}
+
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 

@@ -23,21 +23,22 @@ const (
 )
 
 type DB struct {
-	mu       sync.Mutex // Lock only for writers
-	pager    *storage.PageManager
-	cache    *cache.PageCache
-	syncMode SyncMode    // Fsync control: SyncEveryCommit or SyncOff
-	closed   atomic.Bool // Database closed flag
+	mu     sync.Mutex // Lock only for writers
+	pager  *storage.PageManager
+	cache  *cache.PageCache
+	closed atomic.Bool // Database closed flag
 
 	// Transaction state
 	writer    atomic.Pointer[Tx] // Current write transaction (nil if none)
 	readers   sync.Map           // Active read transactions (map[*Tx]struct{})
 	nextTxnID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
-	// Background releaser
+	// Background pending page releaser
 	releaseC chan uint64    // Trigger release (unbuffered)
 	stopC    chan struct{}  // Shutdown signal
 	wg       sync.WaitGroup // Clean shutdown
+
+	options DBOptions // Store options for reference
 }
 
 func Open(path string, options ...DBOption) (*DB, error) {
@@ -161,15 +162,49 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	db := &DB{
 		pager:    pager,
 		cache:    c,
-		syncMode: opts.syncMode,
 		releaseC: make(chan uint64),
 		stopC:    make(chan struct{}),
+		options:  opts,
 	}
 	db.nextTxnID.Store(meta.TxnID) // Resume from last committed TxnID
 
 	// Start background releaser goroutine
 	db.wg.Add(1)
-	go db.backgroundReleaser()
+	go func(db *DB) {
+		defer db.wg.Done()
+		for {
+			select {
+			case <-db.releaseC:
+				// Reader-triggered release - recalculate minimum
+				// Start with current next transaction ID
+				minTxnID := db.nextTxnID.Load()
+
+				// Consider active write transaction (atomic load)
+				if writerTx := db.writer.Load(); writerTx != nil {
+					if writerTx.txnID < minTxnID {
+						minTxnID = writerTx.txnID
+					}
+				}
+
+				// Consider all active read transactions (lock-free via sync.Map)
+				db.readers.Range(func(key, value interface{}) bool {
+					tx := key.(*Tx)
+					if tx.txnID < minTxnID {
+						minTxnID = tx.txnID
+					}
+					return true // continue iteration
+				})
+
+				db.pager.ReleasePages(minTxnID)
+				db.cache.CleanupRelocatedVersions(minTxnID)
+			case <-db.stopC:
+				// Shutdown - release everything
+				db.pager.ReleasePages(math.MaxUint64)
+				db.cache.CleanupRelocatedVersions(math.MaxUint64)
+				return
+			}
+		}
+	}(db)
 
 	return db, nil
 }
@@ -343,58 +378,4 @@ func (db *DB) Close() error {
 
 	// Close pager
 	return db.pager.Close()
-}
-
-// backgroundReleaser periodically releases pending pages when safe
-func (db *DB) backgroundReleaser() {
-	defer db.wg.Done()
-
-	for {
-		select {
-		case <-db.releaseC:
-			// Reader-triggered release - recalculate minimum
-			minTxn := db.earliestReader()
-			db.releasePages(minTxn)
-
-		case <-db.stopC:
-			// Shutdown - release everything
-			db.releasePages(math.MaxUint64)
-			return
-		}
-	}
-}
-
-// earliestReader returns the minimum transaction ID across all active transactions (readers + writer).
-// This determines which pending pages can be safely released to the freelist.
-func (db *DB) earliestReader() uint64 {
-	// Start with current next transaction ID
-	minTxnID := db.nextTxnID.Load()
-
-	// Consider active write transaction (atomic load)
-	if writerTx := db.writer.Load(); writerTx != nil {
-		if writerTx.txnID < minTxnID {
-			minTxnID = writerTx.txnID
-		}
-	}
-
-	// Consider all active read transactions (lock-free via sync.Map)
-	db.readers.Range(func(key, value interface{}) bool {
-		tx := key.(*Tx)
-		if tx.txnID < minTxnID {
-			minTxnID = tx.txnID
-		}
-		return true // continue iteration
-	})
-
-	return minTxnID
-}
-
-// releasePages calls Release on the freelist with the given minimum transaction ID
-func (db *DB) releasePages(minTxn uint64) {
-	// Need to access the PageManager's freelist
-	pm := db.pager
-	pm.ReleasePages(minTxn)
-
-	// Cleanup relocated Page versions that are no longer needed
-	db.cache.CleanupRelocatedVersions(minTxn)
 }

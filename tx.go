@@ -8,12 +8,6 @@ import (
 	"fredb/internal/base"
 )
 
-var (
-	ErrTxNotWritable = errors.New("transaction is read-only")
-	ErrTxInProgress  = errors.New("write transaction already in progress")
-	ErrTxDone        = errors.New("transaction has been committed or rolled back")
-)
-
 // Tx represents a transaction on the database.
 //
 // CONCURRENCY: Transactions are NOT thread-safe and must only be used by a single
@@ -129,9 +123,8 @@ func (tx *Tx) Set(key, value []byte) error {
 
 		newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, midVal, newRootID)
 
-		// store the new root in TX-local cache
+		// Don't add root to tx.pages - root is tracked separately in tx.root
 		// The split Children were already stored in splitChild()
-		tx.pages[newRootID] = newRoot
 
 		root = newRoot
 	}
@@ -164,7 +157,7 @@ func (tx *Tx) Set(key, value []byte) error {
 
 		root = algo.NewBranchRoot(leftChild, rightChild, midKey, midVal, newRootID)
 
-		tx.pages[newRootID] = root
+		// Don't add root to tx.pages - root is tracked separately in tx.root
 		// Use new root for next retry (already assigned to root)
 	}
 
@@ -256,9 +249,18 @@ func (tx *Tx) Commit() error {
 
 	// Pass 2: Update all nodes' PageID fields and remap child pointers
 	for pageID, node := range tx.pages {
-		// Update this node's PageID if it was virtual
+		// Update this node's PageID if the map key was virtual
 		if int64(pageID) < 0 {
-			node.PageID = virtualToReal[pageID]
+			if realID, exists := virtualToReal[pageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Also check if node.PageID itself is virtual (defensive check for any edge cases)
+		if int64(node.PageID) < 0 {
+			if realID, exists := virtualToReal[node.PageID]; exists {
+				node.PageID = realID
+			}
 		}
 
 		// Remap child pointers in branch nodes
@@ -271,10 +273,27 @@ func (tx *Tx) Commit() error {
 		}
 	}
 
-	// Pass 3: Update root pointer if it was virtual
-	if tx.root != nil {
-		if realID, exists := virtualToReal[tx.root.PageID]; exists {
-			tx.root.PageID = realID
+	// Pass 3: Handle root separately (not in tx.pages)
+	// Allocate real page ID for root if it's virtual
+	if tx.root != nil && int64(tx.root.PageID) < 0 {
+		realPageID, err := tx.db.pager.AllocatePage()
+		if err != nil {
+			// Rollback partial allocation
+			for _, allocated := range virtualToReal {
+				_ = tx.db.pager.FreePage(allocated)
+			}
+			return err
+		}
+		virtualToReal[tx.root.PageID] = realPageID
+		tx.root.PageID = realPageID
+	}
+
+	// Also remap root's children pointers
+	if tx.root != nil && !tx.root.IsLeaf {
+		for i, childID := range tx.root.Children {
+			if realID, isVirtual := virtualToReal[childID]; isVirtual {
+				tx.root.Children[i] = realID
+			}
 		}
 	}
 
@@ -301,6 +320,26 @@ func (tx *Tx) Commit() error {
 		// Flush to global versioned cache with this transaction's ID using real page ID
 		// This makes the new version visible to future transactions
 		tx.db.cache.Put(node.PageID, tx.txnID, node)
+	}
+
+	// Write root separately (not in tx.pages)
+	if tx.root != nil && tx.root.Dirty {
+		// Serialize root
+		page, err := tx.root.Serialize(tx.txnID)
+		if err != nil {
+			return err
+		}
+
+		// Write root to disk
+		if err := tx.db.pager.WritePage(tx.root.PageID, page); err != nil {
+			return err
+		}
+
+		// Clear Dirty flag
+		tx.root.Dirty = false
+
+		// Add root to cache
+		tx.db.cache.Put(tx.root.PageID, tx.txnID, tx.root)
 	}
 
 	// Add freed pages to pending at this transaction ID
@@ -338,7 +377,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Conditionally fsync based on sync mode (this is the commit point!)
-	if tx.db.syncMode == SyncEveryCommit {
+	if tx.db.options.syncMode == SyncEveryCommit {
 		if err := tx.db.pager.Sync(); err != nil {
 			return err
 		}
@@ -475,6 +514,10 @@ func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
 // This prevents the same Page from being freed multiple times in a transaction.
 func (tx *Tx) addFreed(pageID base.PageID) {
 	if pageID == 0 {
+		return
+	}
+	// Skip virtual page IDs - they were never real pages, so don't free them
+	if int64(pageID) < 0 {
 		return
 	}
 	// Add to map (automatically handles duplicates)
