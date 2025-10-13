@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	// MaxKeysPerNode must be small enough that a full Node can serialize to PageSize
+	// MaxKeysPerNode must be small enough that a full Node can Serialize to PageSize
 	MaxKeysPerNode = 64
 	// MinKeysPerNode is the minimum Keys for non-root nodes
 	MinKeysPerNode = MaxKeysPerNode / 4
@@ -46,7 +46,7 @@ func (n *Node) Serialize(txnID uint64) (*Page, error) {
 	page.WriteHeader(header)
 
 	if n.IsLeaf() {
-		// serialize leaf Node - pack from end backward
+		// Serialize leaf Node - pack from end backward
 		dataOffset := uint16(PageSize)
 		// Process in reverse order to pack from end
 		for i := int(n.NumKeys) - 1; i >= 0; i-- {
@@ -72,7 +72,7 @@ func (n *Node) Serialize(txnID uint64) (*Page, error) {
 			page.WriteLeafElement(i, elem)
 		}
 	} else {
-		// serialize branch Node (B+ tree: only Keys, no Values)
+		// Serialize branch Node (B+ tree: only Keys, no Values)
 		// Write Children[0] at fixed location (last 8 bytes)
 		if len(n.Children) > 0 {
 			page.WriteBranchFirstChild(n.Children[0])
@@ -108,7 +108,7 @@ func (n *Node) Deserialize(p *Page) error {
 	n.NumKeys = header.NumKeys
 
 	if (header.Flags & LeafPageFlag) != 0 {
-		// deserialize leaf Node
+		// Deserialize leaf Node
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
@@ -134,7 +134,7 @@ func (n *Node) Deserialize(p *Page) error {
 			copy(n.Values[i], valueData)
 		}
 	} else {
-		// deserialize branch Node (B+ tree: only Keys, no Values)
+		// Deserialize branch Node (B+ tree: only Keys, no Values)
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = nil // Branch nodes don't have Values
 		n.Children = make([]PageID, n.NumKeys+1)
@@ -225,7 +225,7 @@ func (n *Node) CheckOverflow() error {
 // IsFull checks if a Node is full
 func (n *Node) IsFull() bool {
 	// Use key count active for both leaf and branch nodes
-	// Overflow is detected during serialize with try-rollback
+	// Overflow is detected during Serialize with try-rollback
 	return int(n.NumKeys) >= MaxKeysPerNode
 }
 

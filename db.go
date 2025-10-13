@@ -158,58 +158,20 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			Children: []base.PageID{rootBucketLeafID},
 		}
 
-		// 3. Create __versions__ bucket's tree (for version mappings)
-		versionsBucketRootID, err := coord.AllocatePage()
-		if err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
+		// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
+		// We serialize manually since we don't have a Bucket object yet
+		metadata := make([]byte, 16)
+		binary.LittleEndian.PutUint64(metadata[0:8], uint64(rootBucketRootID))
+		binary.LittleEndian.PutUint64(metadata[8:16], 0) // Sequence = 0
 
-		versionsBucketLeafID, err := coord.AllocatePage()
-		if err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-
-		versionsBucketLeaf := &base.Node{
-			PageID:   versionsBucketLeafID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
-
-		versionsBucketRoot := &base.Node{
-			PageID:   versionsBucketRootID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{versionsBucketLeafID},
-		}
-
-		// 4. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
-		rootMetadata := make([]byte, 16)
-		binary.LittleEndian.PutUint64(rootMetadata[0:8], uint64(rootBucketRootID))
-		binary.LittleEndian.PutUint64(rootMetadata[8:16], 0) // Sequence = 0
-
-		// 5. Create bucket metadata for __versions__ bucket
-		versionsMetadata := make([]byte, 16)
-		binary.LittleEndian.PutUint64(versionsMetadata[0:8], uint64(versionsBucketRootID))
-		binary.LittleEndian.PutUint64(versionsMetadata[8:16], 0) // Sequence = 0
-
-		// 6. Insert both bucket metadata entries into root tree's leaf
-		// Need to insert in sorted order: __root__ < __versions__
+		// 4. Insert __root__ bucket metadata into root tree's leaf
+		// We need to manually insert since we don't have a transaction yet
 		rootLeaf.Keys = append(rootLeaf.Keys, []byte("__root__"))
-		rootLeaf.Values = append(rootLeaf.Values, rootMetadata)
 
-		rootLeaf.Keys = append(rootLeaf.Keys, []byte("__versions__"))
-		rootLeaf.Values = append(rootLeaf.Values, versionsMetadata)
+		rootLeaf.Values = append(rootLeaf.Values, metadata)
+		rootLeaf.NumKeys = 1
 
-		rootLeaf.NumKeys = 2
-
-		// 7. Serialize and write all 6 pages (root tree + 2 buckets)
+		// 5. Serialize and write all 4 pages
 		leafPage, err := rootLeaf.Serialize(0)
 		if err != nil {
 			_ = coord.Close()
@@ -230,7 +192,6 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		// Write __root__ bucket pages
 		bucketLeafPage, err := rootBucketLeaf.Serialize(0)
 		if err != nil {
 			_ = coord.Close()
@@ -251,28 +212,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		// Write __versions__ bucket pages
-		versionsBucketLeafPage, err := versionsBucketLeaf.Serialize(0)
-		if err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-		if err := coord.WritePage(versionsBucketLeafID, versionsBucketLeafPage); err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-
-		versionsBucketRootPage, err := versionsBucketRoot.Serialize(0)
-		if err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-		if err := coord.WritePage(versionsBucketRootID, versionsBucketRootPage); err != nil {
-			_ = coord.Close()
-			return nil, err
-		}
-
-		// 8. Update meta to point to root tree
+		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
 
 		if err := coord.PutSnapshot(meta, root); err != nil {
@@ -280,14 +220,14 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		// 9. CRITICAL: Sync coord to persist the initial allocations
+		// 7. CRITICAL: Sync coord to persist the initial allocations
 		// This ensures root and leaf are not returned by future AllocatePage() calls
 		if err := coord.Sync(); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		// 10. Make metapage AND root visible to readers atomically
+		// 8. Make metapage AND root visible to readers atomically
 		coord.CommitSnapshot()
 	}
 
@@ -500,9 +440,4 @@ func (db *DB) Close() error {
 
 	// Close coord
 	return db.coord.Close()
-}
-
-// Stats returns database statistics from the coordinator
-func (db *DB) Stats() coordinator.Stats {
-	return db.coord.Stats()
 }
