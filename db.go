@@ -33,14 +33,9 @@ type DB struct {
 	store *storage.Storage // Underlying storage
 
 	// Transaction state
-	writer    atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readers   sync.Map           // Active read transactions (map[*Tx]struct{})
-	nextTxnID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
-
-	// Background pending page releaser
-	releaseC chan uint64    // Trigger release (buffered: 1 signal queued)
-	stopC    chan struct{}  // Shutdown signal
-	wg       sync.WaitGroup // Clean shutdown
+	writer   atomic.Pointer[Tx] // Current write transaction (nil if none)
+	readers  sync.Map           // Active read transactions (map[*Tx]struct{})
+	nextTxID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options DBOptions // Store options for reference
 }
@@ -239,51 +234,12 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	db := &DB{
-		coord:    coord,
-		releaseC: make(chan uint64, 1), // Buffered: queue one signal if goroutine busy
-		stopC:    make(chan struct{}),
-		options:  opts,
-		cache:    c,
-		store:    store,
+		coord:   coord,
+		options: opts,
+		cache:   c,
+		store:   store,
 	}
-	db.nextTxnID.Store(meta.TxID) // Resume from last committed TxID
-
-	// Start background releaser goroutine
-	db.wg.Add(1)
-	go func(db *DB) {
-		defer db.wg.Done()
-		for {
-			select {
-			case <-db.releaseC:
-				// Reader-triggered release - recalculate minimum
-				// Start with NEXT transaction ID (last assigned + 1)
-				// Pages freed at txnID can be reused once all txns that started <= txnID complete
-				minTxID := db.nextTxnID.Load() + 1
-
-				// Consider active write transaction (atomic load)
-				if writerTx := db.writer.Load(); writerTx != nil {
-					if writerTx.txID < minTxID {
-						minTxID = writerTx.txID
-					}
-				}
-
-				// Consider all active read transactions (lock-free via sync.Map)
-				db.readers.Range(func(key, value interface{}) bool {
-					tx := key.(*Tx)
-					if tx.txID < minTxID {
-						minTxID = tx.txID
-					}
-					return true // Continue iteration
-				})
-
-				db.coord.ReleasePages(minTxID)
-			case <-db.stopC:
-				// Shutdown - release everything
-				db.coord.ReleasePages(math.MaxUint64)
-				return
-			}
-		}
-	}(db)
+	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
 
 	return db, nil
 }
@@ -335,7 +291,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		}
 
 		// Writers get a new unique txnID (atomic increment)
-		txnID := db.nextTxnID.Add(1)
+		txnID := db.nextTxID.Add(1)
 
 		// Atomically load current snapshot (meta + root)
 		snapshot := db.coord.GetSnapshot()
@@ -415,20 +371,14 @@ func (db *DB) Update(fn func(*Tx) error) error {
 }
 
 func (db *DB) Close() error {
-	// Stop background goroutines
-	select {
-	case <-db.stopC:
-		// Already closed
-	default:
-		close(db.stopC)
-		db.wg.Wait()
-	}
-
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	// Mark database as closed
 	db.closed.Store(true)
+
+	// Release all pending pages
+	db.coord.ReleasePages(math.MaxUint64)
 
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.coord.GetSnapshot()
@@ -455,4 +405,29 @@ func (db *DB) Close() error {
 
 func (db *DB) Stats() coordinator.Stats {
 	return db.coord.Stats()
+}
+
+// tryReleasePages releases pages that are safe to reuse based on active transactions.
+// Called by writers on commit/rollback. Lazy calculation - only scans when needed.
+func (db *DB) tryReleasePages() {
+	// Start with NEXT transaction ID (last assigned + 1)
+	minTxID := db.nextTxID.Load() + 1
+
+	// Consider active write transaction
+	if writerTx := db.writer.Load(); writerTx != nil {
+		if writerTx.txID < minTxID {
+			minTxID = writerTx.txID
+		}
+	}
+
+	// Scan all active readers (lazy - only when writer commits/rollbacks)
+	db.readers.Range(func(key, value interface{}) bool {
+		tx := key.(*Tx)
+		if tx.txID < minTxID {
+			minTxID = tx.txID
+		}
+		return true
+	})
+
+	db.coord.ReleasePages(minTxID)
 }

@@ -292,11 +292,8 @@ func (tx *Tx) Commit() error {
 
 	tx.db.writer.Store(nil)
 
-	// Trigger background releaser
-	select {
-	case tx.db.releaseC <- 0:
-	default:
-	}
+	// Release pages inline
+	tx.db.tryReleasePages()
 
 	tx.done = true
 	return nil
@@ -322,17 +319,13 @@ func (tx *Tx) Rollback() error {
 		tx.pages = nil
 
 		tx.db.writer.Store(nil)
-	} else {
-		// Readers: lock-free removal from sync.Map
-		tx.db.readers.Delete(tx)
 
-		// Trigger release - non-blocking send
-		// The background goroutine will calculate the new minimum
-		select {
-		case tx.db.releaseC <- 0: // Value doesn't matter, it's just a trigger
-		default:
-			// Channel blocked, ticker will handle it
-		}
+		// Release pages inline
+		tx.db.tryReleasePages()
+	} else {
+		// Readers: completely lock-free, zero cache line contention
+		tx.db.readers.Delete(tx)
+		// Page release is lazy - next writer will handle it
 	}
 
 	return nil
