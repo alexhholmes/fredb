@@ -24,19 +24,16 @@ type Node struct {
 }
 
 // Serialize encodes the Node data into a fresh Page
-func (n *Node) Serialize(txnID uint64) (*Page, error) {
+func (n *Node) Serialize(txID uint64, page *Page) (*Page, error) {
 	if err := n.CheckOverflow(); err != nil {
 		return nil, err
 	}
-
-	// Create fresh Page
-	page := &Page{}
 
 	// Write header
 	header := &PageHeader{
 		PageID:  n.PageID,
 		NumKeys: n.NumKeys,
-		TxnID:   txnID,
+		TxnID:   txID,
 	}
 	if n.IsLeaf() {
 		header.Flags = LeafPageFlag

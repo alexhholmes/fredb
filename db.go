@@ -172,7 +172,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootLeaf.NumKeys = 1
 
 		// 5. Serialize and write all 4 pages
-		leafPage, err := rootLeaf.Serialize(0)
+		leafPage, err := rootLeaf.Serialize(0, &base.Page{})
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -182,7 +182,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		rootPage, err := root.Serialize(0)
+		rootPage, err := root.Serialize(0, &base.Page{})
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -192,7 +192,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		bucketLeafPage, err := rootBucketLeaf.Serialize(0)
+		bucketLeafPage, err := rootBucketLeaf.Serialize(0, &base.Page{})
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -202,7 +202,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		bucketRootPage, err := rootBucketRoot.Serialize(0)
+		bucketRootPage, err := rootBucketRoot.Serialize(0, &base.Page{})
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -247,8 +247,9 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			select {
 			case <-db.releaseC:
 				// Reader-triggered release - recalculate minimum
-				// Start with current next transaction ID
-				minTxID := db.nextTxnID.Load()
+				// Start with NEXT transaction ID (last assigned + 1)
+				// Pages freed at txnID can be reused once all txns that started <= txnID complete
+				minTxID := db.nextTxnID.Load() + 1
 
 				// Consider active write transaction (atomic load)
 				if writerTx := db.writer.Load(); writerTx != nil {
@@ -423,7 +424,7 @@ func (db *DB) Close() error {
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.coord.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
-		page, err := snapshot.Root.Serialize(snapshot.Meta.TxID)
+		page, err := snapshot.Root.Serialize(snapshot.Meta.TxID, &base.Page{})
 		if err != nil {
 			return err
 		}

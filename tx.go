@@ -264,6 +264,7 @@ func (tx *Tx) Commit() error {
 
 	// Phase 3: Commit all pages again (CommitTransaction will only write dirty pages)
 	// We need to pass ALL pages because tx.root might point to both old and new pages
+	// CommitTransaction handles: page writes, sync (if needed), and PutSnapshot
 	err = tx.db.coord.CommitTransaction(
 		tx.pages,
 		tx.root,
@@ -275,22 +276,7 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
-	// Sync to ensure durability before making visible
-	if tx.db.options.syncMode == SyncEveryCommit {
-		if err := tx.db.coord.Sync(); err != nil {
-			return err
-		}
-	}
-
-	// Update meta page with new root
-	meta := tx.db.coord.GetMeta()
-	meta.RootPageID = tx.root.PageID
-	meta.TxID = tx.txID
-	if err := tx.db.coord.PutSnapshot(meta, tx.root); err != nil {
-		return err
-	}
-
-	// Make changes visible
+	// Make changes visible (after sync in CommitTransaction)
 	tx.db.coord.CommitSnapshot()
 
 	tx.db.writer.Store(nil)

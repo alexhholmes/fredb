@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"fredb/internal/base"
 	"fredb/internal/directio"
@@ -74,15 +75,19 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
+	if directio.IsAligned(buf) {
+		defer s.pool.Put(buf)
+	} else {
+		// Buffer was not allocated from the storage aligned buffer pool.
+		// We need to copy it to an aligned buffer before writing.
+		aligned := s.pool.Get().([]byte)
+		copy(aligned, buf)
+		buf = aligned
+		defer s.pool.Put(aligned)
+	}
+
 	offset := int64(id) * base.PageSize
-
-	// Get aligned buffer from pool
-	buf := s.pool.Get().([]byte)
-	defer s.pool.Put(buf)
-
-	// Copy page to aligned buffer
-	copy(buf, page.Data[:])
-
 	s.writes.Add(1)
 	n, err := s.file.WriteAt(buf, offset)
 	if err != nil {
@@ -94,6 +99,10 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 	}
 
 	return nil
+}
+
+func (s *Storage) GetBuffer() []byte {
+	return s.pool.Get().([]byte)
 }
 
 // Sync buffered writes to disk

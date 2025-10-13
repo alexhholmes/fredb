@@ -90,12 +90,6 @@ func (c *Coordinator) AllocatePage() (base.PageID, error) {
 	// Atomically increment and get the new page ID
 	id = base.PageID(c.numPages.Add(1) - 1)
 
-	// Initialize empty Page
-	emptyPage := &base.Page{}
-	if err := c.writePageUnsafe(id, emptyPage); err != nil {
-		return 0, err
-	}
-
 	return id, nil
 }
 
@@ -724,7 +718,9 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 // Used by cache to flush dirty pages during eviction or checkpoint.
 // Returns error if serialization or write fails.
 func (c *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageID) error {
-	page, err := node.Serialize(txnID)
+	buf := c.storage.GetBuffer()
+	page := (*base.Page)(unsafe.Pointer(&buf[0]))
+	_, err := node.Serialize(txnID, page)
 	if err != nil {
 		return err
 	}
@@ -823,7 +819,9 @@ func (c *Coordinator) CommitTransaction(
 
 	// Pass 4: Write pages to disk and populate cache
 	for _, node := range pages {
-		page, err := node.Serialize(txnID)
+		buf := c.storage.GetBuffer()
+		page := (*base.Page)(unsafe.Pointer(&buf[0]))
+		_, err := node.Serialize(txnID, page)
 		if err != nil {
 			return err
 		}
@@ -838,7 +836,9 @@ func (c *Coordinator) CommitTransaction(
 
 	// Write root separately
 	if root != nil && root.Dirty {
-		page, err := root.Serialize(txnID)
+		buf := c.storage.GetBuffer()
+		page := (*base.Page)(unsafe.Pointer(&buf[0]))
+		_, err := root.Serialize(txnID, page)
 		if err != nil {
 			return err
 		}
@@ -885,14 +885,26 @@ func (c *Coordinator) CommitTransaction(
 }
 
 type Stats struct {
-	Cache cache.Stats
-	Store storage.Stats
+	Cache        cache.Stats
+	Store        storage.Stats
+	FreedPages   int
+	PendingPages map[uint64]int
 }
 
 // Stats returns disk I/O statistics
 func (c *Coordinator) Stats() Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	pending := make(map[uint64]int)
+	for txnID, pages := range c.pendingPages {
+		pending[txnID] = len(pages)
+	}
+
 	return Stats{
-		Cache: c.cache.Stats(),
-		Store: c.storage.Stats(),
+		Cache:        c.cache.Stats(),
+		Store:        c.storage.Stats(),
+		FreedPages:   len(c.freedPages),
+		PendingPages: pending,
 	}
 }
