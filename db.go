@@ -34,7 +34,6 @@ type DB struct {
 
 	// Transaction state
 	writer   atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readers  sync.Map           // Active read transactions (map[*Tx]struct{})
 	nextTxID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options DBOptions // Store options for reference
@@ -316,22 +315,20 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	}
 
 	// READERS: NO LOCK - completely lock-free path
-	// Atomically capture current snapshot (meta + root)
-	snapshot := db.coord.GetSnapshot()
+	// Acquire reference-counted snapshot (atomic + ref count increment)
+	snapshot := db.coord.AcquireSnapshot()
 
 	// Create read transaction
 	tx := &Tx{
 		db:       db,
 		txID:     snapshot.Meta.TxID, // Readers use committed txnID as snapshot
 		writable: false,
-		root:     snapshot.Root, // Atomic snapshot of root
-		freed:    make(map[base.PageID]struct{}),
+		snapshot: snapshot,           // Store snapshot for release on rollback
+		root:     snapshot.Root,      // Atomic snapshot of root
+		freed:    nil,
 		done:     false,
 		buckets:  make(map[string]*Bucket),
 	}
-
-	// Register reader (lock-free via sync.Map)
-	db.readers.Store(tx, struct{}{})
 
 	return tx, nil
 }
@@ -407,11 +404,12 @@ func (db *DB) Stats() coordinator.Stats {
 	return db.coord.Stats()
 }
 
-// tryReleasePages releases pages that are safe to reuse based on active transactions.
+// ReleasePages releases pages that are safe to reuse based on active transactions.
 // Called by writers on commit/rollback. Lazy calculation - only scans when needed.
-func (db *DB) tryReleasePages() {
-	// Start with NEXT transaction ID (last assigned + 1)
-	minTxID := db.nextTxID.Load() + 1
+// Should be called if long-lived read transactions and few writes.
+func (db *DB) ReleasePages() {
+	// Get minimum transaction ID from coordinator's active snapshots
+	minTxID := db.coord.GetMinActiveTxID()
 
 	// Consider active write transaction
 	if writerTx := db.writer.Load(); writerTx != nil {
@@ -419,15 +417,6 @@ func (db *DB) tryReleasePages() {
 			minTxID = writerTx.txID
 		}
 	}
-
-	// Scan all active readers (lazy - only when writer commits/rollbacks)
-	db.readers.Range(func(key, value interface{}) bool {
-		tx := key.(*Tx)
-		if tx.txID < minTxID {
-			minTxID = tx.txID
-		}
-		return true
-	})
 
 	db.coord.ReleasePages(minTxID)
 }

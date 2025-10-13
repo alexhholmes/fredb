@@ -21,11 +21,12 @@ type Tx struct {
 	txID     uint64 // Unique transaction ID
 	writable bool   // Is this a read-write transaction?
 
-	db      *DB                        // Database this transaction belongs to (concrete type for internal access)
-	root    *base.Node                 // Root Node at transaction start (stores bucket metadata)
-	buckets map[string]*Bucket         // Cache of loaded buckets
-	pages   map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed   map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+	db       *DB                        // Database this transaction belongs to (concrete type for internal access)
+	snapshot *base.Snapshot             // Reference-counted snapshot (readers only, for release tracking)
+	root     *base.Node                 // Root Node at transaction start (stores bucket metadata)
+	buckets  map[string]*Bucket         // Cache of loaded buckets
+	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
 
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
 	done          bool  // Has Commit() or Rollback() been called?
@@ -293,7 +294,7 @@ func (tx *Tx) Commit() error {
 	tx.db.writer.Store(nil)
 
 	// Release pages inline
-	tx.db.tryReleasePages()
+	tx.db.ReleasePages()
 
 	tx.done = true
 	return nil
@@ -321,10 +322,13 @@ func (tx *Tx) Rollback() error {
 		tx.db.writer.Store(nil)
 
 		// Release pages inline
-		tx.db.tryReleasePages()
+		tx.db.ReleasePages()
 	} else {
 		// Readers: completely lock-free, zero cache line contention
-		tx.db.readers.Delete(tx)
+		// Release reference-counted snapshot
+		if tx.snapshot != nil {
+			tx.db.coord.ReleaseSnapshot(tx.snapshot)
+		}
 		// Page release is lazy - next writer will handle it
 	}
 
