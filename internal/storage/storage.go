@@ -3,7 +3,6 @@ package storage
 import (
 	"fmt"
 	"os"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -13,7 +12,6 @@ import (
 
 // Storage provides file I/O for pages
 type Storage struct {
-	mu   sync.Mutex // Protects file access
 	file *os.File
 
 	// Stats
@@ -38,9 +36,6 @@ func NewStorage(path string) (*Storage, error) {
 
 // ReadPage reads a page from disk
 func (s *Storage) ReadPage(id base.PageID) (*base.Page, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	offset := int64(id) * base.PageSize
 	buf := directio.AlignedBlock(base.PageSize)
 
@@ -62,9 +57,6 @@ func (s *Storage) ReadPage(id base.PageID) (*base.Page, error) {
 
 // WritePage writes a page to disk
 func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
 	if !directio.IsAligned(buf) {
 		// Buffer was not allocated from the storage aligned buffer pool.
@@ -90,8 +82,6 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 
 // Sync buffered writes to disk
 func (s *Storage) Sync() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.file.Sync()
 }
 
@@ -123,7 +113,5 @@ type Stats struct {
 
 // Close closes the file
 func (s *Storage) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.file.Close()
 }
