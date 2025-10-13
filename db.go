@@ -29,6 +29,9 @@ type DB struct {
 	coord  *coordinator.Coordinator
 	closed atomic.Bool // Database closed flag
 
+	cache *cache.Cache     // Page cache
+	store *storage.Storage // Underlying storage
+
 	// Transaction state
 	writer    atomic.Pointer[Tx] // Current write transaction (nil if none)
 	readers   sync.Map           // Active read transactions (map[*Tx]struct{})
@@ -56,10 +59,10 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Create cache (Page size is 4096 bytes, so 256 pages per MB)
-	cacheInstance := cache.NewCache(opts.maxCacheSizeMB * 256)
+	c := cache.NewCache(opts.maxCacheSizeMB * 256)
 
 	// Create coordinator with dependencies
-	coord, err := coordinator.NewCoordinator(store, cacheInstance)
+	coord, err := coordinator.NewCoordinator(store, c)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -71,7 +74,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	if meta.RootPageID != 0 {
 		// Load existing root
-		rootPage, err := coord.ReadPage(meta.RootPageID)
+		rootPage, err := store.ReadPage(meta.RootPageID)
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -97,13 +100,13 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID, err := coord.AllocatePage()
+		rootPageID, err := coord.AssignPageID()
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		rootLeafID, err := coord.AllocatePage()
+		rootLeafID, err := coord.AssignPageID()
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -128,13 +131,13 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID, err := coord.AllocatePage()
+		rootBucketRootID, err := coord.AssignPageID()
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		rootBucketLeafID, err := coord.AllocatePage()
+		rootBucketLeafID, err := coord.AssignPageID()
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -178,7 +181,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err = coord.WritePage(rootLeafID, leafPage); err != nil {
+		if err = store.WritePage(rootLeafID, leafPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -189,7 +192,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err = coord.WritePage(rootPageID, rootPage); err != nil {
+		if err = store.WritePage(rootPageID, rootPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -200,7 +203,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err = coord.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
+		if err = store.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -211,7 +214,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err = coord.WritePage(rootBucketRootID, bucketRootPage); err != nil {
+		if err = store.WritePage(rootBucketRootID, bucketRootPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -225,8 +228,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 7. CRITICAL: Sync coord to persist the initial allocations
-		// This ensures root and leaf are not returned by future AllocatePage() calls
-		if err = coord.Sync(); err != nil {
+		// This ensures root and leaf are not returned by future AssignPageID() calls
+		if err = store.Sync(); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -240,6 +243,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		releaseC: make(chan uint64, 1), // Buffered: queue one signal if goroutine busy
 		stopC:    make(chan struct{}),
 		options:  opts,
+		cache:    c,
+		store:    store,
 	}
 	db.nextTxnID.Store(meta.TxID) // Resume from last committed TxID
 
@@ -433,14 +438,14 @@ func (db *DB) Close() error {
 		if err != nil {
 			return err
 		}
-		if err := db.coord.WritePage(snapshot.Root.PageID, page); err != nil {
+		if err := db.store.WritePage(snapshot.Root.PageID, page); err != nil {
 			return err
 		}
 		snapshot.Root.Dirty = false
 	}
 
 	// Final sync to ensure durability
-	if err := db.coord.Sync(); err != nil {
+	if err := db.store.Sync(); err != nil {
 		return err
 	}
 

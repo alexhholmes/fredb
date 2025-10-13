@@ -12,11 +12,11 @@ import (
 	"fredb/internal/storage"
 )
 
-// Coordinator coordinates storage, cache, meta, and freelist
+// Coordinator coordinates store, cache, meta, and freelist
 type Coordinator struct {
-	mu      sync.Mutex       // Protects meta and freelist access
-	cache   *cache.Cache     // Simple LRU cache
-	storage *storage.Storage // File I/O backend
+	mu    sync.Mutex       // Protects meta and freelist access
+	cache *cache.Cache     // Simple LRU cache
+	store *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
 	activeMeta atomic.Pointer[base.Snapshot]
@@ -35,7 +35,7 @@ type Coordinator struct {
 // NewCoordinator creates a coordinator with injected dependencies
 func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator, error) {
 	pm := &Coordinator{
-		storage:      storage,
+		store:        storage,
 		freedPages:   make([]base.PageID, 0),
 		pendingPages: make(map[uint64][]base.PageID),
 		cache:        cache,
@@ -60,24 +60,8 @@ func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator,
 	return pm, nil
 }
 
-// ReadPage reads a Page from disk.
-// Used during checkpoint to read old disk versions before overwriting.
-func (c *Coordinator) ReadPage(id base.PageID) (*base.Page, error) {
-	return c.storage.ReadPage(id)
-}
-
-// WritePage writes a Page to a specific offset (with locking)
-func (c *Coordinator) WritePage(id base.PageID, page *base.Page) error {
-	return c.storage.WritePage(id, page)
-}
-
-// Sync flushes any buffered writes to disk
-func (c *Coordinator) Sync() error {
-	return c.storage.Sync()
-}
-
-// AllocatePage allocates a new Page (from freelist or grows file)
-func (c *Coordinator) AllocatePage() (base.PageID, error) {
+// AssignPageID allocates a new Page (from freelist or grows file)
+func (c *Coordinator) AssignPageID() (base.PageID, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -259,7 +243,7 @@ func (c *Coordinator) Close() error {
 		c.activeMeta.Swap(&c.meta1)
 	}
 
-	return c.storage.Close()
+	return c.store.Close()
 }
 
 // initializeNewDB creates a new database with dual meta pages and empty freelist
@@ -292,32 +276,32 @@ func (c *Coordinator) initializeNewDB() error {
 	metaPage := &base.Page{}
 	metaPage.WriteMeta(&meta)
 
-	if err := c.WritePage(0, metaPage); err != nil {
+	if err := c.store.WritePage(0, metaPage); err != nil {
 		return err
 	}
-	if err := c.WritePage(1, metaPage); err != nil {
+	if err := c.store.WritePage(1, metaPage); err != nil {
 		return err
 	}
 
 	// Write empty freelist to Page 2
 	freelistPages := []*base.Page{&base.Page{}}
 	c.serializeFreelist(freelistPages)
-	if err := c.WritePage(2, freelistPages[0]); err != nil {
+	if err := c.store.WritePage(2, freelistPages[0]); err != nil {
 		return err
 	}
 
 	// Fsync to ensure durability
-	return c.storage.Sync()
+	return c.store.Sync()
 }
 
 // loadExistingDB loads meta and freelist from existing database file
 func (c *Coordinator) loadExistingDB() error {
 	// Read both meta pages
-	page0, err := c.ReadPage(0)
+	page0, err := c.store.ReadPage(0)
 	if err != nil {
 		return err
 	}
-	page1, err := c.ReadPage(1)
+	page1, err := c.store.ReadPage(1)
 	if err != nil {
 		return err
 	}
@@ -362,7 +346,7 @@ func (c *Coordinator) loadExistingDB() error {
 	activeMeta := c.activeMeta.Load()
 	freelistPages := make([]*base.Page, activeMeta.Meta.FreelistPages)
 	for i := uint64(0); i < activeMeta.Meta.FreelistPages; i++ {
-		page, err := c.ReadPage(activeMeta.Meta.FreelistID + base.PageID(i))
+		page, err := c.store.ReadPage(activeMeta.Meta.FreelistID + base.PageID(i))
 		if err != nil {
 			return err
 		}
@@ -381,9 +365,9 @@ func (c *Coordinator) loadExistingDB() error {
 }
 
 // writePageUnsafe writes a Page without acquiring pm.mu (caller must hold pm.mu)
-// Delegates to storage which has its own locking
+// Delegates to store which has its own locking
 func (c *Coordinator) writePageUnsafe(id base.PageID, page *base.Page) error {
-	return c.storage.WritePage(id, page)
+	return c.store.WritePage(id, page)
 }
 
 const (
@@ -697,7 +681,7 @@ func (c *Coordinator) LoadNode(pageID base.PageID, txnID uint64) (*base.Node, bo
 // This centralizes disk I/O + deserialization in coordinator layer.
 // Returns (node, diskTxnID, error).
 func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, error) {
-	page, err := c.storage.ReadPage(pageID)
+	page, err := c.store.ReadPage(pageID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -726,7 +710,7 @@ func (c *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageI
 		return err
 	}
 
-	return c.storage.WritePage(pageID, page)
+	return c.store.WritePage(pageID, page)
 }
 
 // SyncMode controls when to fsync (copied from main package to avoid import cycle)
@@ -750,7 +734,7 @@ func (c *Coordinator) MapVirtualPageIDs(
 
 	for pageID := range pages {
 		if int64(pageID) < 0 { // Virtual page ID
-			realPageID, err := c.AllocatePage()
+			realPageID, err := c.AssignPageID()
 			if err != nil {
 				// Rollback partial allocation
 				for _, allocated := range virtualToReal {
@@ -790,7 +774,7 @@ func (c *Coordinator) MapVirtualPageIDs(
 
 	// Pass 3: Handle root separately
 	if root != nil && int64(root.PageID) < 0 {
-		realPageID, err := c.AllocatePage()
+		realPageID, err := c.AssignPageID()
 		if err != nil {
 			// Rollback
 			for _, allocated := range virtualToReal {
@@ -832,7 +816,7 @@ func (c *Coordinator) WriteTransaction(
 			return err
 		}
 
-		if err := c.storage.WritePage(node.PageID, page); err != nil {
+		if err := c.store.WritePage(node.PageID, page); err != nil {
 			return err
 		}
 
@@ -848,7 +832,7 @@ func (c *Coordinator) WriteTransaction(
 			return err
 		}
 
-		if err = c.storage.WritePage(root.PageID, page); err != nil {
+		if err = c.store.WritePage(root.PageID, page); err != nil {
 			return err
 		}
 
@@ -881,7 +865,7 @@ func (c *Coordinator) WriteTransaction(
 
 	// Conditional sync (this is the commit point!)
 	if syncMode == SyncEveryCommit {
-		if err := c.storage.Sync(); err != nil {
+		if err := c.store.Sync(); err != nil {
 			return err
 		}
 	}
@@ -931,7 +915,7 @@ func (c *Coordinator) Stats() Stats {
 
 	return Stats{
 		Cache:        c.cache.Stats(),
-		Store:        c.storage.Stats(),
+		Store:        c.store.Stats(),
 		FreedPages:   len(c.freedPages),
 		PendingPages: pending,
 	}

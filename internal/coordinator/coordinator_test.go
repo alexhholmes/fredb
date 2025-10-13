@@ -17,7 +17,7 @@ var _ = flag.Bool("slow", false, "run slow tests")
 // Helper to create a coordinator with dependencies for testing
 func createTestCoordinator(t *testing.T, tmpFile string) (*Coordinator, func()) {
 	stor, err := storage.NewStorage(tmpFile)
-	require.NoError(t, err, "Failed to create storage")
+	require.NoError(t, err, "Failed to create store")
 
 	cacheInstance := cache.NewCache(1024)
 
@@ -54,8 +54,8 @@ func TestPageManagerFreeListPending(t *testing.T) {
 	// Verify we can allocate the freed pages
 	allocated := make(map[base.PageID]bool)
 	for i := 0; i < 6; i++ {
-		id, err := pm.AllocatePage()
-		require.NoError(t, err, "AllocatePage failed")
+		id, err := pm.AssignPageID()
+		require.NoError(t, err, "AssignPageID failed")
 		// Pages 100, 101, 102, 200, 201, 300 should be reused
 		if id == 100 || id == 101 || id == 102 || id == 200 || id == 201 || id == 300 {
 			allocated[id] = true
@@ -141,8 +141,8 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		// Try to allocate - should get freed pages first
 		allocated := make(map[base.PageID]bool)
 		for i := 0; i < 3; i++ {
-			id, err := pm.AllocatePage()
-			require.NoError(t, err, "AllocatePage failed")
+			id, err := pm.AssignPageID()
+			require.NoError(t, err, "AssignPageID failed")
 			allocated[id] = true
 		}
 
@@ -159,12 +159,12 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	defer cleanup()
 
 	// Allocate some pages
-	id1, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
-	id2, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
-	id3, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
+	id1, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
+	id2, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
+	id3, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
 
 	// Free them
 	require.NoError(t, pm.FreePage(id1), "FreePage failed")
@@ -172,12 +172,12 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	require.NoError(t, pm.FreePage(id3), "FreePage failed")
 
 	// Allocate again - should reuse freed pages
-	reused1, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
-	reused2, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
-	reused3, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
+	reused1, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
+	reused2, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
+	reused3, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
 
 	// Verify reused pages match freed pages
 	reused := map[base.PageID]bool{reused1: true, reused2: true, reused3: true}
@@ -196,9 +196,9 @@ func TestPageManagerPreventAllocation(t *testing.T) {
 	defer cleanup()
 
 	// Allocate all initial free pages to empty the freelist
-	id1, _ := pm.AllocatePage() // page 3
-	id2, _ := pm.AllocatePage() // page 4
-	id3, _ := pm.AllocatePage() // page 5
+	id1, _ := pm.AssignPageID() // page 3
+	id2, _ := pm.AssignPageID() // page 4
+	id3, _ := pm.AssignPageID() // page 5
 
 	// Add pending pages
 	pm.FreePending(10, []base.PageID{100, 101})
@@ -209,8 +209,8 @@ func TestPageManagerPreventAllocation(t *testing.T) {
 
 	// Try to allocate - freelist is empty, pending has pages from txn <= 15
 	// Should allocate NEW page instead of releasing pending
-	id, err := pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
+	id, err := pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
 	assert.False(t, id == 100 || id == 101, "Expected new page due to prevention, got pending page %d", id)
 
 	// Clear prevention
@@ -218,8 +218,8 @@ func TestPageManagerPreventAllocation(t *testing.T) {
 
 	// Now pending pages can be used - but freelist is still empty
 	// So next allocation should return 0 (no free pages)
-	id, err = pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
+	id, err = pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
 	assert.NotEqual(t, 0, id, "Expected to allocate new page after clearing prevention")
 
 	// Release the pending pages
@@ -227,8 +227,8 @@ func TestPageManagerPreventAllocation(t *testing.T) {
 	assert.Equal(t, 4, released, "Expected 4 pages released")
 
 	// Now should be able to allocate freed pages
-	id, err = pm.AllocatePage()
-	require.NoError(t, err, "AllocatePage failed")
+	id, err = pm.AssignPageID()
+	require.NoError(t, err, "AssignPageID failed")
 	freed := map[base.PageID]bool{100: true, 101: true, 200: true, 201: true}
 	assert.True(t, freed[id], "Expected to allocate freed page (100/101/200/201), got %d", id)
 
