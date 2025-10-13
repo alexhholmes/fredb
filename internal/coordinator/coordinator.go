@@ -1,7 +1,6 @@
 package coordinator
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,21 +11,10 @@ import (
 	"fredb/internal/storage"
 )
 
-// NodeVersion tracks a versioned node for MVCC
-type NodeVersion struct {
-	Node  *base.Node
-	TxnID uint64
-}
-
-// PendingVersion tracks a page version waiting for readers to finish
-type PendingVersion struct {
-	OriginalPageID base.PageID // Logical page ID
-	PhysicalPageID base.PageID // Where it actually lives (may differ if relocated)
-}
-
 // Coordinator coordinates storage, cache, meta, and freelist
 type Coordinator struct {
 	mu      sync.Mutex       // Protects meta and freelist access
+	cache   *cache.Cache     // Simple LRU cache
 	storage *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
@@ -35,29 +23,21 @@ type Coordinator struct {
 	meta1      base.Snapshot
 
 	// Freelist tracking
-	freePages        []base.PageID               // sorted array of free Page IDs
-	pendingVersions  map[uint64][]PendingVersion // txnID -> page versions freed at that transaction
-	preventUpToTxnID uint64                      // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
+	freePages        []base.PageID
+	pendingPages     map[uint64][]base.PageID // txnID -> pages freed at that transaction
+	preventUpToTxnID uint64                   // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 
 	// Page allocation tracking (separate from meta to avoid data races)
 	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
-
-	// Version tracking (moved from cache)
-	versionsMu sync.RWMutex
-	versions   map[base.PageID][]NodeVersion // Multiple versions per page
-
-	// Cache reference
-	cache *cache.Cache // Simple LRU cache
 }
 
 // NewCoordinator creates a coordinator with injected dependencies
 func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator, error) {
 	pm := &Coordinator{
-		storage:         storage,
-		freePages:       make([]base.PageID, 0),
-		pendingVersions: make(map[uint64][]PendingVersion),
-		versions:        make(map[base.PageID][]NodeVersion),
-		cache:           cache,
+		storage:      storage,
+		freePages:    make([]base.PageID, 0),
+		pendingPages: make(map[uint64][]base.PageID),
+		cache:        cache,
 	}
 
 	// Check if new file (empty)
@@ -158,42 +138,6 @@ func (pm *Coordinator) AllowAllAllocations() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.preventUpToTxnID = 0
-}
-
-// FreePendingRelocated adds a relocated page version to the pending map
-func (pm *Coordinator) FreePendingRelocated(txnID uint64, originalPageID base.PageID, relocatedPageID base.PageID) error {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	pm.pendingVersions[txnID] = append(pm.pendingVersions[txnID], PendingVersion{
-		OriginalPageID: originalPageID,
-		PhysicalPageID: relocatedPageID,
-	})
-	return nil
-}
-
-// GetLatestVisible returns the relocated Page ID for the latest version visible to txnID
-func (pm *Coordinator) GetLatestVisible(originalPageID base.PageID, maxTxnID uint64) (base.PageID, uint64) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	var latestTxnID uint64
-	var latestPageID base.PageID
-
-	// Search pendingVersions for latest visible relocated version
-	for txnID, versions := range pm.pendingVersions {
-		if txnID > maxTxnID {
-			continue
-		}
-		for _, v := range versions {
-			if v.OriginalPageID == originalPageID && txnID > latestTxnID {
-				latestTxnID = txnID
-				latestPageID = v.PhysicalPageID
-			}
-		}
-	}
-
-	return latestPageID, latestTxnID
 }
 
 // GetMeta returns the current metadata
@@ -460,8 +404,8 @@ func (pm *Coordinator) allocate() base.PageID {
 		// If prevention is active and there are pending pages that could be released,
 		// return 0 to force allocation of new pages instead of using recently freed ones
 		if pm.preventUpToTxnID > 0 {
-			for txnID := range pm.pendingVersions {
-				if txnID <= pm.preventUpToTxnID && len(pm.pendingVersions[txnID]) > 0 {
+			for txnID, pages := range pm.pendingPages {
+				if txnID <= pm.preventUpToTxnID && len(pages) > 0 {
 					// There are pending pages that would normally be released
 					// Don't wait for them - force new Page allocation
 					return 0
@@ -475,17 +419,15 @@ func (pm *Coordinator) allocate() base.PageID {
 	pm.freePages = pm.freePages[:len(pm.freePages)-1]
 
 	// CRITICAL: Remove from pending to prevent double-allocation
-	removedCount := 0
-	for txnID, versions := range pm.pendingVersions {
-		for i := len(versions) - 1; i >= 0; i-- {
-			if versions[i].PhysicalPageID == id {
-				pm.pendingVersions[txnID] = append(versions[:i], versions[i+1:]...)
-				versions = pm.pendingVersions[txnID]
-				removedCount++
+	for txnID, pages := range pm.pendingPages {
+		for i := len(pages) - 1; i >= 0; i-- {
+			if pages[i] == id {
+				pm.pendingPages[txnID] = append(pages[:i], pages[i+1:]...)
+				pages = pm.pendingPages[txnID]
 			}
 		}
-		if len(pm.pendingVersions[txnID]) == 0 {
-			delete(pm.pendingVersions, txnID)
+		if len(pm.pendingPages[txnID]) == 0 {
+			delete(pm.pendingPages, txnID)
 		}
 	}
 
@@ -519,25 +461,20 @@ func (pm *Coordinator) freePending(txnID uint64, pageIDs []base.PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
-	for _, id := range pageIDs {
-		pm.pendingVersions[txnID] = append(pm.pendingVersions[txnID], PendingVersion{
-			OriginalPageID: id,
-			PhysicalPageID: id, // Same location for in-place frees
-		})
-	}
+	pm.pendingPages[txnID] = append(pm.pendingPages[txnID], pageIDs...)
 }
 
 // release moves pages from pending to free for all transactions < minTxnID
 func (pm *Coordinator) release(minTxnID uint64) int {
 	// Caller must hold pm.mu
 	released := 0
-	for txnID, versions := range pm.pendingVersions {
+	for txnID, pages := range pm.pendingPages {
 		if txnID < minTxnID {
-			for _, v := range versions {
-				pm.free(v.PhysicalPageID)
+			for _, pageID := range pages {
+				pm.free(pageID)
 				released++
 			}
-			delete(pm.pendingVersions, txnID)
+			delete(pm.pendingPages, txnID)
 		}
 	}
 	return released
@@ -549,10 +486,10 @@ func (pm *Coordinator) pagesNeeded() int {
 	freeBytes := 8 + len(pm.freePages)*8
 
 	pendingBytes := 0
-	if len(pm.pendingVersions) > 0 {
-		pendingBytes = 8 + 8
-		for _, versions := range pm.pendingVersions {
-			pendingBytes += 8 + 8 + len(versions)*8
+	if len(pm.pendingPages) > 0 {
+		pendingBytes = 8 + 8 // marker + count
+		for _, pages := range pm.pendingPages {
+			pendingBytes += 8 + 8 + len(pages)*8 // txnID + count + page IDs
 		}
 	}
 
@@ -593,7 +530,7 @@ func (pm *Coordinator) serializeFreelist(pages []*base.Page) {
 	}
 
 	// Write pending data if present
-	if len(pm.pendingVersions) > 0 {
+	if len(pm.pendingPages) > 0 {
 		// Write marker
 		markerBytes := make([]byte, 8)
 		*(*base.PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
@@ -601,12 +538,12 @@ func (pm *Coordinator) serializeFreelist(pages []*base.Page) {
 
 		// Write pending count
 		pendingCountBytes := make([]byte, 8)
-		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(pm.pendingVersions))
+		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(pm.pendingPages))
 		buf = append(buf, pendingCountBytes...)
 
 		// Sort txnIDs for deterministic serialization
-		txnIDs := make([]uint64, 0, len(pm.pendingVersions))
-		for txnID := range pm.pendingVersions {
+		txnIDs := make([]uint64, 0, len(pm.pendingPages))
+		for txnID := range pm.pendingPages {
 			txnIDs = append(txnIDs, txnID)
 		}
 		for i := 1; i < len(txnIDs); i++ {
@@ -617,7 +554,7 @@ func (pm *Coordinator) serializeFreelist(pages []*base.Page) {
 
 		// Write each pending entry
 		for _, txnID := range txnIDs {
-			versions := pm.pendingVersions[txnID]
+			pages := pm.pendingPages[txnID]
 
 			// Write txnID
 			txnBytes := make([]byte, 8)
@@ -626,13 +563,13 @@ func (pm *Coordinator) serializeFreelist(pages []*base.Page) {
 
 			// Write Page count
 			countBytes := make([]byte, 8)
-			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(versions))
+			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(pages))
 			buf = append(buf, countBytes...)
 
-			// Write PhysicalPageIDs (backward compatible)
-			for _, v := range versions {
+			// Write page IDs
+			for _, pageID := range pages {
 				pidBytes := make([]byte, 8)
-				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = v.PhysicalPageID
+				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
 				buf = append(buf, pidBytes...)
 			}
 		}
@@ -650,7 +587,7 @@ func (pm *Coordinator) serializeFreelist(pages []*base.Page) {
 func (pm *Coordinator) deserializeFreelist(pages []*base.Page) {
 	// Caller must hold pm.mu
 	pm.freePages = make([]base.PageID, 0)
-	pm.pendingVersions = make(map[uint64][]PendingVersion)
+	pm.pendingPages = make(map[uint64][]base.PageID)
 
 	// Build linear buffer from pages
 	buf := make([]byte, 0, base.PageSize*len(pages))
@@ -711,115 +648,43 @@ func (pm *Coordinator) deserializeFreelist(pages []*base.Page) {
 		offset += 8
 
 		// Read Page IDs
-		versions := make([]PendingVersion, 0, pageCount)
+		pageIDs := make([]base.PageID, 0, pageCount)
 		for j := uint64(0); j < pageCount; j++ {
 			if offset+8 > len(buf) {
 				break
 			}
 			pageID := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
-			versions = append(versions, PendingVersion{
-				OriginalPageID: pageID, // Backward compat: same ID
-				PhysicalPageID: pageID,
-			})
+			pageIDs = append(pageIDs, pageID)
 			offset += 8
 		}
 
-		if len(versions) > 0 {
-			pm.pendingVersions[txnID] = versions
+		if len(pageIDs) > 0 {
+			pm.pendingPages[txnID] = pageIDs
 		}
 	}
 }
 
-// ErrPageNotVisible indicates page version not visible to transaction
-var ErrPageNotVisible = errors.New("page version not visible to transaction")
-
-// GetNode retrieves a node version visible to the transaction (MVCC snapshot isolation).
-// Returns the latest version where version.TxnID <= txnID.
+// GetNode retrieves a node, checking cache first then loading from disk.
 func (pm *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, error) {
 	// Check cache first
 	if node, hit := pm.cache.Get(pageID); hit {
 		return node, nil
 	}
 
-	// Check versions for relocated/older versions
-	pm.versionsMu.RLock()
-	versions, exists := pm.versions[pageID]
-	pm.versionsMu.RUnlock()
-
-	if exists && len(versions) > 0 {
-		// Find latest version visible to this transaction
-		var found *NodeVersion
-		for i := len(versions) - 1; i >= 0; i-- {
-			if versions[i].TxnID <= txnID {
-				found = &versions[i]
-				break
-			}
-		}
-		if found != nil {
-			pm.cache.Put(pageID, found.Node)
-			return found.Node, nil
-		}
-	}
-
-	// Load from disk
+	// Load from disk and cache
 	return pm.LoadNodeWithCache(pageID, txnID)
-}
-
-// PutNodeVersion adds a new version of a node for MVCC.
-func (pm *Coordinator) PutNodeVersion(pageID base.PageID, txnID uint64, node *base.Node) {
-	pm.versionsMu.Lock()
-	defer pm.versionsMu.Unlock()
-
-	// Check if this exact version already exists
-	if versions, exists := pm.versions[pageID]; exists {
-		for i := range versions {
-			if versions[i].TxnID == txnID {
-				// Version already tracked, update node
-				versions[i].Node = node
-				pm.cache.Put(pageID, node)
-				return
-			}
-		}
-	}
-
-	// Add new version (maintain sorted order if txnID is monotonic)
-	pm.versions[pageID] = append(pm.versions[pageID], NodeVersion{
-		Node:  node,
-		TxnID: txnID,
-	})
-
-	// Also update cache with latest version
-	pm.cache.Put(pageID, node)
 }
 
 // LoadNodeWithCache loads a node from disk and caches it.
 func (pm *Coordinator) LoadNodeWithCache(pageID base.PageID, txnID uint64) (*base.Node, error) {
-	// Check for relocated versions first
-	relocatedPageID, relocatedTxnID := pm.GetLatestVisible(pageID, txnID)
-	if relocatedPageID != 0 {
-		// Load relocated version
-		node, err := pm.LoadRelocatedNode(pageID, relocatedPageID)
-		if err != nil {
-			return nil, err
-		}
-		pm.PutNodeVersion(pageID, relocatedTxnID, node)
-		return node, nil
-	}
-
 	// Load from disk
-	node, diskTxnID, err := pm.LoadNodeFromDisk(pageID)
+	node, _, err := pm.LoadNodeFromDisk(pageID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Check visibility
-	if diskTxnID > txnID {
-		// Disk version is too new for this transaction
-		return nil, ErrPageNotVisible
-	}
-
 	// Cache and return
-	pm.PutNodeVersion(pageID, diskTxnID, node)
+	pm.cache.Put(pageID, node)
 	return node, nil
 }
 
@@ -853,53 +718,6 @@ func (pm *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64,
 	}
 
 	return node, header.TxnID, nil
-}
-
-// LoadRelocatedNode loads a relocated version from disk and restores original PageID.
-// Used for MVCC: when a page version is relocated to a different physical location,
-// we need to load from relocatedPageID but restore the logical originalPageID.
-// Returns (node, error).
-func (pm *Coordinator) LoadRelocatedNode(originalPageID, relocatedPageID base.PageID) (*base.Node, error) {
-	node, _, err := pm.LoadNodeFromDisk(relocatedPageID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Restore logical PageID (node was relocated but logically represents originalPageID)
-	node.PageID = originalPageID
-
-	return node, nil
-}
-
-// RelocateVersion writes a node version to a new physical location for MVCC.
-// Serializes node, allocates new page, writes to disk, and tracks the relocation.
-// Returns (relocatedPageID, error).
-func (pm *Coordinator) RelocateVersion(node *base.Node, txnID uint64, originalPageID base.PageID) (base.PageID, error) {
-	// Serialize the version
-	page, err := node.Serialize(txnID)
-	if err != nil {
-		return 0, err
-	}
-
-	// Allocate a page for relocation
-	relocatedPageID, err := pm.AllocatePage()
-	if err != nil {
-		return 0, err
-	}
-
-	// Write version to relocated page
-	if err := pm.storage.WritePage(relocatedPageID, page); err != nil {
-		_ = pm.FreePage(relocatedPageID)
-		return 0, err
-	}
-
-	// Track relocation mapping
-	if err := pm.FreePendingRelocated(txnID, originalPageID, relocatedPageID); err != nil {
-		_ = pm.FreePage(relocatedPageID)
-		return 0, err
-	}
-
-	return relocatedPageID, nil
 }
 
 // FlushNode serializes and writes a dirty node to disk.
@@ -1015,7 +833,7 @@ func (pm *Coordinator) CommitTransaction(
 		}
 
 		node.Dirty = false
-		pm.PutNodeVersion(node.PageID, txnID, node)
+		pm.cache.Put(node.PageID, node)
 	}
 
 	// Write root separately
@@ -1030,7 +848,7 @@ func (pm *Coordinator) CommitTransaction(
 		}
 
 		root.Dirty = false
-		pm.PutNodeVersion(root.PageID, txnID, root)
+		pm.cache.Put(root.PageID, root)
 	}
 
 	// Pass 5: Add freed pages to pending
@@ -1066,8 +884,15 @@ func (pm *Coordinator) CommitTransaction(
 	return nil
 }
 
+type Stats struct {
+	Cache cache.Stats
+	Store storage.Stats
+}
+
 // Stats returns disk I/O statistics
-func (pm *Coordinator) Stats() (reads, writes uint64) {
-	stats := pm.storage.Stats()
-	return stats.Reads, stats.Writes
+func (pm *Coordinator) Stats() Stats {
+	return Stats{
+		Cache: pm.cache.Stats(),
+		Store: pm.storage.Stats(),
+	}
 }

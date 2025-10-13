@@ -43,7 +43,8 @@ func TestPageCacheBasics(t *testing.T) {
 	assert.Equal(t, 1, cache.Size())
 
 	// Check stats
-	hits, misses, _ := cache.Stats()
+	stats := cache.Stats()
+	hits, misses := stats.Hits, stats.Misses
 	assert.Equal(t, uint64(1), hits)
 	assert.Equal(t, uint64(1), misses)
 }
@@ -105,8 +106,7 @@ func TestPageCacheEviction(t *testing.T) {
 	assert.Equal(t, 16, size, "Expected size 16 after eviction")
 
 	// Check eviction stats (evicted 4: pages 1-4)
-	_, _, evictions := cache.Stats()
-	assert.Equal(t, uint64(4), evictions)
+	assert.Equal(t, uint64(4), cache.Stats().Evictions)
 
 	// Pages 1-4 (LRU) should be evicted
 	for i := 1; i <= 4; i++ {

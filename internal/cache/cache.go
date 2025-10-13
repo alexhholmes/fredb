@@ -148,7 +148,17 @@ func (c *Cache) Size() int {
 	return len(c.entries)
 }
 
+type Stats struct {
+	Hits      uint64
+	Misses    uint64
+	Evictions uint64
+}
+
 // Stats returns cache statistics
-func (c *Cache) Stats() (hits, misses, evictions uint64) {
-	return c.hits.Load(), c.misses.Load(), c.evictions.Load()
+func (c *Cache) Stats() Stats {
+	return Stats{
+		Hits:      c.hits.Load(),
+		Misses:    c.misses.Load(),
+		Evictions: c.evictions.Load(),
+	}
 }

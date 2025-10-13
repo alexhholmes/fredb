@@ -23,13 +23,6 @@ type Storage struct {
 	written atomic.Uint64 // Total bytes written
 }
 
-type Stats struct {
-	Reads   uint64
-	Writes  uint64
-	Read    uint64
-	Written uint64
-}
-
 // NewStorage opens or creates a database file
 func NewStorage(path string) (*Storage, error) {
 	// Use directio.OpenFile - falls back to regular I/O on unsupported platforms
@@ -127,6 +120,13 @@ func (s *Storage) Stats() Stats {
 		Read:    s.read.Load(),
 		Written: s.written.Load(),
 	}
+}
+
+type Stats struct {
+	Reads   uint64
+	Writes  uint64
+	Read    uint64
+	Written uint64
 }
 
 // Close closes the file

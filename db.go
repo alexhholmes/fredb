@@ -35,7 +35,7 @@ type DB struct {
 	nextTxnID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	// Background pending page releaser
-	releaseC chan uint64    // Trigger release (unbuffered)
+	releaseC chan uint64    // Trigger release (buffered: 1 signal queued)
 	stopC    chan struct{}  // Shutdown signal
 	wg       sync.WaitGroup // Clean shutdown
 
@@ -233,7 +233,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	db := &DB{
 		coord:    coord,
-		releaseC: make(chan uint64),
+		releaseC: make(chan uint64, 1), // Buffered: queue one signal if goroutine busy
 		stopC:    make(chan struct{}),
 		options:  opts,
 	}
@@ -440,4 +440,8 @@ func (db *DB) Close() error {
 
 	// Close coord
 	return db.coord.Close()
+}
+
+func (db *DB) Stats() coordinator.Stats {
+	return db.coord.Stats()
 }
