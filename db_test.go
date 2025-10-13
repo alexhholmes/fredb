@@ -2272,11 +2272,75 @@ func TestBTreeLargeValues(t *testing.T) {
 // PageManager Integration Tests
 
 func TestPageCaching(t *testing.T) {
-	// Test Page cache behavior
-	// - Verify cache hit/miss behavior
-	// - Test cache population on reads
-	// - Verify Dirty Page tracking
-	t.Skip("Not implemented")
+	t.Parallel()
+
+	dbPath := "/tmp/test_cache.db"
+	defer func() {
+		_ = os.Remove(dbPath)
+	}()
+
+	// Phase 1: Insert data
+	db, err := Open(dbPath, WithMaxCacheSizeMB(0))
+	require.NoError(t, err)
+
+	err = db.Update(func(tx *Tx) error {
+		for i := 0; i < 1000; i++ {
+			key := []byte(fmt.Sprintf("key_%04d", i))
+			value := []byte(fmt.Sprintf("value_%04d_data_to_fill_page_and_force_splits", i))
+			if err := tx.Set(key, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	// Close DB to clear in-memory versions map
+	err = db.Close()
+	require.NoError(t, err)
+
+	// Phase 2: Reopen with minimal cache (clears versions map)
+	db, err = Open(dbPath, WithMaxCacheSizeMB(0))
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	db.coord.ClearStats()
+
+	// Phase 3: Read all keys - cache misses should trigger disk reads
+	err = db.View(func(tx *Tx) error {
+		for i := 0; i < 1000; i++ {
+			key := []byte(fmt.Sprintf("key_%04d", i))
+			expected := []byte(fmt.Sprintf("value_%04d_data_to_fill_page_and_force_splits", i))
+			val, err := tx.Get(key)
+			require.NoError(t, err)
+			require.Equal(t, expected, val)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	// Phase 4: Verify stats show disk reads occurred
+	stats := db.coord.Stats()
+
+	t.Logf("After reopen+reads: Cache Hits=%d, Misses=%d, Evictions=%d",
+		stats.Cache.Hits, stats.Cache.Misses, stats.Cache.Evictions)
+	t.Logf("After reopen+reads: Disk Reads=%d, Writes=%d, ReadBytes=%d",
+		stats.Store.Reads, stats.Store.Writes, stats.Store.Read)
+
+	// Cache should have some misses (cold start after reopen)
+	require.Greater(t, stats.Cache.Misses, uint64(0),
+		"Expected cache misses after reopen, but got 0")
+
+	// Storage should have disk reads (versions map cleared by reopen)
+	require.Greater(t, stats.Store.Reads, uint64(0),
+		"Expected disk reads on cache miss after reopen, but got 0")
+
+	// Hits + Misses should equal total access attempts
+	totalAccess := stats.Cache.Hits + stats.Cache.Misses
+	require.Greater(t, totalAccess, uint64(0),
+		"Expected some cache access, but got 0")
 }
 
 func TestCloseFlush(t *testing.T) {
@@ -2365,7 +2429,7 @@ func TestSingleKey(t *testing.T) {
 	child, err := tx.loadNode(db.coord.GetSnapshot().Root.Children[0])
 	assert.NoError(t, err)
 	assert.True(t, child.IsLeaf(), "Child should be a leaf")
-	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
+	assert.Equal(t, uint16(2), child.NumKeys, "Child should have exactly 2 keys (__root__ and __versions__ buckets)")
 }
 
 func TestDuplicateKeys(t *testing.T) {

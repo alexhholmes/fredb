@@ -37,7 +37,8 @@ func BenchmarkDBGet(b *testing.B) {
 
 	// Reset disk I/O stats before benchmark
 	// Cache stats are now internal to coordinator
-	diskReadsBefore, diskWritesBefore := db.coord.Stats()
+	stats := db.coord.Stats()
+	diskReadsBefore, diskWritesBefore := stats.Store.Reads, stats.Store.Writes
 
 	b.ResetTimer()
 
@@ -51,7 +52,9 @@ func BenchmarkDBGet(b *testing.B) {
 	}
 
 	b.StopTimer()
-	diskReadsAfter, diskWritesAfter := db.coord.Stats()
+
+	stats = db.coord.Stats()
+	diskReadsAfter, diskWritesAfter := stats.Store.Reads, stats.Store.Writes
 
 	// Calculate benchmark-only stats
 	diskReads := diskReadsAfter - diskReadsBefore

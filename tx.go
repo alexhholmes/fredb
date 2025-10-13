@@ -156,11 +156,16 @@ func (tx *Tx) Commit() error {
 		syncMode = coordinator.SyncOff
 	}
 
-	// Phase 1: Commit all bucket pages (NOT root tree yet)
-	// After this, bucket.root.PageID will have real page IDs
-	err := tx.db.coord.CommitTransaction(
-		tx.pages,
-		tx.root,
+	// Phase 1: Write all bucket pages and map virtual→real IDs
+	// This updates node.PageID fields but doesn't make changes visible yet
+	bucketPagesMap := make(map[base.PageID]*base.Node)
+	for pageID, node := range tx.pages {
+		bucketPagesMap[pageID] = node
+	}
+
+	err := tx.db.coord.CommitTransactionWithoutSnapshot(
+		bucketPagesMap,
+		nil, // Don't write root yet
 		tx.freed,
 		tx.txID,
 		syncMode,
@@ -169,105 +174,29 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
-	// CRITICAL: After CommitTransaction, nodes in tx.pages have been updated with real PageIDs,
-	// but the MAP is still keyed by the old virtual IDs. Rebuild the map with real PageIDs as keys.
-	remappedPages := make(map[base.PageID]*base.Node)
-	for _, node := range tx.pages {
-		remappedPages[node.PageID] = node
-	}
-	tx.pages = remappedPages
-
-	// Phase 2: Now insert bucket metadata with REAL page IDs
+	// Phase 2: Now insert bucket metadata with real page IDs
+	// After mapping, bucket.root.PageID has real values
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
-			key := []byte(name)
-			value := bucket.Serialize()
-
-			// Validate key/value size before insertion
-			if len(key) > MaxKeySize {
-				return ErrKeyTooLarge
+			if err := tx.insertBucketMetadata(name, bucket); err != nil {
+				return err
 			}
-			if len(value) > MaxValueSize {
-				return ErrValueTooLarge
-			}
-
-			// Also active practical limit based on Page size
-			// At minimum, a leaf Page must hold at least one key-value pair
-			maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
-			if len(key)+len(value) > maxSize {
-				return ErrPageOverflow
-			}
-
-			// Use COW-aware insertion with splits
-			// Keep changes in tx.root (transaction-local), not DB.root
-			root := tx.root
-
-			// Handle root split with COW
-			if root.IsFull() {
-				// Split root using COW
-				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
-				if err != nil {
-					return err
-				}
-
-				// Create new root using tx.allocatePage()
-				newRootID, _, err := tx.allocatePage()
-				if err != nil {
-					return err
-				}
-
-				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-
-				// Don't add root to tx.pages - root is tracked separately in tx.root
-				// The split Children were already stored in splitChild()
-
-				root = newRoot
-			}
-
-			// Insert with recursive COW - retry until success or non-overflow error
-			// This handles cascading splits when parent nodes also overflow
-			maxRetries := 20 // Prevent infinite loops
-
-			for attempt := 0; attempt < maxRetries; attempt++ {
-				newRoot, err := tx.insertNonFull(root, key, value)
-				if !errors.Is(err, ErrPageOverflow) {
-					// Either success or non-recoverable error
-					if err == nil {
-						root = newRoot // Only update root on success
-					}
-					break
-				}
-
-				// Root couldn't fit the new entry - split it
-				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
-				if err != nil {
-					return err
-				}
-
-				// Create new root
-				newRootID, _, err := tx.allocatePage()
-				if err != nil {
-					return err
-				}
-
-				root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-
-				// Don't add root to tx.pages - root is tracked separately in tx.root
-				// Use new root for next retry (already assigned to root)
-			}
-
-			// Update transaction-local root (NOT DB.root)
-			// Changes become visible only on Commit()
-			tx.root = root
 		}
 	}
 
-	// Phase 3: Commit all pages again (CommitTransaction will only write dirty pages)
-	// We need to pass ALL pages because tx.root might point to both old and new pages
-	err = tx.db.coord.CommitTransaction(
-		tx.pages,
+	// Phase 3: Write root tree pages (created by bucket metadata insertion)
+	// Collect only the newly created root tree pages
+	rootPages := make(map[base.PageID]*base.Node)
+	for pageID, node := range tx.pages {
+		if _, alreadyWritten := bucketPagesMap[pageID]; !alreadyWritten {
+			rootPages[pageID] = node
+		}
+	}
+
+	err = tx.db.coord.CommitTransactionWithoutSnapshot(
+		rootPages,
 		tx.root,
-		nil, // No new freed pages in phase 2
+		nil, // Freed pages already handled in Phase 1
 		tx.txID,
 		syncMode,
 	)
@@ -275,24 +204,10 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
-	// Sync to ensure durability before making visible
-	if tx.db.options.syncMode == SyncEveryCommit {
-		if err := tx.db.coord.Sync(); err != nil {
-			return err
-		}
-	}
-
-	// Update meta page with new root
-	meta := tx.db.coord.GetMeta()
-	meta.RootPageID = tx.root.PageID
-	meta.TxID = tx.txID
-	if err := tx.db.coord.PutSnapshot(meta, tx.root); err != nil {
-		return err
-	}
-
-	// Make changes visible
+	// Phase 4: Make all changes visible atomically
 	tx.db.coord.CommitSnapshot()
 
+	// Cleanup
 	tx.db.writer.Store(nil)
 
 	// Trigger background releaser
@@ -381,8 +296,8 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	cloned.PageID = pageID
 	cloned.Dirty = true
 
-	// Don't Serialize here - let the caller modify the Node first
-	// The caller will Serialize after modifications
+	// Don't serialize here - let the caller modify the Node first
+	// The caller will serialize after modifications
 
 	// Track old Page as freed
 	// These pages will be added to freelist's pending list on commit
@@ -872,13 +787,13 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 		return nil
 	}
 
-	// Deserialize bucket metadata
+	// deserialize bucket metadata
 	if len(meta) < 16 {
 		return nil
 	}
 
 	bucket := &Bucket{}
-	bucket.Deserialize(meta)
+	bucket.deserialize(meta)
 	bucket.tx = tx
 	bucket.writable = tx.writable
 	bucket.name = name
@@ -1013,6 +928,85 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	return nil
 }
 
+// insertBucketMetadata inserts bucket metadata into the root tree.
+// This is extracted from the old Phase 2 logic in Commit().
+func (tx *Tx) insertBucketMetadata(name string, bucket *Bucket) error {
+	key := []byte(name)
+	value := bucket.serialize()
+
+	// Validate key/value size before insertion
+	if len(key) > MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > MaxValueSize {
+		return ErrValueTooLarge
+	}
+
+	// Check practical limit based on Page size
+	// At minimum, a leaf Page must hold at least one key-value pair
+	maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+	if len(key)+len(value) > maxSize {
+		return ErrPageOverflow
+	}
+
+	// Use COW-aware insertion with splits
+	root := tx.root
+
+	// Handle root split with COW
+	if root.IsFull() {
+		// Split root using COW
+		leftChild, rightChild, midKey, _, err := tx.splitChild(root)
+		if err != nil {
+			return err
+		}
+
+		// Create new root using tx.allocatePage()
+		newRootID, _, err := tx.allocatePage()
+		if err != nil {
+			return err
+		}
+
+		newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+		root = newRoot
+	}
+
+	// Insert with recursive COW - retry until success or non-overflow error
+	// This handles cascading splits when parent nodes also overflow
+	maxRetries := 20 // Prevent infinite loops
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		newRoot, err := tx.insertNonFull(root, key, value)
+		if !errors.Is(err, ErrPageOverflow) {
+			// Either success or non-recoverable error
+			if err == nil {
+				root = newRoot // Only update root on success
+			} else {
+				return err
+			}
+			break
+		}
+
+		// Root couldn't fit the new entry - split it
+		leftChild, rightChild, midKey, _, err := tx.splitChild(root)
+		if err != nil {
+			return err
+		}
+
+		// Create new root
+		newRootID, _, err := tx.allocatePage()
+		if err != nil {
+			return err
+		}
+
+		root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+	}
+
+	// Update transaction-local root (NOT DB.root)
+	// Changes become visible only on Commit()
+	tx.root = root
+	return nil
+}
+
 // ForEach iterates over all buckets
 func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 	if err := tx.check(); err != nil {
@@ -1033,14 +1027,14 @@ func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 			continue
 		}
 
-		// Deserialize bucket metadata
+		// deserialize bucket metadata
 		if len(v) < 16 {
 			continue
 		}
 
 		var err error
 		var bucket Bucket
-		bucket.Deserialize(v)
+		bucket.deserialize(v)
 		bucket.tx = tx
 		bucket.writable = tx.writable
 		bucket.name = k

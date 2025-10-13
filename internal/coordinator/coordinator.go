@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -27,6 +28,7 @@ type PendingVersion struct {
 // Coordinator coordinates storage, cache, meta, and freelist
 type Coordinator struct {
 	mu      sync.Mutex       // Protects meta and freelist access
+	cache   *cache.Cache     // Simple LRU cache
 	storage *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
@@ -40,24 +42,23 @@ type Coordinator struct {
 	preventUpToTxnID uint64                      // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
 
 	// Page allocation tracking (separate from meta to avoid data races)
-	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
+	pageCount atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
 
-	// Version tracking (moved from cache)
-	versionsMu sync.RWMutex
-	versions   map[base.PageID][]NodeVersion // Multiple versions per page
-
-	// Cache reference
-	cache *cache.Cache // Simple LRU cache
+	// Page latches for __versions__ bucket (non-MVCC, global state)
+	versionsBucketMu   sync.RWMutex                  // Protects versionsBucketMetadata
+	versionsBucketRoot base.PageID                   // Cached root page ID of __versions__ bucket
+	versionLatchesMu   sync.Mutex                    // Protects versionPageLatches map itself
+	versionPageLatches map[base.PageID]*sync.RWMutex // Per-page latches for __versions__ bucket
 }
 
 // NewCoordinator creates a coordinator with injected dependencies
 func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator, error) {
 	pm := &Coordinator{
-		storage:         storage,
-		freePages:       make([]base.PageID, 0),
-		pendingVersions: make(map[uint64][]PendingVersion),
-		versions:        make(map[base.PageID][]NodeVersion),
-		cache:           cache,
+		storage:            storage,
+		freePages:          make([]base.PageID, 0),
+		pendingVersions:    make(map[uint64][]PendingVersion),
+		cache:              cache,
+		versionPageLatches: make(map[base.PageID]*sync.RWMutex),
 	}
 
 	// Check if new file (empty)
@@ -106,9 +107,9 @@ func (pm *Coordinator) AllocatePage() (base.PageID, error) {
 		return id, nil
 	}
 
-	// Grow file - use atomic numPages counter (includes uncommitted allocations)
+	// Grow file - use atomic pageCount counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
-	id = base.PageID(pm.numPages.Add(1) - 1)
+	id = base.PageID(pm.pageCount.Add(1) - 1)
 
 	// Initialize empty Page
 	emptyPage := &base.Page{}
@@ -214,7 +215,7 @@ func (pm *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	defer pm.mu.Unlock()
 
 	// Sync NumPages from atomic counter (may have uncommitted allocations)
-	meta.NumPages = pm.numPages.Load()
+	meta.NumPages = pm.pageCount.Load()
 
 	// Update checksum (after NumPages sync)
 	meta.Checksum = meta.CalculateChecksum()
@@ -262,7 +263,7 @@ func (pm *Coordinator) Close() error {
 	// Get active meta for reading
 	meta := pm.activeMeta.Load().Meta
 
-	// Serialize freelist to disk
+	// serialize freelist to disk
 	pagesNeeded := pm.pagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
@@ -346,8 +347,8 @@ func (pm *Coordinator) initializeNewDB() error {
 	pm.meta1.Root = nil
 	pm.activeMeta.Store(&pm.meta0)
 
-	// Initialize atomic numPages counter
-	pm.numPages.Store(meta.NumPages)
+	// Initialize atomic pageCount counter
+	pm.pageCount.Store(meta.NumPages)
 
 	// Write meta to both disk pages 0 and 1
 	metaPage := &base.Page{}
@@ -435,8 +436,8 @@ func (pm *Coordinator) loadExistingDB() error {
 	// On startup, no readers exist, so all pending pages with txnID <= current can be released
 	pm.release(activeMeta.Meta.TxID)
 
-	// Initialize atomic numPages counter from active meta
-	pm.numPages.Store(activeMeta.Meta.NumPages)
+	// Initialize atomic pageCount counter from active meta
+	pm.pageCount.Store(activeMeta.Meta.NumPages)
 
 	return nil
 }
@@ -536,6 +537,10 @@ func (pm *Coordinator) release(minTxnID uint64) int {
 			for _, v := range versions {
 				pm.free(v.PhysicalPageID)
 				released++
+
+				// Clean up version mapping from disk index
+				// Errors are silently ignored - best effort cleanup
+				_ = pm.DeleteVersionMapping(v.OriginalPageID, txnID)
 			}
 			delete(pm.pendingVersions, txnID)
 		}
@@ -741,23 +746,21 @@ func (pm *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, er
 		return node, nil
 	}
 
-	// Check versions for relocated/older versions
-	pm.versionsMu.RLock()
-	versions, exists := pm.versions[pageID]
-	pm.versionsMu.RUnlock()
+	// Check disk-based version index (before falling back to disk load)
+	// Try to find exact version mapping for this (pageID, txnID)
+	physicalPageID, err := pm.GetVersionMapping(pageID, txnID)
+	if err == nil && physicalPageID != 0 {
+		// Found in disk index - load from physical location
+		node, diskTxnID, err := pm.LoadNodeFromDisk(physicalPageID)
+		if err != nil {
+			// Disk read failed - fall through to LoadNodeWithCache
+		} else {
+			// Restore logical PageID (physical page may be relocated)
+			node.PageID = pageID
 
-	if exists && len(versions) > 0 {
-		// Find latest version visible to this transaction
-		var found *NodeVersion
-		for i := len(versions) - 1; i >= 0; i-- {
-			if versions[i].TxnID <= txnID {
-				found = &versions[i]
-				break
-			}
-		}
-		if found != nil {
-			pm.cache.Put(pageID, found.Node)
-			return found.Node, nil
+			// Cache and return
+			pm.PutNodeVersion(pageID, diskTxnID, node)
+			return node, nil
 		}
 	}
 
@@ -767,28 +770,11 @@ func (pm *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, er
 
 // PutNodeVersion adds a new version of a node for MVCC.
 func (pm *Coordinator) PutNodeVersion(pageID base.PageID, txnID uint64, node *base.Node) {
-	pm.versionsMu.Lock()
-	defer pm.versionsMu.Unlock()
+	// Write to disk-based version index
+	// Errors are silently ignored - best effort
+	_ = pm.PutVersionMapping(pageID, txnID, node.PageID)
 
-	// Check if this exact version already exists
-	if versions, exists := pm.versions[pageID]; exists {
-		for i := range versions {
-			if versions[i].TxnID == txnID {
-				// Version already tracked, update node
-				versions[i].Node = node
-				pm.cache.Put(pageID, node)
-				return
-			}
-		}
-	}
-
-	// Add new version (maintain sorted order if txnID is monotonic)
-	pm.versions[pageID] = append(pm.versions[pageID], NodeVersion{
-		Node:  node,
-		TxnID: txnID,
-	})
-
-	// Also update cache with latest version
+	// Update cache with version
 	pm.cache.Put(pageID, node)
 }
 
@@ -875,7 +861,7 @@ func (pm *Coordinator) LoadRelocatedNode(originalPageID, relocatedPageID base.Pa
 // Serializes node, allocates new page, writes to disk, and tracks the relocation.
 // Returns (relocatedPageID, error).
 func (pm *Coordinator) RelocateVersion(node *base.Node, txnID uint64, originalPageID base.PageID) (base.PageID, error) {
-	// Serialize the version
+	// serialize the version
 	page, err := node.Serialize(txnID)
 	if err != nil {
 		return 0, err
@@ -921,6 +907,150 @@ const (
 	SyncEveryCommit SyncMode = iota
 	SyncOff
 )
+
+// CommitTransactionComplete handles the complete transaction commit in a single coordinated operation.
+// This replaces the 3-phase commit from tx.go with better coordination:
+// - Phase 1: Map virtual→real page IDs and write all pages
+// - Phase 2: Update metadata and make visible
+// The bucket metadata insertion still happens in tx.go before calling this.
+func (pm *Coordinator) CommitTransactionComplete(
+	pages map[base.PageID]*base.Node,
+	root *base.Node,
+	freed map[base.PageID]struct{},
+	txnID uint64,
+	syncMode SyncMode,
+) error {
+	// Caller must hold db.mu
+
+	// Pass 1: Allocate real page IDs for all virtual pages
+	virtualToReal := make(map[base.PageID]base.PageID)
+
+	for pageID := range pages {
+		if int64(pageID) < 0 { // Virtual page ID
+			realPageID, err := pm.AllocatePage()
+			if err != nil {
+				// Rollback partial allocation
+				for _, allocated := range virtualToReal {
+					_ = pm.FreePage(allocated)
+				}
+				return err
+			}
+			virtualToReal[pageID] = realPageID
+		}
+	}
+
+	// Pass 2: Update nodes' PageID fields and remap child pointers
+	for pageID, node := range pages {
+		// Update this node's PageID if map key was virtual
+		if int64(pageID) < 0 {
+			if realID, exists := virtualToReal[pageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Defensive check for node.PageID itself
+		if int64(node.PageID) < 0 {
+			if realID, exists := virtualToReal[node.PageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Remap child pointers in branch nodes
+		if !node.IsLeaf() {
+			for i, childID := range node.Children {
+				if realID, isVirtual := virtualToReal[childID]; isVirtual {
+					node.Children[i] = realID
+				}
+			}
+		}
+	}
+
+	// Pass 3: Handle root separately
+	if root != nil && int64(root.PageID) < 0 {
+		realPageID, err := pm.AllocatePage()
+		if err != nil {
+			// Rollback
+			for _, allocated := range virtualToReal {
+				_ = pm.FreePage(allocated)
+			}
+			return err
+		}
+		virtualToReal[root.PageID] = realPageID
+		root.PageID = realPageID
+	}
+
+	// Remap root's children pointers
+	if root != nil && !root.IsLeaf() {
+		for i, childID := range root.Children {
+			if realID, isVirtual := virtualToReal[childID]; isVirtual {
+				root.Children[i] = realID
+			}
+		}
+	}
+
+	// Pass 4: Write all pages to disk and populate cache
+	for _, node := range pages {
+		page, err := node.Serialize(txnID)
+		if err != nil {
+			return err
+		}
+
+		if err := pm.storage.WritePage(node.PageID, page); err != nil {
+			return err
+		}
+
+		node.Dirty = false
+		pm.PutNodeVersion(node.PageID, txnID, node)
+	}
+
+	// Write root if dirty
+	if root != nil && root.Dirty {
+		page, err := root.Serialize(txnID)
+		if err != nil {
+			return err
+		}
+
+		if err := pm.storage.WritePage(root.PageID, page); err != nil {
+			return err
+		}
+
+		root.Dirty = false
+		pm.PutNodeVersion(root.PageID, txnID, root)
+	}
+
+	// Pass 5: Add freed pages to pending
+	if len(freed) > 0 {
+		freedSlice := make([]base.PageID, 0, len(freed))
+		for pageID := range freed {
+			freedSlice = append(freedSlice, pageID)
+		}
+		if err := pm.FreePending(txnID, freedSlice); err != nil {
+			return err
+		}
+	}
+
+	// Pass 6: Update metadata
+	meta := pm.GetMeta()
+	if root != nil {
+		meta.RootPageID = root.PageID
+	}
+	meta.TxID = txnID
+	meta.Checksum = meta.CalculateChecksum()
+
+	if err := pm.PutSnapshot(meta, root); err != nil {
+		return err
+	}
+
+	// Pass 7: Conditional sync (this is the commit point!)
+	if syncMode == SyncEveryCommit {
+		if err := pm.storage.Sync(); err != nil {
+			return err
+		}
+	}
+
+	// Return the virtualToReal mapping so tx can update its pages map
+	return nil
+}
 
 // CommitTransaction coordinates the full transaction commit:
 // - Virtual→real page ID mapping
@@ -1066,8 +1196,505 @@ func (pm *Coordinator) CommitTransaction(
 	return nil
 }
 
+// CommitTransactionWithoutSnapshot performs all commit operations EXCEPT making changes visible.
+// This allows multi-phase commits where we map virtual→real IDs and write pages
+// without making them visible to readers until all phases complete.
+// Caller must explicitly call CommitSnapshot() when ready to make changes visible.
+func (pm *Coordinator) CommitTransactionWithoutSnapshot(
+	pages map[base.PageID]*base.Node,
+	root *base.Node,
+	freed map[base.PageID]struct{},
+	txnID uint64,
+	syncMode SyncMode,
+) error {
+	// Caller must hold db.mu
+
+	// Pass 1: Allocate real page IDs for all virtual pages
+	virtualToReal := make(map[base.PageID]base.PageID)
+
+	for pageID := range pages {
+		if int64(pageID) < 0 { // Virtual page ID
+			realPageID, err := pm.AllocatePage()
+			if err != nil {
+				// Rollback partial allocation
+				for _, allocated := range virtualToReal {
+					_ = pm.FreePage(allocated)
+				}
+				return err
+			}
+			virtualToReal[pageID] = realPageID
+		}
+	}
+
+	// Pass 2: Update nodes' PageID fields and remap child pointers
+	for pageID, node := range pages {
+		// Update this node's PageID if map key was virtual
+		if int64(pageID) < 0 {
+			if realID, exists := virtualToReal[pageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Defensive check for node.PageID itself
+		if int64(node.PageID) < 0 {
+			if realID, exists := virtualToReal[node.PageID]; exists {
+				node.PageID = realID
+			}
+		}
+
+		// Remap child pointers in branch nodes
+		if !node.IsLeaf() {
+			for i, childID := range node.Children {
+				if realID, isVirtual := virtualToReal[childID]; isVirtual {
+					node.Children[i] = realID
+				}
+			}
+		}
+	}
+
+	// Pass 3: Handle root separately if provided
+	if root != nil && int64(root.PageID) < 0 {
+		realPageID, err := pm.AllocatePage()
+		if err != nil {
+			// Rollback
+			for _, allocated := range virtualToReal {
+				_ = pm.FreePage(allocated)
+			}
+			return err
+		}
+		virtualToReal[root.PageID] = realPageID
+		root.PageID = realPageID
+	}
+
+	// Remap root's children pointers if root provided
+	if root != nil && !root.IsLeaf() {
+		for i, childID := range root.Children {
+			if realID, isVirtual := virtualToReal[childID]; isVirtual {
+				root.Children[i] = realID
+			}
+		}
+	}
+
+	// Pass 4: Write all pages to disk and populate cache
+	for _, node := range pages {
+		page, err := node.Serialize(txnID)
+		if err != nil {
+			return err
+		}
+
+		if err := pm.storage.WritePage(node.PageID, page); err != nil {
+			return err
+		}
+
+		node.Dirty = false
+		pm.PutNodeVersion(node.PageID, txnID, node)
+	}
+
+	// Write root if provided and dirty
+	if root != nil && root.Dirty {
+		page, err := root.Serialize(txnID)
+		if err != nil {
+			return err
+		}
+
+		if err := pm.storage.WritePage(root.PageID, page); err != nil {
+			return err
+		}
+
+		root.Dirty = false
+		pm.PutNodeVersion(root.PageID, txnID, root)
+	}
+
+	// Pass 5: Add freed pages to pending
+	if len(freed) > 0 {
+		freedSlice := make([]base.PageID, 0, len(freed))
+		for pageID := range freed {
+			freedSlice = append(freedSlice, pageID)
+		}
+		if err := pm.FreePending(txnID, freedSlice); err != nil {
+			return err
+		}
+	}
+
+	// Pass 6: Update metadata (but don't make visible yet)
+	if root != nil {
+		meta := pm.GetMeta()
+		meta.RootPageID = root.PageID
+		meta.TxID = txnID
+		meta.Checksum = meta.CalculateChecksum()
+
+		if err := pm.PutSnapshot(meta, root); err != nil {
+			return err
+		}
+	}
+
+	// Pass 7: Conditional sync
+	if syncMode == SyncEveryCommit {
+		if err := pm.storage.Sync(); err != nil {
+			return err
+		}
+	}
+
+	// NOTE: We DO NOT call CommitSnapshot() here
+	// Caller must explicitly call it when ready to make changes visible
+	return nil
+}
+
+// encodeVersionKey encodes a (logical PageID, TxnID) pair into a 16-byte key for the version index
+// Format: [PageID: 8 bytes][TxnID: 8 bytes]
+func encodeVersionKey(logicalPageID base.PageID, txnID uint64) []byte {
+	key := make([]byte, 16)
+	binary.LittleEndian.PutUint64(key[0:8], uint64(logicalPageID))
+	binary.LittleEndian.PutUint64(key[8:16], txnID)
+	return key
+}
+
+// decodeVersionKey decodes a 16-byte version key into (logical PageID, TxnID)
+func decodeVersionKey(key []byte) (base.PageID, uint64) {
+	if len(key) < 16 {
+		return 0, 0
+	}
+	logicalPageID := base.PageID(binary.LittleEndian.Uint64(key[0:8]))
+	txnID := binary.LittleEndian.Uint64(key[8:16])
+	return logicalPageID, txnID
+}
+
+// encodePhysicalPageID encodes a physical PageID into an 8-byte value for the version index
+func encodePhysicalPageID(physicalPageID base.PageID) []byte {
+	val := make([]byte, 8)
+	binary.LittleEndian.PutUint64(val, uint64(physicalPageID))
+	return val
+}
+
+// decodePhysicalPageID decodes an 8-byte value into a physical PageID
+func decodePhysicalPageID(val []byte) base.PageID {
+	if len(val) < 8 {
+		return 0
+	}
+	return base.PageID(binary.LittleEndian.Uint64(val))
+}
+
+// getVersionsBucketRoot retrieves the __versions__ bucket root page ID from the root tree
+// Returns 0 if __versions__ bucket doesn't exist
+func (pm *Coordinator) getVersionsBucketRoot() (base.PageID, error) {
+	snapshot := pm.activeMeta.Load()
+	if snapshot.Root == nil {
+		return 0, errors.New("root tree not initialized")
+	}
+
+	// Search root tree for "__versions__" key
+	key := []byte("__versions__")
+	val, err := pm.searchTree(snapshot.Root, key)
+	if err != nil {
+		return 0, err
+	}
+
+	// Decode bucket metadata (16 bytes: RootPageID + Sequence)
+	if len(val) < 16 {
+		return 0, errors.New("invalid __versions__ bucket metadata")
+	}
+
+	rootPageID := base.PageID(binary.LittleEndian.Uint64(val[0:8]))
+	return rootPageID, nil
+}
+
+// searchTree searches a B+tree for a key (used for reading __versions__ bucket root)
+// This is a simplified search that doesn't need MVCC - just reads current disk state
+func (pm *Coordinator) searchTree(node *base.Node, key []byte) ([]byte, error) {
+	// Find position in current node
+	i := 0
+	for i < int(node.NumKeys) && string(key) >= string(node.Keys[i]) {
+		i++
+	}
+
+	// If leaf node, check if key found
+	if node.IsLeaf() {
+		if i > 0 && string(key) == string(node.Keys[i-1]) {
+			return node.Values[i-1], nil
+		}
+		return nil, errors.New("key not found")
+	}
+
+	// Branch node: load child and continue descending
+	childPage, err := pm.storage.ReadPage(node.Children[i])
+	if err != nil {
+		return nil, err
+	}
+
+	child := &base.Node{
+		PageID: node.Children[i],
+		Dirty:  false,
+	}
+	if err := child.Deserialize(childPage); err != nil {
+		return nil, err
+	}
+
+	return pm.searchTree(child, key)
+}
+
+// getOrCreateLatch returns the latch for a page, creating it if needed
+func (pm *Coordinator) getOrCreateLatch(pageID base.PageID) *sync.RWMutex {
+	pm.versionLatchesMu.Lock()
+	defer pm.versionLatchesMu.Unlock()
+
+	if latch, exists := pm.versionPageLatches[pageID]; exists {
+		return latch
+	}
+
+	latch := &sync.RWMutex{}
+	pm.versionPageLatches[pageID] = latch
+	return latch
+}
+
+// findVersionsLeafPage traverses __versions__ bucket to find the leaf page containing/for the key
+// Returns (leafPageID, error). Does NOT acquire latches - caller must handle.
+func (pm *Coordinator) findVersionsLeafPage(key []byte) (base.PageID, error) {
+	// Get __versions__ bucket root
+	bucketRoot, err := pm.getVersionsBucketRoot()
+	if err != nil {
+		return 0, err
+	}
+
+	// Start at root
+	currentPageID := bucketRoot
+
+	for {
+		// Read page directly from disk (bypass MVCC/cache)
+		page, err := pm.storage.ReadPage(currentPageID)
+		if err != nil {
+			return 0, err
+		}
+
+		node := &base.Node{PageID: currentPageID, Dirty: false}
+		if err := node.Deserialize(page); err != nil {
+			return 0, err
+		}
+
+		// If leaf, we found it
+		if node.IsLeaf() {
+			return currentPageID, nil
+		}
+
+		// Branch node: find child pointer
+		i := 0
+		for i < int(node.NumKeys) && string(key) >= string(node.Keys[i]) {
+			i++
+		}
+
+		currentPageID = node.Children[i]
+	}
+}
+
+// PutVersionMapping writes a version mapping to the __versions__ bucket
+// Maps (logicalPageID, txnID) -> physicalPageID
+// IMPORTANT: This bypasses MVCC - writes directly to global version index
+// Uses write-through caching: updates disk immediately, then updates cache
+func (pm *Coordinator) PutVersionMapping(logicalPageID base.PageID, txnID uint64, physicalPageID base.PageID) error {
+	key := encodeVersionKey(logicalPageID, txnID)
+	val := encodePhysicalPageID(physicalPageID)
+
+	// Find leaf page that should contain this key
+	leafPageID, err := pm.findVersionsLeafPage(key)
+	if err != nil {
+		return err
+	}
+
+	// Acquire write latch for this page (protects BOTH cache and disk access)
+	latch := pm.getOrCreateLatch(leafPageID)
+	latch.Lock()
+	defer latch.Unlock()
+
+	// Try cache first (under write latch)
+	var leaf *base.Node
+	if node, hit := pm.cache.Get(leafPageID); hit {
+		// Use cached node (safe to modify - we hold write latch)
+		leaf = node
+	} else {
+		// Cache miss - load from disk (under write latch)
+		page, err := pm.storage.ReadPage(leafPageID)
+		if err != nil {
+			return err
+		}
+
+		leaf = &base.Node{PageID: leafPageID, Dirty: false}
+		if err := leaf.Deserialize(page); err != nil {
+			return err
+		}
+	}
+
+	// Find insertion/update position
+	pos := 0
+	for pos < int(leaf.NumKeys) && string(key) > string(leaf.Keys[pos]) {
+		pos++
+	}
+
+	// Check if key exists (update case)
+	if pos < int(leaf.NumKeys) && string(key) == string(leaf.Keys[pos]) {
+		// Update existing entry (modifying in-place - safe, we hold write latch)
+		leaf.Values[pos] = val
+	} else {
+		// Insert new entry (modifying in-place - safe, we hold write latch)
+		leaf.Keys = append(leaf.Keys[:pos], append([][]byte{key}, leaf.Keys[pos:]...)...)
+		leaf.Values = append(leaf.Values[:pos], append([][]byte{val}, leaf.Values[pos:]...)...)
+		leaf.NumKeys++
+	}
+
+	// Write-through to disk (durable immediately)
+	updatedPage, err := leaf.Serialize(0) // TxnID=0 for non-MVCC data
+	if err != nil {
+		return err
+	}
+
+	if err := pm.storage.WritePage(leafPageID, updatedPage); err != nil {
+		return err
+	}
+
+	// Update cache (write-through: disk updated first, now cache)
+	pm.cache.Put(leafPageID, leaf)
+
+	return nil
+}
+
+// DeleteVersionMapping removes a version mapping from the __versions__ bucket
+// Deletes the mapping for (logicalPageID, txnID)
+// IMPORTANT: This bypasses MVCC - writes directly to global version index
+// Uses write-through caching: updates disk immediately, then updates cache
+func (pm *Coordinator) DeleteVersionMapping(logicalPageID base.PageID, txnID uint64) error {
+	key := encodeVersionKey(logicalPageID, txnID)
+
+	// Find leaf page that might contain this key
+	leafPageID, err := pm.findVersionsLeafPage(key)
+	if err != nil {
+		return err
+	}
+
+	// Acquire write latch for this page (protects BOTH cache and disk access)
+	latch := pm.getOrCreateLatch(leafPageID)
+	latch.Lock()
+	defer latch.Unlock()
+
+	// Try cache first (under write latch)
+	var leaf *base.Node
+	if node, hit := pm.cache.Get(leafPageID); hit {
+		// Use cached node (safe to modify - we hold write latch)
+		leaf = node
+	} else {
+		// Cache miss - load from disk (under write latch)
+		page, err := pm.storage.ReadPage(leafPageID)
+		if err != nil {
+			return err
+		}
+
+		leaf = &base.Node{PageID: leafPageID, Dirty: false}
+		if err := leaf.Deserialize(page); err != nil {
+			return err
+		}
+	}
+
+	// Find key position
+	pos := -1
+	for i := 0; i < int(leaf.NumKeys); i++ {
+		if string(key) == string(leaf.Keys[i]) {
+			pos = i
+			break
+		}
+	}
+
+	// Key not found - nothing to delete
+	if pos == -1 {
+		return nil // Not an error - idempotent delete
+	}
+
+	// Remove entry (modifying in-place - safe, we hold write latch)
+	leaf.Keys = append(leaf.Keys[:pos], leaf.Keys[pos+1:]...)
+	leaf.Values = append(leaf.Values[:pos], leaf.Values[pos+1:]...)
+	leaf.NumKeys--
+
+	// Write-through to disk (durable immediately)
+	updatedPage, err := leaf.Serialize(0) // TxnID=0 for non-MVCC data
+	if err != nil {
+		return err
+	}
+
+	if err := pm.storage.WritePage(leafPageID, updatedPage); err != nil {
+		return err
+	}
+
+	// Update cache (write-through: disk updated first, now cache)
+	pm.cache.Put(leafPageID, leaf)
+
+	return nil
+}
+
+// GetVersionMapping reads a version mapping from the __versions__ bucket
+// Returns the physical page ID for the given (logicalPageID, txnID) pair
+// Returns 0 if not found
+// IMPORTANT: This bypasses MVCC - reads current global version index
+// Uses write-through caching: checks cache first, loads from disk on miss
+func (pm *Coordinator) GetVersionMapping(logicalPageID base.PageID, txnID uint64) (base.PageID, error) {
+	key := encodeVersionKey(logicalPageID, txnID)
+
+	// Find leaf page that might contain this key
+	leafPageID, err := pm.findVersionsLeafPage(key)
+	if err != nil {
+		return 0, err
+	}
+
+	// Acquire read latch for this page (protects BOTH cache and disk access)
+	latch := pm.getOrCreateLatch(leafPageID)
+	latch.RLock()
+	defer latch.RUnlock()
+
+	// Check cache first (under read latch)
+	if node, hit := pm.cache.Get(leafPageID); hit {
+		// Search cached node for key (safe - we hold read latch)
+		for i := 0; i < int(node.NumKeys); i++ {
+			if string(key) == string(node.Keys[i]) {
+				return decodePhysicalPageID(node.Values[i]), nil
+			}
+		}
+		return 0, errors.New("version mapping not found")
+	}
+
+	// Cache miss - load from disk (under read latch)
+	page, err := pm.storage.ReadPage(leafPageID)
+	if err != nil {
+		return 0, err
+	}
+
+	leaf := &base.Node{PageID: leafPageID, Dirty: false}
+	if err := leaf.Deserialize(page); err != nil {
+		return 0, err
+	}
+
+	// Cache the loaded page
+	pm.cache.Put(leafPageID, leaf)
+
+	// Search for key
+	for i := 0; i < int(leaf.NumKeys); i++ {
+		if string(key) == string(leaf.Keys[i]) {
+			return decodePhysicalPageID(leaf.Values[i]), nil
+		}
+	}
+
+	return 0, errors.New("version mapping not found")
+}
+
+type Stats struct {
+	Cache cache.Stats
+	Store storage.Stats
+}
+
 // Stats returns disk I/O statistics
-func (pm *Coordinator) Stats() (reads, writes uint64) {
-	stats := pm.storage.Stats()
-	return stats.Reads, stats.Writes
+func (pm *Coordinator) Stats() Stats {
+	return Stats{
+		Cache: pm.cache.Stats(),
+		Store: pm.storage.Stats(),
+	}
+}
+
+// ClearStats resets the positive incrementing stats for the cache and storage
+func (pm *Coordinator) ClearStats() {
+	pm.cache.ClearStats()
+	pm.storage.ClearStats()
 }
