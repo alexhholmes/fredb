@@ -15,7 +15,6 @@ import (
 type Storage struct {
 	mu   sync.Mutex // Protects file access
 	file *os.File
-	pool *sync.Pool // Pool of aligned []byte buffers for direct I/O
 
 	// Stats
 	reads   atomic.Uint64 // Total disk reads
@@ -34,11 +33,6 @@ func NewStorage(path string) (*Storage, error) {
 
 	return &Storage{
 		file: file,
-		pool: &sync.Pool{
-			New: func() interface{} {
-				return directio.AlignedBlock(base.PageSize)
-			},
-		},
 	}, nil
 }
 
@@ -48,11 +42,7 @@ func (s *Storage) ReadPage(id base.PageID) (*base.Page, error) {
 	defer s.mu.Unlock()
 
 	offset := int64(id) * base.PageSize
-	page := &base.Page{}
-
-	// Get aligned buffer from pool
-	buf := s.pool.Get().([]byte)
-	defer s.pool.Put(buf)
+	buf := directio.AlignedBlock(base.PageSize)
 
 	s.reads.Add(1)
 	n, err := s.file.ReadAt(buf, offset)
@@ -64,8 +54,8 @@ func (s *Storage) ReadPage(id base.PageID) (*base.Page, error) {
 		return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, base.PageSize)
 	}
 
-	// Copy from aligned buffer to page
-	copy(page.Data[:], buf)
+	// Zero-copy the data into the Page struct
+	page := (*base.Page)(unsafe.Pointer(&buf[0]))
 
 	return page, nil
 }
@@ -79,10 +69,9 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 	if !directio.IsAligned(buf) {
 		// Buffer was not allocated from the storage aligned buffer pool.
 		// We need to copy it to an aligned buffer before writing.
-		aligned := s.pool.Get().([]byte)
+		aligned := directio.AlignedBlock(base.PageSize)
 		copy(aligned, buf)
 		buf = aligned
-		defer s.pool.Put(aligned)
 	}
 
 	offset := int64(id) * base.PageSize
@@ -97,14 +86,6 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 	}
 
 	return nil
-}
-
-func (s *Storage) GetBuffer() []byte {
-	return s.pool.Get().([]byte)
-}
-
-func (s *Storage) PutBuffer(buf []byte) {
-	s.pool.Put(buf)
 }
 
 // Sync buffered writes to disk

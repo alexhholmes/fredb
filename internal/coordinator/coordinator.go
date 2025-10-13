@@ -8,6 +8,7 @@ import (
 
 	"fredb/internal/base"
 	"fredb/internal/cache"
+	"fredb/internal/directio"
 	"fredb/internal/storage"
 )
 
@@ -718,8 +719,7 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 // Used by cache to flush dirty pages during eviction or checkpoint.
 // Returns error if serialization or write fails.
 func (c *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageID) error {
-	buf := c.storage.GetBuffer()
-	defer c.storage.PutBuffer(buf)
+	buf := directio.AlignedBlock(base.PageSize)
 	page := (*base.Page)(unsafe.Pointer(&buf[0]))
 	err := node.Serialize(txnID, page)
 	if err != nil {
@@ -825,8 +825,7 @@ func (c *Coordinator) WriteTransaction(
 	syncMode SyncMode,
 ) error {
 	// Write all pages to disk
-	buf := c.storage.GetBuffer()
-	defer c.storage.PutBuffer(buf)
+	buf := directio.AlignedBlock(base.PageSize)
 	for _, node := range pages {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
 		if err := node.Serialize(txnID, page); err != nil {
