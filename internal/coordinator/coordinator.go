@@ -719,8 +719,9 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 // Returns error if serialization or write fails.
 func (c *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageID) error {
 	buf := c.storage.GetBuffer()
+	defer c.storage.PutBuffer(buf)
 	page := (*base.Page)(unsafe.Pointer(&buf[0]))
-	_, err := node.Serialize(txnID, page)
+	err := node.Serialize(txnID, page)
 	if err != nil {
 		return err
 	}
@@ -736,21 +737,14 @@ const (
 	SyncOff
 )
 
-// CommitTransaction coordinates the full transaction commit:
-// - Virtual→real page ID mapping
-// - Page writes + cache population
-// - Freed pages handling
-// - Meta update
-// - Sync coordination
-func (c *Coordinator) CommitTransaction(
+// MapVirtualPageIDs allocates real page IDs for all virtual pages and updates node references.
+// This is phase 1 of commit: mapping virtual IDs to real IDs without writing to disk.
+// Returns a map of virtual->real page ID mappings.
+// Caller must hold db.mu.
+func (c *Coordinator) MapVirtualPageIDs(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
-	freed map[base.PageID]struct{},
-	txnID uint64,
-	syncMode SyncMode,
-) error {
-	// Caller must hold db.mu
-
+) (map[base.PageID]base.PageID, error) {
 	// Pass 1: Allocate real page IDs for all virtual pages
 	virtualToReal := make(map[base.PageID]base.PageID)
 
@@ -762,7 +756,7 @@ func (c *Coordinator) CommitTransaction(
 				for _, allocated := range virtualToReal {
 					_ = c.FreePage(allocated)
 				}
-				return err
+				return nil, err
 			}
 			virtualToReal[pageID] = realPageID
 		}
@@ -802,7 +796,7 @@ func (c *Coordinator) CommitTransaction(
 			for _, allocated := range virtualToReal {
 				_ = c.FreePage(allocated)
 			}
-			return err
+			return nil, err
 		}
 		virtualToReal[root.PageID] = realPageID
 		root.PageID = realPageID
@@ -817,12 +811,25 @@ func (c *Coordinator) CommitTransaction(
 		}
 	}
 
-	// Pass 4: Write pages to disk and populate cache
+	return virtualToReal, nil
+}
+
+// WriteTransaction writes all pages to disk, handles freed pages, updates metadata, and syncs.
+// This is phase 2 of commit: writing pages with real IDs to disk.
+// Caller must hold db.mu.
+func (c *Coordinator) WriteTransaction(
+	pages map[base.PageID]*base.Node,
+	root *base.Node,
+	freed map[base.PageID]struct{},
+	txnID uint64,
+	syncMode SyncMode,
+) error {
+	// Write all pages to disk
+	buf := c.storage.GetBuffer()
+	defer c.storage.PutBuffer(buf)
 	for _, node := range pages {
-		buf := c.storage.GetBuffer()
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		_, err := node.Serialize(txnID, page)
-		if err != nil {
+		if err := node.Serialize(txnID, page); err != nil {
 			return err
 		}
 
@@ -834,16 +841,15 @@ func (c *Coordinator) CommitTransaction(
 		c.cache.Put(node.PageID, node)
 	}
 
-	// Write root separately
+	// Write root separately if dirty
 	if root != nil && root.Dirty {
-		buf := c.storage.GetBuffer()
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		_, err := root.Serialize(txnID, page)
+		err := root.Serialize(txnID, page)
 		if err != nil {
 			return err
 		}
 
-		if err := c.storage.WritePage(root.PageID, page); err != nil {
+		if err = c.storage.WritePage(root.PageID, page); err != nil {
 			return err
 		}
 
@@ -851,7 +857,7 @@ func (c *Coordinator) CommitTransaction(
 		c.cache.Put(root.PageID, root)
 	}
 
-	// Pass 5: Add freed pages to pending
+	// Add freed pages to pending
 	if len(freed) > 0 {
 		freedSlice := make([]base.PageID, 0, len(freed))
 		for pageID := range freed {
@@ -862,7 +868,7 @@ func (c *Coordinator) CommitTransaction(
 		}
 	}
 
-	// Pass 6: Update meta
+	// Update meta
 	meta := c.GetMeta()
 	if root != nil {
 		meta.RootPageID = root.PageID
@@ -874,14 +880,37 @@ func (c *Coordinator) CommitTransaction(
 		return err
 	}
 
-	// Pass 7: Conditional sync (this is the commit point!)
+	// Conditional sync (this is the commit point!)
 	if syncMode == SyncEveryCommit {
 		if err := c.storage.Sync(); err != nil {
 			return err
 		}
 	}
 
+	// Make meta visible to readers atomically
+	c.CommitSnapshot()
+
 	return nil
+}
+
+// CommitTransaction coordinates the full transaction commit (legacy compatibility).
+// This combines MapVirtualPageIDs and WriteTransaction into a single operation.
+// Preserved for backward compatibility.
+func (c *Coordinator) CommitTransaction(
+	pages map[base.PageID]*base.Node,
+	root *base.Node,
+	freed map[base.PageID]struct{},
+	txnID uint64,
+	syncMode SyncMode,
+) error {
+	// Phase 1: Map virtual to real page IDs
+	_, err := c.MapVirtualPageIDs(pages, root)
+	if err != nil {
+		return err
+	}
+
+	// Phase 2: Write everything to disk
+	return c.WriteTransaction(pages, root, freed, txnID, syncMode)
 }
 
 type Stats struct {

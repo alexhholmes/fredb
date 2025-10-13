@@ -76,9 +76,7 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 	defer s.mu.Unlock()
 
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
-	if directio.IsAligned(buf) {
-		defer s.pool.Put(buf)
-	} else {
+	if !directio.IsAligned(buf) {
 		// Buffer was not allocated from the storage aligned buffer pool.
 		// We need to copy it to an aligned buffer before writing.
 		aligned := s.pool.Get().([]byte)
@@ -103,6 +101,10 @@ func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 
 func (s *Storage) GetBuffer() []byte {
 	return s.pool.Get().([]byte)
+}
+
+func (s *Storage) PutBuffer(buf []byte) {
+	s.pool.Put(buf)
 }
 
 // Sync buffered writes to disk

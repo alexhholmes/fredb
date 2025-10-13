@@ -172,42 +172,46 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootLeaf.NumKeys = 1
 
 		// 5. Serialize and write all 4 pages
-		leafPage, err := rootLeaf.Serialize(0, &base.Page{})
+		leafPage := &base.Page{}
+		err = rootLeaf.Serialize(0, leafPage)
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err := coord.WritePage(rootLeafID, leafPage); err != nil {
+		if err = coord.WritePage(rootLeafID, leafPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		rootPage, err := root.Serialize(0, &base.Page{})
+		rootPage := &base.Page{}
+		err = root.Serialize(0, rootPage)
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err := coord.WritePage(rootPageID, rootPage); err != nil {
+		if err = coord.WritePage(rootPageID, rootPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		bucketLeafPage, err := rootBucketLeaf.Serialize(0, &base.Page{})
+		bucketLeafPage := &base.Page{}
+		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err := coord.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
+		if err = coord.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
-		bucketRootPage, err := rootBucketRoot.Serialize(0, &base.Page{})
+		bucketRootPage := &base.Page{}
+		err = rootBucketRoot.Serialize(0, bucketRootPage)
 		if err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
-		if err := coord.WritePage(rootBucketRootID, bucketRootPage); err != nil {
+		if err = coord.WritePage(rootBucketRootID, bucketRootPage); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -215,14 +219,14 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
 
-		if err := coord.PutSnapshot(meta, root); err != nil {
+		if err = coord.PutSnapshot(meta, root); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
 
 		// 7. CRITICAL: Sync coord to persist the initial allocations
 		// This ensures root and leaf are not returned by future AllocatePage() calls
-		if err := coord.Sync(); err != nil {
+		if err = coord.Sync(); err != nil {
 			_ = coord.Close()
 			return nil, err
 		}
@@ -424,7 +428,8 @@ func (db *DB) Close() error {
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.coord.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
-		page, err := snapshot.Root.Serialize(snapshot.Meta.TxID, &base.Page{})
+		page := &base.Page{}
+		err := snapshot.Root.Serialize(snapshot.Meta.TxID, page)
 		if err != nil {
 			return err
 		}

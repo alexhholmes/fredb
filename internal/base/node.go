@@ -24,9 +24,9 @@ type Node struct {
 }
 
 // Serialize encodes the Node data into a fresh Page
-func (n *Node) Serialize(txID uint64, page *Page) (*Page, error) {
+func (n *Node) Serialize(txID uint64, page *Page) error {
 	if err := n.CheckOverflow(); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Write header
@@ -95,7 +95,7 @@ func (n *Node) Serialize(txID uint64, page *Page) (*Page, error) {
 		}
 	}
 
-	return page, nil
+	return nil
 }
 
 // Deserialize decodes the Page data into Node fields

@@ -156,20 +156,13 @@ func (tx *Tx) Commit() error {
 		syncMode = coordinator.SyncOff
 	}
 
-	// Phase 1: Commit all bucket pages (NOT root tree yet)
-	// After this, bucket.root.PageID will have real page IDs
-	err := tx.db.coord.CommitTransaction(
-		tx.pages,
-		tx.root,
-		tx.freed,
-		tx.txID,
-		syncMode,
-	)
+	// Phase 1: Map all virtual page IDs to real page IDs (no disk writes yet)
+	_, err := tx.db.coord.MapVirtualPageIDs(tx.pages, tx.root)
 	if err != nil {
 		return err
 	}
 
-	// CRITICAL: After CommitTransaction, nodes in tx.pages have been updated with real PageIDs,
+	// CRITICAL: After MapVirtualPageIDs, nodes in tx.pages have been updated with real PageIDs,
 	// but the MAP is still keyed by the old virtual IDs. Rebuild the map with real PageIDs as keys.
 	remappedPages := make(map[base.PageID]*base.Node)
 	for _, node := range tx.pages {
@@ -177,7 +170,7 @@ func (tx *Tx) Commit() error {
 	}
 	tx.pages = remappedPages
 
-	// Phase 2: Now insert bucket metadata with REAL page IDs
+	// Phase 2: Now insert bucket metadata with REAL page IDs into root tree
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
 			key := []byte(name)
@@ -218,8 +211,11 @@ func (tx *Tx) Commit() error {
 
 				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
-				// Don't add root to tx.pages - root is tracked separately in tx.root
-				// The split Children were already stored in splitChild()
+				// CRITICAL: Add new root to tx.pages if it has a virtual ID
+				// Otherwise it won't get a real page ID allocated during WriteTransaction
+				if int64(newRootID) < 0 {
+					tx.pages[newRootID] = newRoot
+				}
 
 				root = newRoot
 			}
@@ -250,10 +246,15 @@ func (tx *Tx) Commit() error {
 					return err
 				}
 
-				root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+				newRoot2 := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
-				// Don't add root to tx.pages - root is tracked separately in tx.root
-				// Use new root for next retry (already assigned to root)
+				// CRITICAL: Add new root to tx.pages if it has a virtual ID
+				// Otherwise it won't get a real page ID allocated during WriteTransaction
+				if int64(newRootID) < 0 {
+					tx.pages[newRootID] = newRoot2
+				}
+
+				root = newRoot2
 			}
 
 			// Update transaction-local root (NOT DB.root)
@@ -262,22 +263,32 @@ func (tx *Tx) Commit() error {
 		}
 	}
 
-	// Phase 3: Commit all pages again (CommitTransaction will only write dirty pages)
-	// We need to pass ALL pages because tx.root might point to both old and new pages
-	// CommitTransaction handles: page writes, sync (if needed), and PutSnapshot
-	err = tx.db.coord.CommitTransaction(
+	// Phase 2b: Map any NEW virtual pages that were created during bucket metadata insertion
+	// These weren't present during Phase 1, so they need to be mapped now
+	_, err = tx.db.coord.MapVirtualPageIDs(tx.pages, tx.root)
+	if err != nil {
+		return err
+	}
+
+	// Rebuild the map again with the newly mapped real PageIDs
+	remappedPages = make(map[base.PageID]*base.Node)
+	for _, node := range tx.pages {
+		remappedPages[node.PageID] = node
+	}
+	tx.pages = remappedPages
+
+	// Phase 3: Write everything to disk in a single operation
+	// This handles: page writes, freed pages, meta update, sync (if needed), and CommitSnapshot
+	err = tx.db.coord.WriteTransaction(
 		tx.pages,
 		tx.root,
-		nil, // No new freed pages in phase 2
+		tx.freed,
 		tx.txID,
 		syncMode,
 	)
 	if err != nil {
 		return err
 	}
-
-	// Make changes visible (after sync in CommitTransaction)
-	tx.db.coord.CommitSnapshot()
 
 	tx.db.writer.Store(nil)
 
