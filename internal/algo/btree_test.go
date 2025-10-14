@@ -341,10 +341,10 @@ func TestCalculateSplitPoint(t *testing.T) {
 		{
 			name:               "leaf_max_keys",
 			node:               makeFullLeaf(base.MaxKeysPerNode),
-			wantMid:            base.MaxKeysPerNode / 2,
-			wantLeftCount:      base.MaxKeysPerNode/2 + 1,
-			wantRightCount:     base.MaxKeysPerNode/2 - 1,
-			wantSeparatorEqual: makeFullLeaf(base.MaxKeysPerNode).Keys[base.MaxKeysPerNode/2+1],
+			wantMid:            base.MaxKeysPerNode/2 - 1,
+			wantLeftCount:      base.MaxKeysPerNode / 2,
+			wantRightCount:     base.MaxKeysPerNode / 2,
+			wantSeparatorEqual: makeFullLeaf(base.MaxKeysPerNode).Keys[base.MaxKeysPerNode/2],
 		},
 	}
 
