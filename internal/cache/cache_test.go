@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"fredb/internal/base"
-	"fredb/internal/storage"
 )
 
 var _ = flag.Bool("slow", false, "run slow tests")
@@ -25,7 +24,7 @@ func makeTestNode(pageID base.PageID) *base.Node {
 func TestPageCacheBasics(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(10, storage.DirectIO)
+	cache := NewCache(10)
 
 	// Test cache miss
 	_, hit := cache.Get(base.PageID(1))
@@ -53,7 +52,7 @@ func TestPageCacheBasics(t *testing.T) {
 func TestPageCacheReplacement(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(10, storage.DirectIO)
+	cache := NewCache(10)
 
 	// Add Page 1
 	node1 := makeTestNode(base.PageID(1))
@@ -83,14 +82,14 @@ func TestPageCacheMinSize(t *testing.T) {
 	t.Parallel()
 
 	// Request size too small
-	cache := NewCache(5, storage.DirectIO)
-	assert.Equal(t, MinCacheSize, cache.size)
+	cache := NewCache(5)
+	assert.Equal(t, MinCacheSize, cache.Size())
 }
 
 func TestPageCacheEviction(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(20, storage.DirectIO) // max=20, lowWater=16
+	cache := NewCache(20) // max=20, lowWater=16
 
 	// Add 19 pages
 	for i := 1; i <= 19; i++ {
