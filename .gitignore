@@ -1,7 +1,6 @@
 .claude/
 Claude.md
-todos/Architecture.md
-TODO.md
 debug/
 *.prof
-pkg.test
+*.test
+

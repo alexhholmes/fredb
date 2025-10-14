@@ -462,6 +462,7 @@ func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error 
 	return nil
 }
 
+// freeTree frees all pages in a B+ tree (bucket) given its root page ID
 func (db *DB) freeTree(rootID base.PageID) error {
 	// Start new read transaction to safely traverse tree
 	tx, err := db.Begin(false)

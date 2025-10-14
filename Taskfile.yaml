@@ -8,4 +8,4 @@ tasks:
       - go test -v -count=1 -race $(go list ./... | grep -v /bench) -slow
   bench:
     cmds:
-      - go test -v -bench=. -run=^$ $(go list ./... | grep -v /bench)
+      - cd bench && go test -v -bench=. -run=^$
