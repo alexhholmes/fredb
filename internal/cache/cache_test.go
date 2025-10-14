@@ -84,7 +84,7 @@ func TestPageCacheMinSize(t *testing.T) {
 
 	// Request size too small
 	cache := NewCache(5, storage.DirectIO)
-	assert.Equal(t, MinCacheSize, cache.maxSize)
+	assert.Equal(t, MinCacheSize, cache.size)
 }
 
 func TestPageCacheEviction(t *testing.T) {

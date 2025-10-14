@@ -58,7 +58,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Create cache (Page size is 4096 bytes, so 256 pages per MB)
-	c := cache.NewCache(opts.maxCacheSizeMB*256, mode)
+	c := cache.NewCache(opts.maxCacheSizeMB * 256)
 
 	// Create coordinator with dependencies
 	coord, err := coordinator.NewCoordinator(store, c)

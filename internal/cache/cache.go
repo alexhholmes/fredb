@@ -1,23 +1,20 @@
 package cache
 
 import (
-	"container/list"
-	"sync"
+	"encoding/binary"
 	"sync/atomic"
 
+	"github.com/cespare/xxhash/v2"
+	"github.com/elastic/go-freelru"
+
 	"fredb/internal/base"
-	"fredb/internal/storage"
 )
 
 // Cache implements a simple LRU cache without awareness of version tracking or
 // disk I/O.
 type Cache struct {
-	mu       sync.RWMutex
-	lru      *list.List             // Doubly-linked list (front=MRU, back=LRU)
-	entries  map[base.PageID]*entry // Single entry per page
-	maxSize  int                    // Max total entries (e.g., 1024)
-	lowWater int                    // Evict to this (80% of max)
-	mode     storage.Mode
+	lru  freelru.ShardedLRU[base.PageID, *base.Node] // LRU list of *entry
+	size int                                         // Max total entries (e.g., 1024)
 
 	// Stats
 	hits      atomic.Uint64
@@ -25,120 +22,52 @@ type Cache struct {
 	evictions atomic.Uint64
 }
 
-// entry represents a cached Node in the LRU cache
-type entry struct {
-	id         base.PageID
-	node       *base.Node    // Parsed BTree node
-	pinCount   int           // For preventing eviction of in-use entries
-	lruElement *list.Element // Position in LRU list
-}
-
 const (
 	MinCacheSize = 16 // Minimum: hold tree path + concurrent ops
 )
 
 // NewCache creates a new Page cache with the specified maximum size
-func NewCache(maxSize int, mode storage.Mode) *Cache {
-	maxSize = max(maxSize, MinCacheSize)
+func NewCache(size int) *Cache {
+	hash := func(s base.PageID) uint32 {
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(s))
+		return uint32(xxhash.Sum64(b[:]))
+	}
+
+	size = max(size, MinCacheSize)
+	lru, err := freelru.NewSharded[base.PageID, *base.Node](uint32(size), hash)
+	if err != nil {
+		panic(err)
+	}
 
 	return &Cache{
-		maxSize:  maxSize,
-		lowWater: (maxSize * 4) / 5, // 80%
-		entries:  make(map[base.PageID]*entry),
-		lru:      list.New(),
-		mode:     mode,
+		lru:  *lru,
+		size: size,
 	}
 }
 
 // Put adds a node to the cache, replacing any existing entry for the id.
 func (c *Cache) Put(pageID base.PageID, node *base.Node) {
-	if c.mode == storage.MMap {
-		// No caching in MMap mode
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Check if ent already exists
-	if existing, exists := c.entries[pageID]; exists {
-		// Update existing ent
-		existing.node = node
-		c.lru.MoveToFront(existing.lruElement)
-		return
-	}
-
-	// Create new ent
-	ent := &entry{
-		id:       pageID,
-		node:     node,
-		pinCount: 0,
-	}
-	ent.lruElement = c.lru.PushFront(ent)
-
-	// Add to cache
-	c.entries[pageID] = ent
-
-	// Trigger eviction if over limit
-	if len(c.entries) >= c.maxSize {
-		// Evict unpinned entries from LRU end until at lowWater
-		target := c.lowWater
-
-		for len(c.entries) > target {
-			elem := c.lru.Back()
-			if elem == nil {
-				break
-			}
-
-			e := elem.Value.(*entry)
-
-			// Skip pinned entries
-			if e.pinCount > 0 {
-				c.lru.MoveToFront(elem)
-				// If all entries are pinned, we can't evict anything
-				if elem == c.lru.Front() {
-					break
-				}
-				continue
-			}
-
-			// Remove from LRU list
-			c.lru.Remove(elem)
-
-			// Remove from cache
-			delete(c.entries, e.id)
-			c.evictions.Add(1)
-		}
+	evicted := c.lru.Add(pageID, node)
+	if evicted {
+		c.evictions.Add(1)
 	}
 }
 
 // Get retrieves a node from the cache.
 // Returns (Node, true) on cache hit, (nil, false) on miss.
 func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
-	if c.mode == storage.MMap {
-		// No caching in MMap mode
-		return nil, false
+	if val, ok := c.lru.Get(pageID); ok {
+		c.hits.Add(1)
+		return val, true
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entry, exists := c.entries[pageID]
-	if !exists {
-		c.misses.Add(1)
-		return nil, false
-	}
-
-	c.hits.Add(1)
-	c.lru.MoveToFront(entry.lruElement)
-	return entry.node, true
+	c.misses.Add(1)
+	return nil, false
 }
 
 // Size returns current number of cached entries
 func (c *Cache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
+	return c.lru.Len()
 }
 
 type Stats struct {
