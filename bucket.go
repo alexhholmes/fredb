@@ -1,6 +1,7 @@
 package fredb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 
@@ -149,6 +150,33 @@ func (b *Bucket) ForEach(fn func(k, v []byte) error) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// ForEachPrefix iterates over all key-value pairs in the bucket that start with the given prefix
+func (b *Bucket) ForEachPrefix(prefix []byte, fn func(key, value []byte) error) error {
+	// Create cursor for iteration
+	c := b.Cursor()
+
+	// Seek to the first key >= prefix
+	k, v := c.Seek(prefix)
+
+	// Iterate while keys match prefix
+	for k != nil {
+		// Check if key still has the prefix
+		if !bytes.HasPrefix(k, prefix) {
+			break // No more keys with this prefix
+		}
+
+		// Call user function
+		if err := fn(k, v); err != nil {
+			return err
+		}
+
+		// Move to next key
+		k, v = c.Next()
+	}
+
 	return nil
 }
 
