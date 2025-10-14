@@ -145,7 +145,8 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write to disk
-	buf := c.store.GetBuffer(1)
+	buf := c.store.GetBuffer()
+	defer c.store.PutBuffer(buf)
 	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
 	metaPage.WriteMeta(&meta)
 	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
@@ -681,6 +682,15 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 		return nil, 0, err
 	}
 
+	// Return buffer to pool after deserialization (DirectIO only)
+	// MMap mode allocates non-pooled buffers
+	if c.store.GetMode() == storage.DirectIO {
+		defer func() {
+			buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
+			c.store.PutBuffer(buf)
+		}()
+	}
+
 	node := &base.Node{
 		PageID: pageID,
 		Dirty:  false,
@@ -698,7 +708,8 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 // Used by cache to flush dirty pages during eviction or checkpoint.
 // Returns error if serialization or write fails.
 func (c *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageID) error {
-	buf := c.store.GetBuffer(1)
+	buf := c.store.GetBuffer()
+	defer c.store.PutBuffer(buf)
 	page := (*base.Page)(unsafe.Pointer(&buf[0]))
 	err := node.Serialize(txnID, page)
 	if err != nil {
@@ -804,7 +815,8 @@ func (c *Coordinator) WriteTransaction(
 	syncMode SyncMode,
 ) error {
 	// Write all pages to disk
-	buf := c.store.GetBuffer(1)
+	buf := c.store.GetBuffer()
+	defer c.store.PutBuffer(buf)
 	for _, node := range pages {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
 		if err := node.Serialize(txnID, page); err != nil {

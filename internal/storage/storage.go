@@ -3,6 +3,7 @@ package storage
 import (
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -22,8 +23,9 @@ const (
 
 // Storage provides file I/O for pages
 type Storage struct {
-	file *os.File
-	mode Mode
+	mode    Mode
+	file    *os.File
+	bufPool sync.Pool
 
 	// Mmap fields
 	empty    bool
@@ -48,6 +50,11 @@ func NewStorage(path string, mode Mode) (*Storage, error) {
 		return &Storage{
 			file: file,
 			mode: mode,
+			bufPool: sync.Pool{
+				New: func() any {
+					return directio.AlignedBlock(base.PageSize)
+				},
+			},
 		}, nil
 
 	case MMap:
@@ -87,6 +94,11 @@ func NewStorage(path string, mode Mode) (*Storage, error) {
 			empty:    empty,
 			mmapData: data,
 			mmapSize: size,
+			bufPool: sync.Pool{
+				New: func() any {
+					return make([]byte, base.PageSize)
+				},
+			},
 		}, nil
 	}
 
@@ -97,15 +109,17 @@ func NewStorage(path string, mode Mode) (*Storage, error) {
 func (s *Storage) ReadPage(id base.PageID) (*base.Page, error) {
 	if s.mode == DirectIO {
 		offset := int64(id) * base.PageSize
-		buf := s.GetBuffer(1)
+		buf := s.bufPool.Get().([]byte)
 
 		s.reads.Add(1)
 		n, err := s.file.ReadAt(buf, offset)
 		if err != nil {
+			s.bufPool.Put(buf)
 			return nil, err
 		}
 		s.read.Add(uint64(n))
 		if n != base.PageSize {
+			s.bufPool.Put(buf)
 			return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, base.PageSize)
 		}
 
@@ -234,11 +248,17 @@ func (s *Storage) Empty() (bool, error) {
 	return info.Size() == 0, nil
 }
 
-func (s *Storage) GetBuffer(pages int) []byte {
-	if s.mode == DirectIO {
-		return directio.AlignedBlock(pages * base.PageSize)
-	}
-	return make([]byte, pages*base.PageSize)
+func (s *Storage) GetBuffer() []byte {
+	return s.bufPool.Get().([]byte)
+}
+
+func (s *Storage) PutBuffer(buf []byte) {
+	s.bufPool.Put(buf)
+}
+
+// GetMode returns the storage mode
+func (s *Storage) GetMode() Mode {
+	return s.mode
 }
 
 // Stats returns disk I/O statistics

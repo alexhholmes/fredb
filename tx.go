@@ -196,7 +196,7 @@ func (tx *Tx) Commit() error {
 			root := tx.root
 
 			// Handle root split with COW
-			if root.IsFull() {
+			if root.IsFull(key, value) {
 				// Split root using COW
 				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
 				if err != nil {
@@ -525,7 +525,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	}
 
 	// Handle full child with COW-aware split
-	if child.IsFull() {
+	if child.IsFull(key, value) {
 		// Split child using COW
 		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child)
 		if err != nil {
@@ -836,6 +836,22 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	parent, err = tx.ensureWritable(parent)
 	if err != nil {
 		return nil, err
+	}
+
+	// Try merging - check if result would overflow
+	// For large keys/values, two underflow nodes might be nearly full in bytes
+	// Calculate merged size before actually merging
+	mergedSize := leftNode.Size() + rightNode.Size()
+	if !leftNode.IsLeaf() {
+		// Branch nodes: add separator key size
+		mergedSize += len(parent.Keys[parentKeyIdx])
+	}
+
+	if mergedSize > base.PageSize {
+		// Merge would overflow - skip merge and allow underflow
+		// This is acceptable for large key/value scenarios
+		// The nodes will remain separate even though they're below MinKeysPerNode
+		return parent, nil
 	}
 
 	algo.MergeNodes(leftNode, rightNode, parent.Keys[parentKeyIdx])

@@ -220,10 +220,12 @@ func (n *Node) CheckOverflow() error {
 }
 
 // IsFull checks if a Node is full
-func (n *Node) IsFull() bool {
-	// Use key count active for both leaf and branch nodes
-	// Overflow is detected during Serialize with try-rollback
-	return int(n.NumKeys) >= MaxKeysPerNode
+func (n *Node) IsFull(key, value []byte) bool {
+	if n.IsLeaf() {
+		return n.Size()+LeafElementSize+len(key)+len(value) > PageSize
+	}
+	// Branch nodes only have keys, no values
+	return n.Size()+BranchElementSize+len(key) > PageSize
 }
 
 // Size calculates the Size of the serialized Node

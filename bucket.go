@@ -72,7 +72,7 @@ func (b *Bucket) Put(key, value []byte) error {
 	}
 
 	// Handle root split if needed
-	if b.root.IsFull() {
+	if b.root.IsFull(key, value) {
 		leftChild, rightChild, midKey, _, err := b.tx.splitChild(b.root)
 		if err != nil {
 			return err
@@ -89,8 +89,8 @@ func (b *Bucket) Put(key, value []byte) error {
 	}
 
 	// Insert with retry logic (handle cascading splits)
-	maxRetries := 20
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	// Loop until success or non-recoverable error
+	for {
 		newRoot, err := b.tx.insertNonFull(b.root, key, value)
 		if !errors.Is(err, ErrPageOverflow) {
 			// Either success or non-recoverable error
@@ -115,8 +115,6 @@ func (b *Bucket) Put(key, value []byte) error {
 		// Add new root to tx.pages so it gets committed with real PageID
 		b.tx.pages[newRootID] = b.root
 	}
-
-	return errors.New("max retries exceeded during insert")
 }
 
 // Delete removes a key from this bucket

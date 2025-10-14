@@ -2760,50 +2760,32 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 
 	db, _ := setup(t)
 
-	// Insert MaxKeysPerNode Keys (0 to 63 = 64 Keys)
-	for i := 0; i < base.MaxKeysPerNode; i++ {
+	// Insert enough keys to fill a page and trigger split
+	// With size-based splitting, we need to insert until page overflows
+	// Small keys (~13 bytes) + values (~15 bytes) = ~32 bytes per entry (with overhead)
+	// 4KB page holds ~120 entries, so insert 130 to ensure split occurs
+	numKeys := 130
+
+	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		err := db.Set([]byte(key), []byte(value))
 		require.NoError(t, err)
 	}
 
-	// Get __root__ bucket's tree structure
+	// After inserting enough keys, bucket root should have split
 	tx, err := db.Begin(false)
 	require.NoError(t, err)
 	rootBucket := tx.Bucket([]byte("__root__"))
 	require.NotNil(t, rootBucket, "__root__ bucket should exist")
 
-	// Bucket root is always a branch (constraint), check child is full
+	t.Logf("Root: IsLeaf=%v, NumKeys=%d, Children=%d", rootBucket.root.IsLeaf(), rootBucket.root.NumKeys, len(rootBucket.root.Children))
 	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should always be a branch node")
-	assert.Equal(t, 1, len(rootBucket.root.Children), "Bucket root should have 1 child before split")
-
-	// Load child and verify it's full
-	child, err := tx.loadNode(rootBucket.root.Children[0])
-	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(rootBucket.root.Children), 2, "Bucket root should have at least 2 children after split")
 	tx.Rollback()
 
-	assert.True(t, child.IsLeaf(), "Child should be a leaf")
-	assert.Equal(t, base.MaxKeysPerNode, int(child.NumKeys), "Child should be full with MaxKeysPerNode keys")
-
-	// Insert one more key (65th key) to trigger split
-	splitKey := fmt.Sprintf("key%06d", base.MaxKeysPerNode)
-	splitValue := fmt.Sprintf("value%06d", base.MaxKeysPerNode)
-	err = db.Set([]byte(splitKey), []byte(splitValue))
-	require.NoError(t, err)
-
-	// After inserting MaxKeysPerNode+1 Keys, bucket root should be branch with split
-	tx2, err := db.Begin(false)
-	require.NoError(t, err)
-	rootBucket2 := tx2.Bucket([]byte("__root__"))
-	require.NotNil(t, rootBucket2, "__root__ bucket should exist")
-
-	assert.False(t, rootBucket2.root.IsLeaf(), "Bucket root should be branch after split")
-	assert.GreaterOrEqual(t, len(rootBucket2.root.Children), 2, "Bucket root should have at least 2 Children after split")
-	tx2.Rollback()
-
-	// Verify all Keys retrievable
-	for i := 0; i <= base.MaxKeysPerNode; i++ {
+	// Verify all keys retrievable
+	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		_, err := db.Get([]byte(key))
 		assert.NoError(t, err)

@@ -57,13 +57,26 @@ type SplitPoint struct {
 
 // CalculateSplitPoint determines split position (read-only)
 func CalculateSplitPoint(node *base.Node) SplitPoint {
-	mid := base.MaxKeysPerNode / 2
-
-	if mid >= len(node.Keys)-1 {
-		mid = len(node.Keys)/2 - 1
-		if mid < 0 {
-			mid = 0
+	// Handle edge case: node with only 1 key (can happen with large values)
+	if len(node.Keys) <= 1 {
+		if len(node.Keys) == 0 {
+			panic("cannot split empty node")
 		}
+		// Split at first key - left gets the entry, right gets nothing
+		// This way, ascending inserts go to the empty right child
+		sep := make([]byte, len(node.Keys[0]))
+		copy(sep, node.Keys[0])
+		return SplitPoint{
+			Mid:          0,
+			LeftCount:    1,
+			RightCount:   0,
+			SeparatorKey: sep,
+		}
+	}
+
+	mid := len(node.Keys)/2 - 1
+	if mid < 0 {
+		mid = 0
 	}
 
 	var sep []byte
