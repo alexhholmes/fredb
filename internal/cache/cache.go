@@ -13,8 +13,7 @@ import (
 // Cache implements a simple LRU cache without awareness of version tracking or
 // disk I/O.
 type Cache struct {
-	lru  freelru.ShardedLRU[base.PageID, *base.Node] // LRU list of *entry
-	size int                                         // Max total entries (e.g., 1024)
+	lru freelru.ShardedLRU[base.PageID, *base.Node] // LRU list of *entry
 
 	// Stats
 	hits      atomic.Uint64
@@ -41,8 +40,7 @@ func NewCache(size int) *Cache {
 	}
 
 	return &Cache{
-		lru:  *lru,
-		size: size,
+		lru: *lru,
 	}
 }
 

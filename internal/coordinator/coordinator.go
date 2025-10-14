@@ -18,26 +18,35 @@ type Coordinator struct {
 	store *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
-	activeMeta atomic.Pointer[base.Snapshot]
-	meta0      base.Snapshot
-	meta1      base.Snapshot
+	active atomic.Pointer[base.Snapshot]
+	meta0  base.Snapshot
+	meta1  base.Snapshot
 
 	// Freelist tracking
-	freedPages   []base.PageID
-	pendingPages map[uint64][]base.PageID // txnID -> pages freed at that transaction
-	preventAlloc uint64                   // temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
+	freed   []base.PageID
+	pending map[uint64][]base.PageID // txnID -> pages freed at that transaction
+	prevent uint64                   // Temporarily prevent allocation of pages freed up to this txnID (0 = no prevention)
+
+	// Bucket reference count tracking
+	// This tracks number of references to root pages of buckets by transactions.
+	// The deleted map tracks which buckets have been deleted and can be cleaned
+	// up since the last transaction that referenced them has completed.
+	buckets   sync.Map                 // Bucket root PageID -> atomic.Int32 ref count
+	DeletedMu sync.RWMutex             // Protects Deleted map
+	Deleted   map[base.PageID]struct{} // Buckets pending deletion, 0 ref count
 
 	// Page allocation tracking (separate from meta to avoid data races)
-	numPages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
+	pages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
 }
 
 // NewCoordinator creates a coordinator with injected dependencies
 func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator, error) {
 	pm := &Coordinator{
-		store:        storage,
-		freedPages:   make([]base.PageID, 0),
-		pendingPages: make(map[uint64][]base.PageID),
-		cache:        cache,
+		store:   storage,
+		freed:   make([]base.PageID, 0),
+		pending: make(map[uint64][]base.PageID),
+		cache:   cache,
+		Deleted: make(map[base.PageID]struct{}),
 	}
 
 	// Check if new file (empty)
@@ -70,9 +79,9 @@ func (c *Coordinator) AssignPageID() (base.PageID, error) {
 		return id, nil
 	}
 
-	// Grow file - use atomic numPages counter (includes uncommitted allocations)
+	// Grow file - use atomic pages counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
-	id = base.PageID(c.numPages.Add(1) - 1)
+	id = base.PageID(c.pages.Add(1) - 1)
 
 	return id, nil
 }
@@ -108,25 +117,25 @@ func (c *Coordinator) PreventAllocationUpTo(txnID uint64) {
 	// DB during checkpoint.
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.preventAlloc = txnID
+	c.prevent = txnID
 }
 
 // AllowAllAllocations clears the allocation prevention
 func (c *Coordinator) AllowAllAllocations() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.preventAlloc = 0
+	c.prevent = 0
 }
 
 // GetMeta returns the current metadata
 func (c *Coordinator) GetMeta() base.MetaPage {
-	return c.activeMeta.Load().Meta
+	return c.active.Load().Meta
 }
 
 // GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
 // Returns by value to prevent data races with concurrent PutSnapshot updates
 func (c *Coordinator) GetSnapshot() base.Snapshot {
-	return *c.activeMeta.Load()
+	return *c.active.Load()
 }
 
 // PutSnapshot updates the metadata and root pointer, persists metadata to disk
@@ -136,7 +145,7 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	defer c.mu.Unlock()
 
 	// Sync NumPages from atomic counter (may have uncommitted allocations)
-	meta.NumPages = c.numPages.Load()
+	meta.NumPages = c.pages.Load()
 
 	// Update checksum (after NumPages sync)
 	meta.Checksum = meta.CalculateChecksum()
@@ -172,9 +181,9 @@ func (c *Coordinator) CommitSnapshot() {
 	// Swap to the meta with higher or equal TxID
 	// Use >= to handle initial case where both metas have TxID=0
 	if c.meta0.Meta.TxID >= c.meta1.Meta.TxID {
-		c.activeMeta.Swap(&c.meta0)
+		c.active.Swap(&c.meta0)
 	} else {
-		c.activeMeta.Swap(&c.meta1)
+		c.active.Swap(&c.meta1)
 	}
 }
 
@@ -184,7 +193,7 @@ func (c *Coordinator) Close() error {
 	defer c.mu.Unlock()
 
 	// Get active meta for reading
-	meta := c.activeMeta.Load().Meta
+	meta := c.active.Load().Meta
 
 	// Serialize freelist to disk
 	pagesNeeded := c.pagesNeeded()
@@ -239,10 +248,10 @@ func (c *Coordinator) Close() error {
 	// Update in-memory and swap pointer
 	if metaPageID == 0 {
 		c.meta0.Meta = meta
-		c.activeMeta.Swap(&c.meta0)
+		c.active.Swap(&c.meta0)
 	} else {
 		c.meta1.Meta = meta
-		c.activeMeta.Swap(&c.meta1)
+		c.active.Swap(&c.meta1)
 	}
 
 	return c.store.Close()
@@ -269,10 +278,10 @@ func (c *Coordinator) initializeNewDB() error {
 	c.meta0.Root = nil
 	c.meta1.Meta = meta
 	c.meta1.Root = nil
-	c.activeMeta.Store(&c.meta0)
+	c.active.Store(&c.meta0)
 
-	// Initialize atomic numPages counter
-	c.numPages.Store(meta.NumPages)
+	// Initialize atomic pages counter
+	c.pages.Store(meta.NumPages)
 
 	// Write meta to both disk pages 0 and 1
 	metaPage := &base.Page{}
@@ -330,22 +339,22 @@ func (c *Coordinator) loadExistingDB() error {
 		c.meta1.Root = nil // Will be set by DB.Open()
 	}
 
-	// Point activeMeta to the one with higher TxID
+	// Point active to the one with higher TxID
 	if err0 != nil {
-		c.activeMeta.Store(&c.meta1)
+		c.active.Store(&c.meta1)
 	} else if err1 != nil {
-		c.activeMeta.Store(&c.meta0)
+		c.active.Store(&c.meta0)
 	} else {
 		// Both valid - pick highest TxID
 		if meta0.TxID > meta1.TxID {
-			c.activeMeta.Store(&c.meta0)
+			c.active.Store(&c.meta0)
 		} else {
-			c.activeMeta.Store(&c.meta1)
+			c.active.Store(&c.meta1)
 		}
 	}
 
 	// Load freelist using active meta
-	activeMeta := c.activeMeta.Load()
+	activeMeta := c.active.Load()
 	freelistPages := make([]*base.Page, activeMeta.Meta.FreelistPages)
 	for i := uint64(0); i < activeMeta.Meta.FreelistPages; i++ {
 		page, err := c.store.ReadPage(activeMeta.Meta.FreelistID + base.PageID(i))
@@ -360,8 +369,8 @@ func (c *Coordinator) loadExistingDB() error {
 	// On startup, no readers exist, so all pending pages with txnID <= current can be released
 	c.release(activeMeta.Meta.TxID)
 
-	// Initialize atomic numPages counter from active meta
-	c.numPages.Store(activeMeta.Meta.NumPages)
+	// Initialize atomic pages counter from active meta
+	c.pages.Store(activeMeta.Meta.NumPages)
 
 	return nil
 }
@@ -374,13 +383,13 @@ const (
 // allocate returns a free Page ID, or 0 if none available
 func (c *Coordinator) allocate() base.PageID {
 	// Caller must hold c.mu
-	if len(c.freedPages) == 0 {
+	if len(c.freed) == 0 {
 		// No free pages available
 		// If prevention is active and there are pending pages that could be released,
 		// return 0 to force allocation of new pages instead of using recently freed ones
-		if c.preventAlloc > 0 {
-			for txnID, pages := range c.pendingPages {
-				if txnID <= c.preventAlloc && len(pages) > 0 {
+		if c.prevent > 0 {
+			for txnID, pages := range c.pending {
+				if txnID <= c.prevent && len(pages) > 0 {
 					// There are pending pages that would normally be released
 					// Don't wait for them - force new Page allocation
 					return 0
@@ -390,19 +399,19 @@ func (c *Coordinator) allocate() base.PageID {
 		return 0
 	}
 	// Pop from end
-	id := c.freedPages[len(c.freedPages)-1]
-	c.freedPages = c.freedPages[:len(c.freedPages)-1]
+	id := c.freed[len(c.freed)-1]
+	c.freed = c.freed[:len(c.freed)-1]
 
 	// CRITICAL: Remove from pending to prevent double-allocation
-	for txnID, pages := range c.pendingPages {
+	for txnID, pages := range c.pending {
 		for i := len(pages) - 1; i >= 0; i-- {
 			if pages[i] == id {
-				c.pendingPages[txnID] = append(pages[:i], pages[i+1:]...)
-				pages = c.pendingPages[txnID]
+				c.pending[txnID] = append(pages[:i], pages[i+1:]...)
+				pages = c.pending[txnID]
 			}
 		}
-		if len(c.pendingPages[txnID]) == 0 {
-			delete(c.pendingPages, txnID)
+		if len(c.pending[txnID]) == 0 {
+			delete(c.pending, txnID)
 		}
 	}
 
@@ -413,17 +422,17 @@ func (c *Coordinator) allocate() base.PageID {
 func (c *Coordinator) free(id base.PageID) {
 	// Caller must hold c.mu
 	// Check if already in free list to prevent duplicates
-	for _, existingID := range c.freedPages {
+	for _, existingID := range c.freed {
 		if existingID == id {
 			return
 		}
 	}
 
-	c.freedPages = append(c.freedPages, id)
+	c.freed = append(c.freed, id)
 	// Keep sorted for deterministic behavior
-	for i := len(c.freedPages) - 1; i > 0; i-- {
-		if c.freedPages[i] < c.freedPages[i-1] {
-			c.freedPages[i], c.freedPages[i-1] = c.freedPages[i-1], c.freedPages[i]
+	for i := len(c.freed) - 1; i > 0; i-- {
+		if c.freed[i] < c.freed[i-1] {
+			c.freed[i], c.freed[i-1] = c.freed[i-1], c.freed[i]
 		} else {
 			break
 		}
@@ -436,20 +445,20 @@ func (c *Coordinator) freePending(txnID uint64, pageIDs []base.PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
-	c.pendingPages[txnID] = append(c.pendingPages[txnID], pageIDs...)
+	c.pending[txnID] = append(c.pending[txnID], pageIDs...)
 }
 
 // release moves pages from pending to free for all transactions < minTxnID
 func (c *Coordinator) release(minTxnID uint64) int {
 	// Caller must hold c.mu
 	released := 0
-	for txnID, pages := range c.pendingPages {
+	for txnID, pages := range c.pending {
 		if txnID < minTxnID {
 			for _, pageID := range pages {
 				c.free(pageID)
 				released++
 			}
-			delete(c.pendingPages, txnID)
+			delete(c.pending, txnID)
 		}
 	}
 	return released
@@ -458,12 +467,12 @@ func (c *Coordinator) release(minTxnID uint64) int {
 // pagesNeeded returns number of pages needed to serialize this freelist
 func (c *Coordinator) pagesNeeded() int {
 	// Caller must hold c.mu
-	freeBytes := 8 + len(c.freedPages)*8
+	freeBytes := 8 + len(c.freed)*8
 
 	pendingBytes := 0
-	if len(c.pendingPages) > 0 {
+	if len(c.pending) > 0 {
 		pendingBytes = 8 + 8 // marker + count
-		for _, pages := range c.pendingPages {
+		for _, pages := range c.pending {
 			pendingBytes += 8 + 8 + len(pages)*8 // txnID + count + page IDs
 		}
 	}
@@ -494,18 +503,18 @@ func (c *Coordinator) serializeFreelist(pages []*base.Page) {
 
 	// Write free count
 	countBytes := make([]byte, 8)
-	*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(c.freedPages))
+	*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(c.freed))
 	buf = append(buf, countBytes...)
 
 	// Write free IDs
-	for _, id := range c.freedPages {
+	for _, id := range c.freed {
 		idBytes := make([]byte, 8)
 		*(*base.PageID)(unsafe.Pointer(&idBytes[0])) = id
 		buf = append(buf, idBytes...)
 	}
 
 	// Write pending data if present
-	if len(c.pendingPages) > 0 {
+	if len(c.pending) > 0 {
 		// Write marker
 		markerBytes := make([]byte, 8)
 		*(*base.PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
@@ -513,12 +522,12 @@ func (c *Coordinator) serializeFreelist(pages []*base.Page) {
 
 		// Write pending count
 		pendingCountBytes := make([]byte, 8)
-		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(c.pendingPages))
+		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(c.pending))
 		buf = append(buf, pendingCountBytes...)
 
 		// Sort txnIDs for deterministic serialization
-		txnIDs := make([]uint64, 0, len(c.pendingPages))
-		for txnID := range c.pendingPages {
+		txnIDs := make([]uint64, 0, len(c.pending))
+		for txnID := range c.pending {
 			txnIDs = append(txnIDs, txnID)
 		}
 		for i := 1; i < len(txnIDs); i++ {
@@ -529,7 +538,7 @@ func (c *Coordinator) serializeFreelist(pages []*base.Page) {
 
 		// Write each pending entry
 		for _, txnID := range txnIDs {
-			pages := c.pendingPages[txnID]
+			pages := c.pending[txnID]
 
 			// Write txnID
 			txnBytes := make([]byte, 8)
@@ -561,8 +570,8 @@ func (c *Coordinator) serializeFreelist(pages []*base.Page) {
 // deserializeFreelist reads freelist from pages
 func (c *Coordinator) deserializeFreelist(pages []*base.Page) {
 	// Caller must hold c.mu
-	c.freedPages = make([]base.PageID, 0)
-	c.pendingPages = make(map[uint64][]base.PageID)
+	c.freed = make([]base.PageID, 0)
+	c.pending = make(map[uint64][]base.PageID)
 
 	// Build linear buffer from pages
 	buf := make([]byte, 0, base.PageSize*len(pages))
@@ -585,7 +594,7 @@ func (c *Coordinator) deserializeFreelist(pages []*base.Page) {
 			break
 		}
 		id := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
-		c.freedPages = append(c.freedPages, id)
+		c.freed = append(c.freed, id)
 		offset += 8
 	}
 
@@ -634,7 +643,7 @@ func (c *Coordinator) deserializeFreelist(pages []*base.Page) {
 		}
 
 		if len(pageIDs) > 0 {
-			c.pendingPages[txnID] = pageIDs
+			c.pending[txnID] = pageIDs
 		}
 	}
 }
@@ -683,7 +692,7 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 	}
 
 	// Return buffer to pool after deserialization (DirectIO only)
-	// MMap mode allocates non-pooled buffers
+	// MMap mode allocates non-pooled, non-aligned buffers
 	if c.store.GetMode() == storage.DirectIO {
 		defer func() {
 			buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
@@ -903,11 +912,81 @@ func (c *Coordinator) CommitTransaction(
 	return c.WriteTransaction(pages, root, freed, txnID, syncMode)
 }
 
+// AcquireBucket increments the reference count for a bucket's root page.
+// Returns false if the bucket is marked for deletion (new transactions cannot access it).
+// Returns true if successfully acquired.
+func (c *Coordinator) AcquireBucket(rootID base.PageID) bool {
+	// Quick check before aquiring lock
+	if _, deleted := c.Deleted[rootID]; deleted {
+		return false // Bucket is pending deletion, reject new access
+	}
+
+	c.DeletedMu.RLock()
+	defer c.DeletedMu.RUnlock()
+
+	// Check if bucket is marked for deletion WHILE holding read lock
+	if _, deleted := c.Deleted[rootID]; deleted {
+		return false // Bucket is pending deletion, reject new access
+	}
+
+	// Increment reference count while still holding the lock
+	// This prevents the bucket from being marked deleted between check and increment
+	counter := &atomic.Int32{}
+	counter.Store(1)
+	refCount, loaded := c.buckets.LoadOrStore(rootID, counter)
+	if loaded {
+		// We hold a reference to the atomic
+		refCount.(*atomic.Int32).Add(1)
+		if currentRefCount, ok := c.buckets.Load(rootID); !ok || currentRefCount != refCount {
+			// In case the bucket was deleted in between loading it and incrementing
+			// the ref count. The reference to this atomic does not matter since
+			// we are rejecting access anyway in ReleaseBucket (in another goroutine).
+			return false
+		}
+	}
+
+	return true
+}
+
+// ReleaseBucket decrements the reference count for a bucket's root page.
+// If the count reaches 0 and the bucket is marked for deletion, triggers background cleanup.
+// The cleanup callback is provided by the caller (typically db.freeTree).
+func (c *Coordinator) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.PageID) error) {
+	// Decrement reference count
+	refCountVal, exists := c.buckets.Load(rootID)
+	if !exists {
+		panic("ref count decrement of bucket count that does not exist") // Should not occur
+	}
+
+	refCount := refCountVal.(*atomic.Int32)
+	newCount := refCount.Add(-1)
+
+	// If count reaches 0, check if this bucket is marked for deletion
+	if newCount == 0 {
+		c.DeletedMu.Lock()
+		_, shouldDelete := c.Deleted[rootID]
+		if shouldDelete {
+			// Remove from deleted map
+			delete(c.Deleted, rootID)
+			c.DeletedMu.Unlock()
+
+			// Trigger background cleanup
+			go func() {
+				_ = cleanupFunc(rootID)
+			}()
+		} else {
+			c.DeletedMu.Unlock()
+		}
+
+		// Clean up empty reference count entry
+		c.buckets.Delete(rootID)
+	}
+}
+
 type Stats struct {
-	Cache        cache.Stats
-	Store        storage.Stats
-	FreedPages   int
-	PendingPages map[uint64]int
+	Cache      cache.Stats
+	Store      storage.Stats
+	FreedPages int
 }
 
 // Stats returns disk I/O statistics
@@ -916,14 +995,13 @@ func (c *Coordinator) Stats() Stats {
 	defer c.mu.Unlock()
 
 	pending := make(map[uint64]int)
-	for txnID, pages := range c.pendingPages {
+	for txnID, pages := range c.pending {
 		pending[txnID] = len(pages)
 	}
 
 	return Stats{
-		Cache:        c.cache.Stats(),
-		Store:        c.store.Stats(),
-		FreedPages:   len(c.freedPages),
-		PendingPages: pending,
+		Cache:      c.cache.Stats(),
+		Store:      c.store.Stats(),
+		FreedPages: len(c.freed),
 	}
 }

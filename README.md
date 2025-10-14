@@ -7,7 +7,8 @@ infrastructure.
 
 ## Status
 
-**In Development** - Core B-tree operations, disk persistence, MVCC, complete. WAL, direct I/O, and optimizations still in-progress.
+**In Development** - Core B-tree operations, disk persistence, MVCC, API, and direct 
+I/O are complete. Optimizations still in-progress.
 
 ## Features
 
@@ -108,4 +109,3 @@ go test ./fredb -v
 ## Inspiration
 
 - **bbolt**
-- **BadgerDB**

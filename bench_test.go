@@ -37,8 +37,9 @@ func BenchmarkDBGet(b *testing.B) {
 
 	// Reset disk I/O stats before benchmark
 	// Cache stats are now internal to coordinator
-	stats := db.coord.Stats().Store
-	diskReadsBefore, diskWritesBefore := stats.Reads, stats.Writes
+	stats := db.coord.Stats()
+	diskReadsBefore, diskWritesBefore := stats.Store.Reads, stats.Store.Writes
+	cacheHitsBefore, cacheMissesBefore := stats.Cache.Hits, stats.Cache.Misses
 
 	b.ResetTimer()
 
@@ -52,14 +53,20 @@ func BenchmarkDBGet(b *testing.B) {
 	}
 
 	b.StopTimer()
-	stats = db.coord.Stats().Store
-	diskReadsAfter, diskWritesAfter := stats.Reads, stats.Writes
+	stats = db.coord.Stats()
+	diskReadsAfter, diskWritesAfter := stats.Store.Reads, stats.Store.Writes
+	cacheHitsAfter, cacheMissesAfter := stats.Cache.Hits, stats.Cache.Misses
 
 	// Calculate benchmark-only stats
 	diskReads := diskReadsAfter - diskReadsBefore
 	diskWrites := diskWritesAfter - diskWritesBefore
+	cacheHits := cacheHitsAfter - cacheHitsBefore
+	cacheMisses := cacheMissesAfter - cacheMissesBefore
 
-	b.Logf("Disk I/O - Reads: %d, Writes: %d (from start of benchmark)", diskReads, diskWrites)
+	b.ReportMetric(float64(diskReads)/float64(b.N), "disk_reads/op")
+	b.ReportMetric(float64(diskWrites)/float64(b.N), "disk_writes/op")
+	b.ReportMetric(float64(cacheHits)/float64(b.N), "cache_hits/op")
+	b.ReportMetric(float64(cacheMisses)/float64(b.N), "cache_misses/op")
 }
 
 func BenchmarkDBSet(b *testing.B) {

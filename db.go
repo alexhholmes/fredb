@@ -307,7 +307,9 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			writable:      true,
 			root:          snapshot.Root, // Atomic snapshot of root
 			pages:         make(map[base.PageID]*base.Node),
+			acquired:      make(map[base.PageID]struct{}),
 			freed:         make(map[base.PageID]struct{}),
+			deletes:       make(map[string]base.PageID),
 			done:          false,
 			nextVirtualID: -1, // Start virtual page IDs at -1
 			buckets:       make(map[string]*Bucket),
@@ -329,6 +331,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		txID:     snapshot.Meta.TxID, // Readers use committed txnID as snapshot
 		writable: false,
 		root:     snapshot.Root, // Atomic snapshot of root
+		acquired: make(map[base.PageID]struct{}),
 		freed:    make(map[base.PageID]struct{}),
 		done:     false,
 		buckets:  make(map[string]*Bucket),
@@ -434,4 +437,52 @@ func (db *DB) tryReleasePages() {
 	})
 
 	db.coord.ReleasePages(minTxID)
+}
+
+// collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal
+func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error {
+	// Load node from disk
+	node, ok := tx.db.coord.LoadNode(pageID, tx.txID)
+	if !ok {
+		return ErrCorruption
+	}
+
+	// If branch node, recursively collect children first (post-order)
+	if !node.IsLeaf() {
+		for _, childID := range node.Children {
+			if err := collectTreePages(tx, childID, pageIDs); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Add this node's page ID after processing children
+	*pageIDs = append(*pageIDs, pageID)
+
+	return nil
+}
+
+func (db *DB) freeTree(rootID base.PageID) error {
+	// Start new read transaction to safely traverse tree
+	tx, err := db.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Collect all page IDs to free
+	pageIDs := make([]base.PageID, 0)
+	if err := collectTreePages(tx, rootID, &pageIDs); err != nil {
+		return err
+	}
+
+	// Now free them all at once
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	for _, pageID := range pageIDs {
+		db.coord.FreePage(pageID) // Add to freelist
+	}
+
+	return nil
 }

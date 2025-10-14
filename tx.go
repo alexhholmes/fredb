@@ -21,11 +21,13 @@ type Tx struct {
 	txID     uint64 // Unique transaction ID
 	writable bool   // Is this a read-write transaction?
 
-	db      *DB                        // Database this transaction belongs to (concrete type for internal access)
-	root    *base.Node                 // Root Node at transaction start (stores bucket metadata)
-	buckets map[string]*Bucket         // Cache of loaded buckets
-	pages   map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed   map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+	db       *DB                        // Database this transaction belongs to (concrete type for internal access)
+	root     *base.Node                 // Root Node at transaction start (stores bucket metadata)
+	buckets  map[string]*Bucket         // Cache of loaded buckets
+	acquired map[base.PageID]struct{}   // Buckets acquired from coordinator (need release)
+	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+	deletes  map[string]base.PageID     // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
 	done          bool  // Has Commit() or Rollback() been called?
@@ -41,7 +43,7 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 	// Delegate to __root__ bucket (default namespace)
 	bucket := tx.Bucket([]byte("__root__"))
 	if bucket == nil {
-		return nil, ErrKeyNotFound
+		return nil, ErrBucketNotFound
 	}
 
 	val := bucket.Get(key)
@@ -94,7 +96,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	// Delegate to __root__ bucket (default namespace)
 	bucket := tx.Bucket([]byte("__root__"))
 	if bucket == nil {
-		return errors.New("root bucket not found")
+		return ErrBucketNotFound
 	}
 
 	return bucket.Put(key, value)
@@ -113,7 +115,7 @@ func (tx *Tx) Delete(key []byte) error {
 	// Delegate to __root__ bucket (default namespace)
 	bucket := tx.Bucket([]byte("__root__"))
 	if bucket == nil {
-		return errors.New("root bucket not found")
+		return ErrBucketNotFound
 	}
 
 	return bucket.Delete(key)
@@ -290,12 +292,28 @@ func (tx *Tx) Commit() error {
 		return err
 	}
 
+	tx.done = true
+
+	// Phase 4: Add deleted buckets to coordinator's Deleted map BEFORE releasing buckets
+	// This prevents new readers from acquiring deleted buckets after this commit
+	if tx.writable {
+		tx.db.coord.DeletedMu.Lock()
+		for _, pageID := range tx.deletes {
+			tx.db.coord.Deleted[pageID] = struct{}{}
+		}
+		tx.db.coord.DeletedMu.Unlock()
+	}
+
 	tx.db.writer.Store(nil)
 
-	// Release pages inline
+	// Phase 5: Release acquired buckets after marking deleted ones
+	// This must happen AFTER releasing DeletedMu to avoid deadlock in ReleaseBucket()
+	// Only release buckets that were actually acquired (not newly created ones)
 	tx.db.tryReleasePages()
+	for pageID := range tx.acquired {
+		tx.db.coord.ReleaseBucket(pageID, tx.db.freeTree)
+	}
 
-	tx.done = true
 	return nil
 }
 
@@ -307,6 +325,22 @@ func (tx *Tx) Rollback() error {
 		return nil // Already committed or rolled back
 	}
 	tx.done = true
+
+	// Clean up deleted buckets from Coordinator's Deleted map
+	// If we marked buckets for deletion but are now rolling back, they should not be deleted
+	if tx.writable && len(tx.deletes) > 0 {
+		tx.db.coord.DeletedMu.Lock()
+		for _, pageID := range tx.deletes {
+			delete(tx.db.coord.Deleted, pageID)
+		}
+		tx.db.coord.DeletedMu.Unlock()
+	}
+
+	// Release all acquired buckets (both read and write transactions)
+	// Only release buckets that were actually acquired (not newly created ones)
+	for pageID := range tx.acquired {
+		tx.db.coord.ReleaseBucket(pageID, tx.db.freeTree)
+	}
 
 	// Remove from DB tracking
 	if tx.writable {
@@ -320,7 +354,6 @@ func (tx *Tx) Rollback() error {
 
 		tx.db.writer.Store(nil)
 
-		// Release pages inline
 		tx.db.tryReleasePages()
 	} else {
 		// Readers: completely lock-free, zero cache line contention
@@ -867,6 +900,15 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 
 // Bucket returns an existing bucket or nil
 func (tx *Tx) Bucket(name []byte) *Bucket {
+	if err := tx.check(); err != nil {
+		return nil
+	}
+
+	// Check if transaction deleted bucket
+	if _, deleted := tx.deletes[string(name)]; deleted {
+		return nil
+	}
+
 	// Check tx cache first
 	if b, exists := tx.buckets[string(name)]; exists {
 		return b
@@ -893,6 +935,20 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 		return nil
 	}
 
+	// Important, get a lock on the bucket through the coordinator in case
+	// the bucket is being deleted concurrently by another transaction.
+	// This must be released on rollback or commit.
+	// Exception: __root__ bucket is never deleted, so no need to track it
+	if string(name) != "__root__" {
+		acquired := tx.db.coord.AcquireBucket(bucket.rootID)
+		if !acquired {
+			// Debug: bucket is marked for deletion
+			return nil
+		}
+		// Track that we acquired this bucket (for later release)
+		tx.acquired[bucket.rootID] = struct{}{}
+	}
+
 	tx.buckets[string(name)] = bucket
 	return bucket
 }
@@ -912,6 +968,11 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	}
 	if string(name) == "__root__" {
 		return nil, errors.New("cannot create reserved bucket __root__")
+	}
+
+	// Check if bucket was deleted in this transaction
+	if _, deleted := tx.deletes[string(name)]; deleted {
+		return nil, errors.New("cannot recreate bucket deleted in same transaction")
 	}
 
 	// Check if bucket already exists
@@ -958,6 +1019,9 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	// Create and cache bucket
 	// NOTE: We don't persist metadata to root tree yet - that happens at Commit()
 	// This avoids the chicken-and-egg problem with virtual vs real page IDs
+	// We don't need to track this bucket's reference in tx.buckets yet either
+	// because it's a new bucket that can't be accessed until after Commit(),
+	// and because there is only a single writer transaction at a time.
 	bucket := &Bucket{
 		tx:       tx,
 		root:     bucketRoot,
@@ -995,11 +1059,25 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 		return errors.New("cannot delete reserved bucket __root__")
 	}
 
-	// Check if bucket exists
-	bucket := tx.Bucket(name)
-	if bucket == nil {
-		return errors.New("bucket not found")
+	// Check if already deleted in this transaction
+	if _, deleted := tx.deletes[string(name)]; deleted {
+		return ErrBucketNotFound
 	}
+
+	// Load bucket metadata WITHOUT acquiring (since we're deleting it)
+	// We don't need to protect it from deletion - we ARE the deleter
+	meta, err := tx.search(tx.root, name)
+	if err != nil {
+		return ErrBucketNotFound
+	}
+
+	if len(meta) < 16 {
+		return ErrBucketNotFound
+	}
+
+	// Deserialize just to get the rootID
+	var bucket Bucket
+	bucket.Deserialize(meta)
 
 	// Delete bucket metadata from root tree
 	root, err := tx.deleteFromNode(tx.root, name)
@@ -1008,13 +1086,12 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	}
 	tx.root = root
 
-	// Remove from cache
+	// Remove from cache if present
 	delete(tx.buckets, string(name))
 
-	// Mark bucket's root page as freed
-	// NOTE: This is a simplified implementation that only frees the root page
-	// A full implementation would recursively free all pages in the bucket's tree
-	tx.addFreed(bucket.root.PageID)
+	// Mark bucket's root page for deletion on commit
+	// The bucket will remain accessible to existing readers until their refcount drops to 0
+	tx.deletes[string(name)] = bucket.rootID
 
 	return nil
 }
