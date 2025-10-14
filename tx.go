@@ -1096,8 +1096,8 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	return nil
 }
 
-// ForEach iterates over all buckets
-func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
+// ForEachBucket iterates over all buckets
+func (tx *Tx) ForEachBucket(fn func(name []byte, b *Bucket) error) error {
 	if err := tx.check(); err != nil {
 		return err
 	}
@@ -1139,6 +1139,22 @@ func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 	}
 
 	return nil
+}
+
+// ForEach iterates over all key-value pairs in the default bucket
+func (tx *Tx) ForEach(fn func(key, value []byte) error) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+
+	// Get __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return nil // No keys if bucket doesn't exist
+	}
+
+	// Delegate to bucket's ForEach
+	return bucket.ForEach(fn)
 }
 
 // ForEachPrefix iterates over all key-value pairs in the default bucket that start with the given prefix
