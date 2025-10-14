@@ -23,10 +23,6 @@ type Coordinator struct {
 	meta0      base.Snapshot
 	meta1      base.Snapshot
 
-	// Snapshot tracking for reference counting (protects activeSnapshots)
-	snapshotMu      sync.RWMutex
-	activeSnapshots []*base.Snapshot // Track all snapshots with refs > 0
-
 	// Freelist tracking
 	freedPages   []base.PageID
 	pendingPages map[uint64][]base.PageID // txnID -> pages freed at that transaction
@@ -898,60 +894,6 @@ func (c *Coordinator) CommitTransaction(
 
 	// Phase 2: Write everything to disk
 	return c.WriteTransaction(pages, root, freed, txnID, syncMode)
-}
-
-// AcquireSnapshot increments the reference count for the current snapshot and returns it.
-// Readers must call ReleaseSnapshot when done to allow GC.
-func (c *Coordinator) AcquireSnapshot() *base.Snapshot {
-	snap := c.activeMeta.Load()
-	refs := snap.Refs.Add(1)
-
-	// Track first reference (Add returns new value, so refs==1 means first acquire)
-	if refs == 1 {
-		c.snapshotMu.Lock()
-		c.activeSnapshots = append(c.activeSnapshots, snap)
-		c.snapshotMu.Unlock()
-	}
-
-	return snap
-}
-
-// ReleaseSnapshot decrements the reference count and removes from tracking when zero.
-func (c *Coordinator) ReleaseSnapshot(snap *base.Snapshot) {
-	refs := snap.Refs.Add(-1)
-
-	// Last reference dropped - remove from active list
-	if refs == 0 {
-		c.snapshotMu.Lock()
-		for i, s := range c.activeSnapshots {
-			if s == snap {
-				c.activeSnapshots = append(c.activeSnapshots[:i], c.activeSnapshots[i+1:]...)
-				break
-			}
-		}
-		c.snapshotMu.Unlock()
-	}
-}
-
-// GetMinActiveTxID returns the minimum transaction ID across all active snapshots.
-// Returns nextTxnID + 1 if no snapshots are active.
-func (c *Coordinator) GetMinActiveTxID() uint64 {
-	c.snapshotMu.RLock()
-	defer c.snapshotMu.RUnlock()
-
-	if len(c.activeSnapshots) == 0 {
-		// No active snapshots - return high value so nothing blocks GC
-		return c.GetMeta().TxID + 1
-	}
-
-	minTxID := c.activeSnapshots[0].Meta.TxID
-	for _, snap := range c.activeSnapshots[1:] {
-		if snap.Meta.TxID < minTxID {
-			minTxID = snap.Meta.TxID
-		}
-	}
-
-	return minTxID
 }
 
 type Stats struct {
