@@ -16,10 +16,10 @@ var _ = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a coordinator with dependencies for testing
 func createTestCoordinator(t *testing.T, tmpFile string) (*Coordinator, func()) {
-	stor, err := storage.NewStorage(tmpFile)
+	stor, err := storage.NewStorage(tmpFile, storage.DirectIO)
 	require.NoError(t, err, "Failed to create store")
 
-	cacheInstance := cache.NewCache(1024)
+	cacheInstance := cache.NewCache(1024, storage.DirectIO)
 
 	pm, err := NewCoordinator(stor, cacheInstance)
 	require.NoError(t, err, "Failed to create Coordinator")

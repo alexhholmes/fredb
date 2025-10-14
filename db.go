@@ -48,13 +48,17 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Create disk storage
-	store, err := storage.NewStorage(path)
+	mode := storage.MMap
+	if opts.syncMode == SyncEveryCommit {
+		mode = storage.DirectIO
+	}
+	store, err := storage.NewStorage(path, mode)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create cache (Page size is 4096 bytes, so 256 pages per MB)
-	c := cache.NewCache(opts.maxCacheSizeMB * 256)
+	c := cache.NewCache(opts.maxCacheSizeMB*256, mode)
 
 	// Create coordinator with dependencies
 	coord, err := coordinator.NewCoordinator(store, c)

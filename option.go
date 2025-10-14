@@ -4,13 +4,21 @@ package fredb
 type SyncMode int
 
 const (
-	// SyncEveryCommit fsyncs on every transaction commit
+	// SyncEveryCommit fsyncs on every transaction commit. Uses direct I/O.
 	// - Guarantees zero data loss on power failure
 	// - Limited by fsync latency (typically 1-10ms per commit)
 	// - Use for: Financial transactions, critical data
 	SyncEveryCommit SyncMode = iota
 
-	// SyncOff disables fsync entirely (testing/bulk loads only)
+	// SyncBytes fsyncs when at least N bytes have been written since the last
+	// fsync. Uses mmap I/O.
+	// - Balances durability and performance
+	// - Some data loss possible on crash (up to N bytes)
+	// - Use for: General purpose applications
+	SyncBytes
+
+	// SyncOff disables fsync entirely (testing/bulk loads only). Uses mmap
+	// I/O.
 	// - Maximum throughput
 	// - All unflushed data lost on crash
 	// - Use for: Testing, bulk imports with external durability
@@ -20,7 +28,8 @@ const (
 // DBOptions configures database behavior.
 type DBOptions struct {
 	syncMode       SyncMode
-	maxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
+	syncBytes      uint // Number of bytes to write before fsync when SyncMode is SyncBytes.
+	maxCacheSizeMB int  // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
 // DefaultDBOptions returns safe default configuration.
@@ -29,7 +38,8 @@ type DBOptions struct {
 func DefaultDBOptions() DBOptions {
 	return DBOptions{
 		syncMode:       SyncEveryCommit,
-		maxCacheSizeMB: 512, // 512MB
+		syncBytes:      1024 * 1024, // 1MB
+		maxCacheSizeMB: 512,         // 512MB
 	}
 }
 
@@ -43,6 +53,23 @@ type DBOption func(*DBOptions)
 func WithSyncEveryCommit() DBOption {
 	return func(opts *DBOptions) {
 		opts.syncMode = SyncEveryCommit
+	}
+}
+
+// WithSyncBytes configures the database to fsync when at least n bytes have
+// been written since the last fsync. If n is 0, this is equivalent to
+// DefaultDBOptions() (1MB).
+// This balances durability and performance, with some data loss possible on
+// crash (up to n bytes).
+//
+//goland:noinspection GoUnusedExportedFunction
+func WithSyncBytes(n uint) DBOption {
+	if n == 0 {
+		n = 1024 * 1024 // 1MB
+	}
+	return func(opts *DBOptions) {
+		opts.syncMode = SyncEveryCommit
+		opts.syncBytes = n
 	}
 }
 

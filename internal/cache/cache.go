@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"fredb/internal/base"
+	"fredb/internal/storage"
 )
 
 // Cache implements a simple LRU cache without awareness of version tracking or
@@ -16,6 +17,7 @@ type Cache struct {
 	entries  map[base.PageID]*entry // Single entry per page
 	maxSize  int                    // Max total entries (e.g., 1024)
 	lowWater int                    // Evict to this (80% of max)
+	mode     storage.Mode
 
 	// Stats
 	hits      atomic.Uint64
@@ -36,7 +38,7 @@ const (
 )
 
 // NewCache creates a new Page cache with the specified maximum size
-func NewCache(maxSize int) *Cache {
+func NewCache(maxSize int, mode storage.Mode) *Cache {
 	maxSize = max(maxSize, MinCacheSize)
 
 	return &Cache{
@@ -44,11 +46,17 @@ func NewCache(maxSize int) *Cache {
 		lowWater: (maxSize * 4) / 5, // 80%
 		entries:  make(map[base.PageID]*entry),
 		lru:      list.New(),
+		mode:     mode,
 	}
 }
 
 // Put adds a node to the cache, replacing any existing entry for the id.
 func (c *Cache) Put(pageID base.PageID, node *base.Node) {
+	if c.mode == storage.MMap {
+		// No caching in MMap mode
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -107,6 +115,11 @@ func (c *Cache) Put(pageID base.PageID, node *base.Node) {
 // Get retrieves a node from the cache.
 // Returns (Node, true) on cache hit, (nil, false) on miss.
 func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
+	if c.mode == storage.MMap {
+		// No caching in MMap mode
+		return nil, false
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -119,26 +132,6 @@ func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
 	c.hits.Add(1)
 	c.lru.MoveToFront(entry.lruElement)
 	return entry.node, true
-}
-
-// Delete removes a page from the cache.
-func (c *Cache) Delete(pageID base.PageID) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entry, exists := c.entries[pageID]
-	if !exists {
-		return
-	}
-
-	// Remove from LRU list
-	if entry.lruElement != nil {
-		c.lru.Remove(entry.lruElement)
-		c.evictions.Add(1)
-	}
-
-	// Remove from cache
-	delete(c.entries, pageID)
 }
 
 // Size returns current number of cached entries

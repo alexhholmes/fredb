@@ -8,7 +8,6 @@ import (
 
 	"fredb/internal/base"
 	"fredb/internal/cache"
-	"fredb/internal/directio"
 	"fredb/internal/storage"
 )
 
@@ -146,9 +145,10 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write to disk
-	metaPage := &base.Page{}
+	buf := c.store.GetBuffer(1)
+	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
 	metaPage.WriteMeta(&meta)
-	if err := c.writePageUnsafe(metaPageID, metaPage); err != nil {
+	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
 		return err
 	}
 
@@ -215,7 +215,8 @@ func (c *Coordinator) Close() error {
 	c.serializeFreelist(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := c.writePageUnsafe(meta.FreelistID+base.PageID(i), freelistPages[i]); err != nil {
+		if err := c.store.WritePage(meta.FreelistID+base.PageID(i),
+			freelistPages[i]); err != nil {
 			return err
 		}
 	}
@@ -230,7 +231,7 @@ func (c *Coordinator) Close() error {
 	// Write meta to disk
 	metaPage := &base.Page{}
 	metaPage.WriteMeta(&meta)
-	if err := c.writePageUnsafe(metaPageID, metaPage); err != nil {
+	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
 		return err
 	}
 
@@ -362,12 +363,6 @@ func (c *Coordinator) loadExistingDB() error {
 	c.numPages.Store(activeMeta.Meta.NumPages)
 
 	return nil
-}
-
-// writePageUnsafe writes a Page without acquiring pm.mu (caller must hold pm.mu)
-// Delegates to store which has its own locking
-func (c *Coordinator) writePageUnsafe(id base.PageID, page *base.Page) error {
-	return c.store.WritePage(id, page)
 }
 
 const (
@@ -703,7 +698,7 @@ func (c *Coordinator) LoadNodeFromDisk(pageID base.PageID) (*base.Node, uint64, 
 // Used by cache to flush dirty pages during eviction or checkpoint.
 // Returns error if serialization or write fails.
 func (c *Coordinator) FlushNode(node *base.Node, txnID uint64, pageID base.PageID) error {
-	buf := directio.AlignedBlock(base.PageSize)
+	buf := c.store.GetBuffer(1)
 	page := (*base.Page)(unsafe.Pointer(&buf[0]))
 	err := node.Serialize(txnID, page)
 	if err != nil {
@@ -809,7 +804,7 @@ func (c *Coordinator) WriteTransaction(
 	syncMode SyncMode,
 ) error {
 	// Write all pages to disk
-	buf := directio.AlignedBlock(base.PageSize)
+	buf := c.store.GetBuffer(1)
 	for _, node := range pages {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
 		if err := node.Serialize(txnID, page); err != nil {
