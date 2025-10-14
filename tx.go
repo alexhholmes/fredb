@@ -1063,3 +1063,40 @@ func (tx *Tx) ForEach(fn func(name []byte, b *Bucket) error) error {
 
 	return nil
 }
+
+// ForEachPrefix iterates over all key-value pairs in the default bucket that start with the given prefix
+func (tx *Tx) ForEachPrefix(prefix []byte, fn func(key, value []byte) error) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+
+	// Get __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return nil // No keys if bucket doesn't exist
+	}
+
+	// Create cursor for iteration
+	c := bucket.Cursor()
+
+	// Seek to the first key >= prefix
+	k, v := c.Seek(prefix)
+
+	// Iterate while keys match prefix
+	for k != nil {
+		// Check if key still has the prefix
+		if !bytes.HasPrefix(k, prefix) {
+			break // No more keys with this prefix
+		}
+
+		// Call user function
+		if err := fn(k, v); err != nil {
+			return err
+		}
+
+		// Move to next key
+		k, v = c.Next()
+	}
+
+	return nil
+}
