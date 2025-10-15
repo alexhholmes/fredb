@@ -22,25 +22,25 @@ I/O are complete. Optimizations still in-progress.
 ## Usage
 
 ```go
-import "github.com/alexhholmes/fredb/pkg"
+import "fredb"
 
 // Open database
-db, _ := pkg.Open("data.db")
+db, _ := fredb.Open("data.db")
 defer db.Close()
 
-// Simple operations
+// Simple operations (default bucket)
 db.Set([]byte("key"), []byte("value"))
 value, _ := db.Get([]byte("key"))
 db.Delete([]byte("key"))
 
 // Transactions (MVCC with snapshot isolation)
-db.View(func(tx *pkg.Tx) error {
-    value, err := tx.Get([]byte("key"))
-    // Read-only transaction
-    return err
+db.View(func(tx *fredb.Tx) error {
+    value, _ := tx.Get([]byte("key"))
+    // Read-only transaction, auto-rollback
+    return nil
 })
 
-db.Update(func(tx *pkg.Tx) error {
+db.Update(func(tx *fredb.Tx) error {
     tx.Set([]byte("key"), []byte("value"))
     tx.Delete([]byte("old-key"))
     // Auto-commit on success, rollback on error
@@ -53,14 +53,83 @@ defer tx.Rollback()
 tx.Set([]byte("key"), []byte("value"))
 tx.Commit()
 
+// Buckets (namespaces with separate B+trees)
+db.Update(func(tx *fredb.Tx) error {
+    // Create bucket
+    bucket, _ := tx.CreateBucket([]byte("users"))
+    bucket.Put([]byte("alice"), []byte("data"))
+
+    // Get bucket
+    bucket = tx.Bucket([]byte("users"))
+    value := bucket.Get([]byte("alice"))
+
+    // Delete bucket and all its data
+    tx.DeleteBucket([]byte("users"))
+    return nil
+})
+
 // Cursor iteration
-tx, _ := db.Begin(false) // read-only
-defer tx.Rollback()
-cursor := tx.Cursor()
-for cursor.Seek([]byte("key")); cursor.Valid(); cursor.Next() {
-    key, value := cursor.Key(), cursor.Value()
-    // Process key-value pairs
-}
+db.View(func(tx *fredb.Tx) error {
+    c := tx.Cursor()
+
+    // First to last
+    for k, v := c.First(); k != nil; k, v = c.Next() {
+        // Process key-value pairs
+    }
+
+    // Last to first
+    for k, v := c.Last(); k != nil; k, v = c.Prev() {
+        // Reverse iteration
+    }
+
+    // Seek to key >= "start"
+    for k, v := c.Seek([]byte("start")); k != nil; k, v = c.Next() {
+        if bytes.Compare(k, []byte("end")) > 0 {
+            break
+        }
+    }
+
+    return nil
+})
+
+// ForEach iteration
+db.View(func(tx *fredb.Tx) error {
+    // Iterate all keys
+    tx.ForEach(func(k, v []byte) error {
+        // Process each key-value pair
+        return nil
+    })
+
+    // Iterate keys with prefix
+    tx.ForEachPrefix([]byte("user:"), func(k, v []byte) error {
+        // Process all keys starting with "user:"
+        return nil
+    })
+
+    return nil
+})
+
+// Bucket sequences (auto-increment IDs)
+db.Update(func(tx *fredb.Tx) error {
+    bucket := tx.Bucket([]byte("users"))
+
+    id, _ := bucket.NextSequence() // 1
+    id, _ = bucket.NextSequence()  // 2
+
+    current := bucket.Sequence()   // 2
+    bucket.SetSequence(100)        // Reset to 100
+
+    return nil
+})
+
+// Iterate over all buckets
+db.View(func(tx *fredb.Tx) error {
+    tx.ForEachBucket(func(name []byte, b *fredb.Bucket) error {
+        // Process each bucket
+        return nil
+    })
+    return nil
+})
 ```
 
 ### Options
