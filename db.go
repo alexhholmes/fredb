@@ -373,7 +373,12 @@ func (db *DB) Close() error {
 	}
 
 	// Close coord
-	return db.coord.Close()
+	err := db.coord.Close()
+
+	// Return root to pool
+	base.Pool.Put(snapshot.Root)
+
+	return err
 }
 
 func (db *DB) Stats() coordinator.Stats {
@@ -402,7 +407,11 @@ func (db *DB) tryReleasePages() {
 		return true
 	})
 
+	// Release freelist pages via coordinator
 	db.coord.ReleasePages(minTxID)
+
+	// Reclaim evicted nodes from cache that are safe to return to pool
+	db.cache.ReclaimNodes(minTxID)
 }
 
 // collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal

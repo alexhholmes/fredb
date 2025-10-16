@@ -309,10 +309,12 @@ func (tx *Tx) Commit() error {
 	// Phase 5: Release acquired buckets after marking deleted ones
 	// This must happen AFTER releasing DeletedMu to avoid deadlock in ReleaseBucket()
 	// Only release buckets that were actually acquired (not newly created ones)
-	tx.db.tryReleasePages()
 	for pageID := range tx.acquired {
 		tx.db.coord.ReleaseBucket(pageID, tx.db.freeTree)
 	}
+
+	// Phase 6: Try to release pages AFTER all bucket cleanup is done
+	tx.db.tryReleasePages()
 
 	return nil
 }
@@ -359,6 +361,14 @@ func (tx *Tx) Rollback() error {
 		// Readers: completely lock-free, zero cache line contention
 		tx.db.readers.Delete(tx)
 		// Page release is lazy - next writer will handle it
+	}
+
+	// Return all nodes in tx.pages to pool
+	if tx.writable && tx.pages != nil {
+		for _, node := range tx.pages {
+			base.Pool.Put(node)
+		}
+		tx.pages = nil
 	}
 
 	return nil

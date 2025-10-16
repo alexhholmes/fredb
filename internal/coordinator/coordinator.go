@@ -505,6 +505,7 @@ func (c *Coordinator) WriteTransaction(
 		}
 
 		node.Dirty = false
+		node.TxID = txnID // Track transaction that wrote this node
 		c.cache.Put(node.PageID, node)
 	}
 
@@ -521,6 +522,7 @@ func (c *Coordinator) WriteTransaction(
 		}
 
 		root.Dirty = false
+		root.TxID = txnID // Track transaction that wrote this node
 		c.cache.Put(root.PageID, root)
 	}
 

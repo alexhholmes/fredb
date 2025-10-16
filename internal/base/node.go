@@ -25,6 +25,7 @@ type Node struct {
 	PageID PageID
 	Dirty  bool
 	Leaf   bool
+	TxID   uint64 // Transaction ID that last modified this node
 
 	// Decoded Node data
 	NumKeys  uint16
@@ -135,6 +136,7 @@ func (n *Node) Deserialize(p *Page) error {
 	header := p.Header()
 	n.PageID = header.PageID
 	n.NumKeys = header.NumKeys
+	n.TxID = header.TxnID // Track transaction that wrote this node
 
 	if (header.Flags & LeafPageFlag) != 0 {
 		// Deserialize leaf Node
@@ -210,33 +212,37 @@ func (n *Node) FindKey(key []byte) int {
 // Clone creates a deep copy of this Node for copy-on-write
 // The Clone is marked Dirty and does not have a PageID allocated yet
 func (n *Node) Clone() *Node {
-	cloned := &Node{
-		PageID:  0,
-		Dirty:   true,
-		Leaf:    n.Leaf,
-		NumKeys: n.NumKeys,
-	}
+	cloned := Pool.Get().(*Node)
+	cloned.PageID = 0
+	cloned.Dirty = true
+	cloned.Leaf = n.Leaf
+	cloned.NumKeys = n.NumKeys
 
 	// Deep copy Keys
-	cloned.Keys = make([][]byte, len(n.Keys))
-	for i, key := range n.Keys {
-		cloned.Keys[i] = make([]byte, len(key))
-		copy(cloned.Keys[i], key)
+	cloned.Keys = cloned.Keys[:0]
+	for _, key := range n.Keys {
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		cloned.Keys = append(cloned.Keys, keyCopy)
 	}
 
 	// Deep copy Values (leaf nodes only)
 	if n.Leaf && len(n.Values) > 0 {
-		cloned.Values = make([][]byte, len(n.Values))
-		for i, val := range n.Values {
-			cloned.Values[i] = make([]byte, len(val))
-			copy(cloned.Values[i], val)
+		cloned.Values = cloned.Values[:0]
+		for _, val := range n.Values {
+			valCopy := make([]byte, len(val))
+			copy(valCopy, val)
+			cloned.Values = append(cloned.Values, valCopy)
 		}
+	} else {
+		cloned.Values = cloned.Values[:0]
 	}
 
 	// Deep copy Children (branch nodes only)
 	if !n.Leaf {
-		cloned.Children = make([]PageID, len(n.Children))
-		copy(cloned.Children, n.Children)
+		cloned.Children = append(cloned.Children[:0], n.Children...)
+	} else {
+		cloned.Children = cloned.Children[:0]
 	}
 
 	return cloned
