@@ -182,23 +182,18 @@ func (n *Node) Clone() *Node {
 		NumKeys: n.NumKeys,
 	}
 
-	// Deep copy Keys
+	// Shallow copy Keys - copy slice of pointers, not underlying byte arrays
+	// Safe because we never mutate []byte contents, only replace pointers
 	cloned.Keys = make([][]byte, len(n.Keys))
-	for i, key := range n.Keys {
-		cloned.Keys[i] = make([]byte, len(key))
-		copy(cloned.Keys[i], key)
-	}
+	copy(cloned.Keys, n.Keys)
 
-	// Deep copy Values (leaf nodes only)
+	// Shallow copy Values (leaf nodes only)
 	if n.IsLeaf() && len(n.Values) > 0 {
 		cloned.Values = make([][]byte, len(n.Values))
-		for i, val := range n.Values {
-			cloned.Values[i] = make([]byte, len(val))
-			copy(cloned.Values[i], val)
-		}
+		copy(cloned.Values, n.Values)
 	}
 
-	// Deep copy Children (branch nodes only)
+	// Shallow copy Children (branch nodes only) - PageIDs are copy-by-value
 	if !n.IsLeaf() {
 		cloned.Children = make([]PageID, len(n.Children))
 		copy(cloned.Children, n.Children)
