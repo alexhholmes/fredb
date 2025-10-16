@@ -507,44 +507,44 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
 	if node.IsLeaf() {
 		// COW before modifying leaf
-		node, err := tx.ensureWritable(node)
+		n, err := tx.ensureWritable(node)
 		if err != nil {
 			return nil, err
 		}
 
 		// Pure: find insert position
-		pos := algo.FindInsertPosition(node, key)
+		pos := algo.FindInsertPosition(n, key)
 
 		// Check for update
-		if pos < int(node.NumKeys) && bytes.Equal(node.Keys[pos], key) {
+		if pos < int(n.NumKeys) && bytes.Equal(n.Keys[pos], key) {
 			// Save old value for rollback
-			oldValue := make([]byte, len(node.Values[pos]))
-			copy(oldValue, node.Values[pos])
+			oldValue := make([]byte, len(n.Values[pos]))
+			copy(oldValue, n.Values[pos])
 
-			algo.ApplyLeafUpdate(node, pos, value)
+			algo.ApplyLeafUpdate(n, pos, value)
 
 			// Check size after update
-			if err := node.CheckOverflow(); err != nil {
+			if err := n.CheckOverflow(); err != nil {
 				// Rollback: restore old value
-				node.Values[pos] = oldValue
+				n.Values[pos] = oldValue
 				return nil, err
 			}
-			return node, nil
+			return n, nil
 		}
 
 		// Insert new key-value using algo
-		algo.ApplyLeafInsert(node, pos, key, value)
+		algo.ApplyLeafInsert(n, pos, key, value)
 
 		// Check size after insertion
-		if err := node.CheckOverflow(); err != nil {
+		if err := n.CheckOverflow(); err != nil {
 			// Rollback: remove the inserted key/value
-			node.Keys = algo.RemoveAt(node.Keys, pos)
-			node.Values = algo.RemoveAt(node.Values, pos)
-			node.NumKeys--
+			n.Keys = algo.RemoveAt(n.Keys, pos)
+			n.Values = algo.RemoveAt(n.Values, pos)
+			n.NumKeys--
 			return nil, err
 		}
 
-		return node, nil
+		return n, nil
 	}
 
 	// Branch node - recursive COW
