@@ -1,0 +1,338 @@
+package freelist
+
+import (
+	"sync"
+	"unsafe"
+
+	"fredb/internal/base"
+)
+
+const (
+	// PendingMarker indicates transition from free IDs to pending entries in serialization
+	PendingMarker = base.PageID(0xFFFFFFFFFFFFFFFF)
+)
+
+// Freelist manages free and pending pages for MVCC transaction isolation.
+// Pages are freed in two stages:
+// 1. Pending: Pages freed at txnID cannot be reused until all readers < txnID complete
+// 2. Free: Pages released from pending are available for immediate reuse
+type Freelist struct {
+	mu             sync.Mutex               // Protects all freelist state
+	freed          []base.PageID            // Pages available for reuse
+	pending        map[uint64][]base.PageID // txnID -> pages freed at that transaction
+	pendingReverse map[base.PageID]uint64   // pageID -> txnID for O(1) lookup
+}
+
+// New creates a new Freelist with empty state
+func New() *Freelist {
+	return &Freelist{
+		freed:          make([]base.PageID, 0),
+		pending:        make(map[uint64][]base.PageID),
+		pendingReverse: make(map[base.PageID]uint64),
+	}
+}
+
+// Allocate returns a free Page ID, or 0 if none available.
+// Uses reverse index for O(1) pending lookup instead of O(n*m) scan.
+func (f *Freelist) Allocate() base.PageID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.freed) == 0 {
+		// No free pages available
+		return 0
+	}
+
+	// Pop from end
+	id := f.freed[len(f.freed)-1]
+	f.freed = f.freed[:len(f.freed)-1]
+
+	// CRITICAL: Remove from pending to prevent double-allocation
+	// Use reverse index for O(1) lookup instead of scanning all pending entries
+	if txnID, exists := f.pendingReverse[id]; exists {
+		pages := f.pending[txnID]
+		for i := len(pages) - 1; i >= 0; i-- {
+			if pages[i] == id {
+				f.pending[txnID] = append(pages[:i], pages[i+1:]...)
+				break
+			}
+		}
+		if len(f.pending[txnID]) == 0 {
+			delete(f.pending, txnID)
+		}
+		delete(f.pendingReverse, id)
+	}
+
+	return id
+}
+
+// Free adds a Page ID to the free list
+func (f *Freelist) Free(id base.PageID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.free(id)
+}
+
+// free adds a Page ID to the free list (internal, caller must hold lock)
+func (f *Freelist) free(id base.PageID) {
+	// Check if already in free list to prevent duplicates
+	for _, existingID := range f.freed {
+		if existingID == id {
+			return
+		}
+	}
+
+	f.freed = append(f.freed, id)
+	// Keep sorted for deterministic behavior
+	for i := len(f.freed) - 1; i > 0; i-- {
+		if f.freed[i] < f.freed[i-1] {
+			f.freed[i], f.freed[i-1] = f.freed[i-1], f.freed[i]
+		} else {
+			break
+		}
+	}
+}
+
+// Pending adds pages to the pending map at the given transaction ID.
+// Pages remain pending until Release() moves them to free list.
+// Maintains reverse index for O(1) lookup in Allocate().
+func (f *Freelist) Pending(txnID uint64, pageIDs []base.PageID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(pageIDs) == 0 {
+		return
+	}
+
+	f.pending[txnID] = append(f.pending[txnID], pageIDs...)
+
+	// Maintain reverse index
+	for _, pageID := range pageIDs {
+		f.pendingReverse[pageID] = txnID
+	}
+}
+
+// Release moves pages from pending to free for all transactions < minTxnID.
+// Returns number of pages released.
+// Cleans up reverse index entries.
+func (f *Freelist) Release(minTxnID uint64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	released := 0
+	for txnID, pages := range f.pending {
+		if txnID < minTxnID {
+			for _, pageID := range pages {
+				f.free(pageID)
+				delete(f.pendingReverse, pageID)
+				released++
+			}
+			delete(f.pending, txnID)
+		}
+	}
+	return released
+}
+
+// PagesNeeded returns number of pages needed to serialize this freelist
+func (f *Freelist) PagesNeeded() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	freeBytes := 8 + len(f.freed)*8
+
+	pendingBytes := 0
+	if len(f.pending) > 0 {
+		pendingBytes = 8 + 8 // marker + count
+		for _, pages := range f.pending {
+			pendingBytes += 8 + 8 + len(pages)*8 // txnID + count + page IDs
+		}
+	}
+
+	totalBytes := freeBytes + pendingBytes
+	if totalBytes == 0 {
+		return 1
+	}
+
+	pagesNeeded := 0
+	remainingBytes := totalBytes
+	for remainingBytes > 0 {
+		pagesNeeded++
+		if remainingBytes <= base.PageSize {
+			remainingBytes = 0
+		} else {
+			remainingBytes -= base.PageSize
+		}
+	}
+
+	return pagesNeeded
+}
+
+// Serialize writes freelist to pages starting at given slice
+func (f *Freelist) Serialize(pages []*base.Page) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	buf := make([]byte, 0, base.PageSize*len(pages))
+
+	// Write free count
+	countBytes := make([]byte, 8)
+	*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(f.freed))
+	buf = append(buf, countBytes...)
+
+	// Write free IDs
+	for _, id := range f.freed {
+		idBytes := make([]byte, 8)
+		*(*base.PageID)(unsafe.Pointer(&idBytes[0])) = id
+		buf = append(buf, idBytes...)
+	}
+
+	// Write pending data if present
+	if len(f.pending) > 0 {
+		// Write marker
+		markerBytes := make([]byte, 8)
+		*(*base.PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
+		buf = append(buf, markerBytes...)
+
+		// Write pending count
+		pendingCountBytes := make([]byte, 8)
+		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(f.pending))
+		buf = append(buf, pendingCountBytes...)
+
+		// Sort txnIDs for deterministic serialization
+		txnIDs := make([]uint64, 0, len(f.pending))
+		for txnID := range f.pending {
+			txnIDs = append(txnIDs, txnID)
+		}
+		for i := 1; i < len(txnIDs); i++ {
+			for j := i; j > 0 && txnIDs[j] < txnIDs[j-1]; j-- {
+				txnIDs[j], txnIDs[j-1] = txnIDs[j-1], txnIDs[j]
+			}
+		}
+
+		// Write each pending entry
+		for _, txnID := range txnIDs {
+			pages := f.pending[txnID]
+
+			// Write txnID
+			txnBytes := make([]byte, 8)
+			*(*uint64)(unsafe.Pointer(&txnBytes[0])) = txnID
+			buf = append(buf, txnBytes...)
+
+			// Write Page count
+			countBytes := make([]byte, 8)
+			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(pages))
+			buf = append(buf, countBytes...)
+
+			// Write page IDs
+			for _, pageID := range pages {
+				pidBytes := make([]byte, 8)
+				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
+				buf = append(buf, pidBytes...)
+			}
+		}
+	}
+
+	// Copy buffer to pages
+	offset := 0
+	for i := 0; i < len(pages); i++ {
+		n := copy(pages[i].Data[:], buf[offset:])
+		offset += n
+	}
+}
+
+// Deserialize reads freelist from pages and rebuilds reverse index
+func (f *Freelist) Deserialize(pages []*base.Page) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.freed = make([]base.PageID, 0)
+	f.pending = make(map[uint64][]base.PageID)
+	f.pendingReverse = make(map[base.PageID]uint64)
+
+	// Build linear buffer from pages
+	buf := make([]byte, 0, base.PageSize*len(pages))
+	for _, page := range pages {
+		buf = append(buf, page.Data[:]...)
+	}
+
+	offset := 0
+
+	// Read free count
+	if len(buf) < 8 {
+		return
+	}
+	freeCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
+	offset += 8
+
+	// Read free IDs
+	for i := uint64(0); i < freeCount; i++ {
+		if offset+8 > len(buf) {
+			break
+		}
+		id := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
+		f.freed = append(f.freed, id)
+		offset += 8
+	}
+
+	// Check for pending marker
+	if offset+8 > len(buf) {
+		return
+	}
+	marker := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
+	if marker != PendingMarker {
+		return
+	}
+	offset += 8
+
+	// Read pending count
+	if offset+8 > len(buf) {
+		return
+	}
+	pendingCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
+	offset += 8
+
+	// Read pending entries
+	for i := uint64(0); i < pendingCount; i++ {
+		// Read txnID
+		if offset+8 > len(buf) {
+			break
+		}
+		txnID := *(*uint64)(unsafe.Pointer(&buf[offset]))
+		offset += 8
+
+		// Read Page count
+		if offset+8 > len(buf) {
+			break
+		}
+		pageCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
+		offset += 8
+
+		// Read Page IDs
+		pageIDs := make([]base.PageID, 0, pageCount)
+		for j := uint64(0); j < pageCount; j++ {
+			if offset+8 > len(buf) {
+				break
+			}
+			pageID := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
+			pageIDs = append(pageIDs, pageID)
+			offset += 8
+		}
+
+		if len(pageIDs) > 0 {
+			f.pending[txnID] = pageIDs
+			// Rebuild reverse index
+			for _, pageID := range pageIDs {
+				f.pendingReverse[pageID] = txnID
+			}
+		}
+	}
+}
+
+// Stats returns freelist statistics for observability
+func (f *Freelist) Stats() (freedCount int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.freed)
+}
