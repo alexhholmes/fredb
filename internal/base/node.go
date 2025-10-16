@@ -16,6 +16,7 @@ var Pool = sync.Pool{
 			Keys:     make([][]byte, 0, MinKeysPerNode),
 			Values:   make([][]byte, 0, MinKeysPerNode),
 			Children: make([]PageID, 0, MinKeysPerNode),
+			// arena: nil - lazy allocate only for read path (Deserialize)
 		}
 	},
 }
@@ -32,6 +33,9 @@ type Node struct {
 	Keys     [][]byte
 	Values   [][]byte
 	Children []PageID
+
+	// Arena for key/value data - reduces allocations from ~128 to 2 per node
+	arena []byte
 }
 
 func NewLeaf(id PageID, keys, values [][]byte) *Node {
@@ -40,6 +44,7 @@ func NewLeaf(id PageID, keys, values [][]byte) *Node {
 	node.Dirty = true
 	node.Leaf = true
 	node.NumKeys = uint16(len(keys))
+	// Write path: direct slice append (fast, temporary allocations ok)
 	node.Keys = append(node.Keys[:0], keys...)
 	node.Values = append(node.Values[:0], values...)
 	return node
@@ -51,6 +56,7 @@ func NewBranch(id PageID, keys [][]byte, children []PageID) *Node {
 	node.Dirty = true
 	node.Leaf = false
 	node.NumKeys = uint16(len(keys))
+	// Write path: direct slice append (fast, temporary allocations ok)
 	node.Keys = append(node.Keys[:0], keys...)
 	node.Children = append(node.Children[:0], children...)
 	return node
@@ -139,53 +145,111 @@ func (n *Node) Deserialize(p *Page) error {
 	n.TxID = header.TxnID // Track transaction that wrote this node
 
 	if (header.Flags & LeafPageFlag) != 0 {
-		// Deserialize leaf Node
+		// Deserialize leaf Node using arena allocation
 		n.Leaf = true
-		n.Keys = make([][]byte, n.NumKeys)
-		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
 
 		elements := p.LeafElements()
+
+		// Calculate total space needed for all keys and values
+		totalSize := 0
+		for i := 0; i < int(n.NumKeys); i++ {
+			totalSize += int(elements[i].KeySize) + int(elements[i].ValueSize)
+		}
+
+		// Resize arena if needed (reuse capacity when possible)
+		if cap(n.arena) < totalSize {
+			n.arena = make([]byte, totalSize)
+		} else {
+			n.arena = n.arena[:totalSize]
+		}
+
+		// Resize slice headers (cheap - no allocations)
+		if cap(n.Keys) < int(n.NumKeys) {
+			n.Keys = make([][]byte, n.NumKeys)
+		} else {
+			n.Keys = n.Keys[:n.NumKeys]
+		}
+		if cap(n.Values) < int(n.NumKeys) {
+			n.Values = make([][]byte, n.NumKeys)
+		} else {
+			n.Values = n.Values[:n.NumKeys]
+		}
+
+		// Copy all data into arena and create slices
+		offset := 0
 		for i := 0; i < int(n.NumKeys); i++ {
 			elem := elements[i]
 
-			// Copy key
+			// Copy key into arena
 			keyData, err := p.GetKey(elem.KeyOffset, elem.KeySize)
 			if err != nil {
 				return err
 			}
-			n.Keys[i] = make([]byte, len(keyData))
-			copy(n.Keys[i], keyData)
+			keySize := int(elem.KeySize)
+			copy(n.arena[offset:], keyData)
+			n.Keys[i] = n.arena[offset : offset+keySize : offset+keySize]
+			offset += keySize
 
-			// Copy value
+			// Copy value into arena
 			valueData, err := p.GetValue(elem.ValueOffset, elem.ValueSize)
 			if err != nil {
 				return err
 			}
-			n.Values[i] = make([]byte, len(valueData))
-			copy(n.Values[i], valueData)
+			valSize := int(elem.ValueSize)
+			copy(n.arena[offset:], valueData)
+			n.Values[i] = n.arena[offset : offset+valSize : offset+valSize]
+			offset += valSize
 		}
 	} else {
-		// Deserialize branch Node (B+ tree: only Keys, no Values)
+		// Deserialize branch Node using arena allocation
 		n.Leaf = false
-		n.Keys = make([][]byte, n.NumKeys)
-		n.Values = nil // Branch nodes don't have Values
-		n.Children = make([]PageID, n.NumKeys+1)
+		n.Values = nil
+
+		elements := p.BranchElements()
+
+		// Calculate total space needed for all keys
+		totalSize := 0
+		for i := 0; i < int(n.NumKeys); i++ {
+			totalSize += int(elements[i].KeySize)
+		}
+
+		// Resize arena if needed
+		if cap(n.arena) < totalSize {
+			n.arena = make([]byte, totalSize)
+		} else {
+			n.arena = n.arena[:totalSize]
+		}
+
+		// Resize slice headers
+		if cap(n.Keys) < int(n.NumKeys) {
+			n.Keys = make([][]byte, n.NumKeys)
+		} else {
+			n.Keys = n.Keys[:n.NumKeys]
+		}
+		if cap(n.Children) < int(n.NumKeys)+1 {
+			n.Children = make([]PageID, n.NumKeys+1)
+		} else {
+			n.Children = n.Children[:n.NumKeys+1]
+		}
 
 		// Read Children[0]
 		n.Children[0] = p.ReadBranchFirstChild()
 
-		elements := p.BranchElements()
+		// Copy all keys into arena
+		offset := 0
 		for i := 0; i < int(n.NumKeys); i++ {
 			elem := elements[i]
 
-			// Copy key
+			// Copy key into arena
 			keyData, err := p.GetKey(elem.KeyOffset, elem.KeySize)
 			if err != nil {
 				return err
 			}
-			n.Keys[i] = make([]byte, len(keyData))
-			copy(n.Keys[i], keyData)
+			keySize := int(elem.KeySize)
+			copy(n.arena[offset:], keyData)
+			n.Keys[i] = n.arena[offset : offset+keySize : offset+keySize]
+			offset += keySize
 
 			// Copy child pointer
 			n.Children[i+1] = elem.ChildID
@@ -211,6 +275,7 @@ func (n *Node) FindKey(key []byte) int {
 
 // Clone creates a deep copy of this Node for copy-on-write
 // The Clone is marked Dirty and does not have a PageID allocated yet
+// Write path: direct allocations for speed (temporary, will be GC'd quickly)
 func (n *Node) Clone() *Node {
 	cloned := Pool.Get().(*Node)
 	cloned.PageID = 0
@@ -218,7 +283,7 @@ func (n *Node) Clone() *Node {
 	cloned.Leaf = n.Leaf
 	cloned.NumKeys = n.NumKeys
 
-	// Deep copy Keys
+	// Deep copy Keys (direct alloc - fast write path)
 	cloned.Keys = cloned.Keys[:0]
 	for _, key := range n.Keys {
 		keyCopy := make([]byte, len(key))
@@ -238,7 +303,7 @@ func (n *Node) Clone() *Node {
 		cloned.Values = cloned.Values[:0]
 	}
 
-	// Deep copy Children (branch nodes only)
+	// Copy Children (branch nodes only)
 	if !n.Leaf {
 		cloned.Children = append(cloned.Children[:0], n.Children...)
 	} else {
