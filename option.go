@@ -10,13 +10,6 @@ const (
 	// - Use for: Financial transactions, critical data
 	SyncEveryCommit SyncMode = iota
 
-	// SyncBytes fsyncs when at least N bytes have been written since the last
-	// fsync. Uses mmap I/O.
-	// - Balances durability and performance
-	// - Some data loss possible on crash (up to N bytes)
-	// - Use for: General purpose applications
-	SyncBytes
-
 	// SyncOff disables fsync entirely (testing/bulk loads only). Uses mmap
 	// I/O.
 	// - Maximum throughput
