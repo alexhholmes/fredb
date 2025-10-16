@@ -2,6 +2,7 @@ package fredb_test
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -15,6 +16,10 @@ import (
 	_ "modernc.org/sqlite"
 
 	"fredb"
+)
+
+var (
+	benchFredb = flag.Bool("fredb", false, "run only fredb benchmarks")
 )
 
 const (
@@ -62,6 +67,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("Bbolt/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_bbolt_sync.db"
 		defer os.Remove(path)
 
@@ -85,6 +93,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("Bbolt/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_bbolt_nosync.db"
 		defer os.Remove(path)
 
@@ -108,6 +119,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("Badger/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_badger_sync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -128,6 +142,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("Badger/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_badger_nosync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -148,6 +165,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("Pebble/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_pebble_sync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -165,6 +185,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("Pebble/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_pebble_nosync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -182,6 +205,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("SQLite/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_sqlite_sync.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -203,6 +229,9 @@ func BenchmarkSequentialWrite(b *testing.B) {
 	})
 
 	b.Run("SQLite/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_write_sqlite_nosync.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -276,6 +305,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("Bbolt/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_bbolt_sync.db"
 		defer os.Remove(path)
 
@@ -306,6 +338,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("Bbolt/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_bbolt_nosync.db"
 		defer os.Remove(path)
 
@@ -336,6 +371,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("Badger/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_badger_sync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -362,6 +400,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("Badger/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_badger_nosync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -388,6 +429,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("Pebble/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_pebble_sync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -411,6 +455,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("Pebble/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_pebble_nosync.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -434,6 +481,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("SQLite/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_sqlite_sync.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -460,6 +510,9 @@ func BenchmarkBatchWrite(b *testing.B) {
 	})
 
 	b.Run("SQLite/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_batch_write_sqlite_nosync.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -518,6 +571,9 @@ func BenchmarkSequentialRead(b *testing.B) {
 	})
 
 	b.Run("Bbolt", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_read_bbolt.db"
 		defer os.Remove(path)
 
@@ -552,6 +608,9 @@ func BenchmarkSequentialRead(b *testing.B) {
 	})
 
 	b.Run("Badger", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_read_badger.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -582,6 +641,9 @@ func BenchmarkSequentialRead(b *testing.B) {
 	})
 
 	b.Run("Pebble", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_read_pebble.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -608,6 +670,9 @@ func BenchmarkSequentialRead(b *testing.B) {
 	})
 
 	b.Run("SQLite", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_seq_read_sqlite.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -672,6 +737,9 @@ func BenchmarkRandomRead(b *testing.B) {
 	})
 
 	b.Run("Bbolt", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rand_read_bbolt.db"
 		defer os.Remove(path)
 
@@ -709,6 +777,9 @@ func BenchmarkRandomRead(b *testing.B) {
 	})
 
 	b.Run("Badger", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rand_read_badger.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -742,6 +813,9 @@ func BenchmarkRandomRead(b *testing.B) {
 	})
 
 	b.Run("Pebble", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rand_read_pebble.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -771,6 +845,9 @@ func BenchmarkRandomRead(b *testing.B) {
 	})
 
 	b.Run("SQLite", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rand_read_sqlite.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -839,6 +916,9 @@ func BenchmarkConcurrentRead(b *testing.B) {
 	})
 
 	b.Run("Bbolt", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_conc_read_bbolt.db"
 		defer os.Remove(path)
 
@@ -877,6 +957,9 @@ func BenchmarkConcurrentRead(b *testing.B) {
 	})
 
 	b.Run("Badger", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_conc_read_badger.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -911,6 +994,9 @@ func BenchmarkConcurrentRead(b *testing.B) {
 	})
 
 	b.Run("Pebble", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_conc_read_pebble.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -941,6 +1027,9 @@ func BenchmarkConcurrentRead(b *testing.B) {
 	})
 
 	b.Run("SQLite", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_conc_read_sqlite.db"
 		os.Remove(path)
 		defer os.Remove(path)
@@ -1036,6 +1125,9 @@ func BenchmarkReadWriteMix(b *testing.B) {
 	})
 
 	b.Run("Bbolt", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rw_mix_bbolt.db"
 		defer os.Remove(path)
 
@@ -1101,6 +1193,9 @@ func BenchmarkReadWriteMix(b *testing.B) {
 	})
 
 	b.Run("Badger", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rw_mix_badger.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -1162,6 +1257,9 @@ func BenchmarkReadWriteMix(b *testing.B) {
 	})
 
 	b.Run("Pebble", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rw_mix_pebble.db"
 		os.RemoveAll(path)
 		defer os.RemoveAll(path)
@@ -1217,6 +1315,9 @@ func BenchmarkReadWriteMix(b *testing.B) {
 	})
 
 	b.Run("SQLite", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
 		path := "/tmp/bench_rw_mix_sqlite.db"
 		os.Remove(path)
 		defer os.Remove(path)
