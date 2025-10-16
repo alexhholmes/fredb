@@ -59,7 +59,7 @@ func (c *Cursor) First() ([]byte, []byte) {
 
 	// Descend to leftmost leaf
 	node := root
-	for !node.IsLeaf() {
+	for !node.Leaf {
 		c.stack = append(c.stack, path{node: node, childIndex: 0})
 		child, err := c.tx.loadNode(node.Children[0])
 		if err != nil {
@@ -105,7 +105,7 @@ func (c *Cursor) Last() ([]byte, []byte) {
 
 	// Descend to rightmost leaf
 	node := root
-	for !node.IsLeaf() {
+	for !node.Leaf {
 		lastChild := len(node.Children) - 1
 		c.stack = append(c.stack, path{node: node, childIndex: lastChild})
 		child, err := c.tx.loadNode(node.Children[lastChild])
@@ -165,7 +165,7 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 
 	// Descend to appropriate leaf
 	node := root
-	for !node.IsLeaf() {
+	for !node.Leaf {
 		i := 0
 		for i < int(node.NumKeys) && bytes.Compare(seek, node.Keys[i]) > 0 {
 			i++
@@ -336,7 +336,7 @@ func (c *Cursor) nextLeaf() error {
 			}
 
 			// Keep descending to leftmost child
-			for !node.IsLeaf() {
+			for !node.Leaf {
 				c.stack = append(c.stack, path{node: node, childIndex: 0})
 				child, err := c.tx.loadNode(node.Children[0])
 				if err != nil {
@@ -388,7 +388,7 @@ func (c *Cursor) prevLeaf() error {
 			}
 
 			// Keep descending to rightmost child
-			for !node.IsLeaf() {
+			for !node.Leaf {
 				lastChild := len(node.Children) - 1
 				c.stack = append(c.stack, path{node: node, childIndex: lastChild})
 				child, err := c.tx.loadNode(node.Children[lastChild])

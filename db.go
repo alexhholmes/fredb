@@ -114,6 +114,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
 			Dirty:    true,
+			Leaf:     true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   make([][]byte, 0),
@@ -123,6 +124,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		root = &base.Node{
 			PageID:   rootPageID,
 			Dirty:    true,
+			Leaf:     false,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   nil,
@@ -145,6 +147,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
 			Dirty:    true,
+			Leaf:     true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   make([][]byte, 0),
@@ -154,6 +157,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootBucketRoot := &base.Node{
 			PageID:   rootBucketRootID,
 			Dirty:    true,
+			Leaf:     false,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   nil,
@@ -448,7 +452,7 @@ func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error 
 	}
 
 	// If branch node, recursively collect children first (post-order)
-	if !node.IsLeaf() {
+	if !node.Leaf {
 		for _, childID := range node.Children {
 			if err := collectTreePages(tx, childID, pageIDs); err != nil {
 				return err

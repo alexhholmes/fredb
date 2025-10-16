@@ -32,6 +32,7 @@ func newLeafNode(keys, values [][]byte) *base.Node {
 	return &base.Node{
 		PageID:  1,
 		Dirty:   false,
+		Leaf:    true,
 		NumKeys: uint16(len(keys)),
 		Keys:    keys,
 		Values:  values,
@@ -46,6 +47,7 @@ func newBranchNode(keys [][]byte, children []base.PageID) *base.Node {
 		Children: children,
 		Values:   nil,
 		Dirty:    false,
+		Leaf:     false,
 	}
 }
 
@@ -949,7 +951,7 @@ func TestNewBranchRoot_Basic(t *testing.T) {
 
 	assert.Equal(t, base.PageID(100), root.PageID, "root PageID should be 100")
 	assert.True(t, root.Dirty, "root should be marked dirty")
-	assert.False(t, root.IsLeaf(), "root should not be a leaf")
+	assert.False(t, root.Leaf, "root should not be a leaf")
 	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
 	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("m")}), "root keys should contain separator")
 	assert.Nil(t, root.Values, "root values should be nil for branch node")
@@ -972,7 +974,7 @@ func TestNewBranchRoot_EmptyKey(t *testing.T) {
 	require.Equal(t, 2, len(root.Children), "root should have 2 children")
 	assert.Equal(t, expectedChildren, root.Children, "root children should be [5, 6]")
 	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
-	assert.False(t, root.IsLeaf(), "root should not be a leaf")
+	assert.False(t, root.Leaf, "root should not be a leaf")
 }
 
 func TestNewBranchRoot_LargePageIDs(t *testing.T) {

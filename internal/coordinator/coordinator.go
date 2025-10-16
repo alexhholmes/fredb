@@ -348,7 +348,7 @@ func (c *Coordinator) loadExistingDB() error {
 }
 
 // GetNode retrieves a node, checking cache first then loading from disk.
-func (c *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, error) {
+func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 	// Check cache first
 	if node, hit := c.cache.Get(pageID); hit {
 		return node, nil
@@ -386,7 +386,7 @@ func (c *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, err
 // LoadNode loads a node, coordinating cache and disk I/O.
 // Routes TX calls through Coordinator instead of direct cache access.
 func (c *Coordinator) LoadNode(pageID base.PageID, txnID uint64) (*base.Node, bool) {
-	node, err := c.GetNode(pageID, txnID)
+	node, err := c.GetNode(pageID)
 	if err != nil {
 		return nil, false
 	}
@@ -450,7 +450,7 @@ func (c *Coordinator) MapVirtualPageIDs(
 		}
 
 		// Remap child pointers in branch nodes
-		if !node.IsLeaf() {
+		if !node.Leaf {
 			for i, childID := range node.Children {
 				if realID, isVirtual := virtualToReal[childID]; isVirtual {
 					node.Children[i] = realID
@@ -474,7 +474,7 @@ func (c *Coordinator) MapVirtualPageIDs(
 	}
 
 	// Remap root's children pointers
-	if root != nil && !root.IsLeaf() {
+	if root != nil && !root.Leaf {
 		for i, childID := range root.Children {
 			if realID, isVirtual := virtualToReal[childID]; isVirtual {
 				root.Children[i] = realID

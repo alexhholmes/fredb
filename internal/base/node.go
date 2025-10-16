@@ -15,11 +15,12 @@ const (
 type Node struct {
 	PageID PageID
 	Dirty  bool
+	Leaf   bool
 
 	// Decoded Node data
 	NumKeys  uint16
 	Keys     [][]byte
-	Values   [][]byte // If nil, this is a branch Node
+	Values   [][]byte
 	Children []PageID
 }
 
@@ -35,14 +36,14 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 		NumKeys: n.NumKeys,
 		TxnID:   txID,
 	}
-	if n.IsLeaf() {
+	if n.Leaf {
 		header.Flags = LeafPageFlag
 	} else {
 		header.Flags = BranchPageFlag
 	}
 	page.WriteHeader(header)
 
-	if n.IsLeaf() {
+	if n.Leaf {
 		// Serialize leaf Node - pack from end backward
 		dataOffset := uint16(PageSize)
 		// Process in reverse order to pack from end
@@ -106,6 +107,7 @@ func (n *Node) Deserialize(p *Page) error {
 
 	if (header.Flags & LeafPageFlag) != 0 {
 		// Deserialize leaf Node
+		n.Leaf = true
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
@@ -132,6 +134,7 @@ func (n *Node) Deserialize(p *Page) error {
 		}
 	} else {
 		// Deserialize branch Node (B+ tree: only Keys, no Values)
+		n.Leaf = false
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = nil // Branch nodes don't have Values
 		n.Children = make([]PageID, n.NumKeys+1)
@@ -179,6 +182,7 @@ func (n *Node) Clone() *Node {
 	cloned := &Node{
 		PageID:  0,
 		Dirty:   true,
+		Leaf:    n.Leaf,
 		NumKeys: n.NumKeys,
 	}
 
@@ -190,7 +194,7 @@ func (n *Node) Clone() *Node {
 	}
 
 	// Deep copy Values (leaf nodes only)
-	if n.IsLeaf() && len(n.Values) > 0 {
+	if n.Leaf && len(n.Values) > 0 {
 		cloned.Values = make([][]byte, len(n.Values))
 		for i, val := range n.Values {
 			cloned.Values[i] = make([]byte, len(val))
@@ -199,7 +203,7 @@ func (n *Node) Clone() *Node {
 	}
 
 	// Deep copy Children (branch nodes only)
-	if !n.IsLeaf() {
+	if !n.Leaf {
 		cloned.Children = make([]PageID, len(n.Children))
 		copy(cloned.Children, n.Children)
 	}
@@ -221,7 +225,7 @@ func (n *Node) CheckOverflow() error {
 
 // IsFull checks if a Node is full
 func (n *Node) IsFull(key, value []byte) bool {
-	if n.IsLeaf() {
+	if n.Leaf {
 		return n.Size()+LeafElementSize+len(key)+len(value) > PageSize
 	}
 	// Branch nodes only have keys, no values
@@ -232,7 +236,7 @@ func (n *Node) IsFull(key, value []byte) bool {
 func (n *Node) Size() int {
 	size := PageHeaderSize
 
-	if n.IsLeaf() {
+	if n.Leaf {
 		size += int(n.NumKeys) * LeafElementSize
 		for i := 0; i < int(n.NumKeys); i++ {
 			size += len(n.Keys[i]) + len(n.Values[i])
@@ -247,9 +251,4 @@ func (n *Node) Size() int {
 	}
 
 	return size
-}
-
-// IsLeaf returns true if this is a leaf Node
-func (n *Node) IsLeaf() bool {
-	return n.Values != nil
 }

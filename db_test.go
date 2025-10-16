@@ -1796,7 +1796,7 @@ func TestBTreeSplitting(t *testing.T) {
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should not be a leaf after splitting")
+	assert.False(t, db.coord.GetSnapshot().Root.Leaf, "Root should not be a leaf after splitting")
 
 	// Check tree height increases (root should have Children)
 	assert.NotEmpty(t, db.coord.GetSnapshot().Root.Children, "Root should have Children after splitting")
@@ -1836,7 +1836,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	rootBucket := tx.Bucket([]byte("__root__"))
 	require.NotNil(t, rootBucket, "__root__ bucket should exist")
 
-	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should not be a leaf after multiple splits")
+	assert.False(t, rootBucket.root.Leaf, "Bucket root should not be a leaf after multiple splits")
 	// Verify root has multiple Children
 	assert.GreaterOrEqual(t, len(rootBucket.root.Children), 2, "Bucket root should have multiple Children after multiple splits")
 	tx.Rollback()
@@ -1890,7 +1890,7 @@ func TestSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely right-heavy due to sequential insert)
-	if db.coord.GetSnapshot().Root.IsLeaf() {
+	if db.coord.GetSnapshot().Root.Leaf {
 		t.Logf("Tree has single leaf root after %d sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d sequential inserts",
@@ -1939,7 +1939,7 @@ func TestRandomInsert(t *testing.T) {
 	}
 
 	// Check tree balance (random insertion typically produces more balanced trees)
-	if !db.coord.GetSnapshot().Root.IsLeaf() {
+	if !db.coord.GetSnapshot().Root.Leaf {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d random inserts",
 			db.coord.GetSnapshot().Root.NumKeys, len(db.coord.GetSnapshot().Root.Children), numKeys)
 
@@ -1978,7 +1978,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely left-heavy due to reverse sequential insert)
-	if db.coord.GetSnapshot().Root.IsLeaf() {
+	if db.coord.GetSnapshot().Root.Leaf {
 		t.Logf("Tree has single leaf root after %d reverse sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d reverse sequential inserts",
@@ -2103,7 +2103,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := db.coord.GetSnapshot().Root.IsLeaf()
+	initialIsLeaf := db.coord.GetSnapshot().Root.Leaf
 	initialRootKeys := int(db.coord.GetSnapshot().Root.NumKeys)
 	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
@@ -2116,7 +2116,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 			t.Logf("After %d deletions: root IsLeaf=%v, NumKeys=%d",
-				i+1, db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+				i+1, db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -2126,7 +2126,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 	// Final tree should be empty
 	assert.Equal(t, uint16(0), db.coord.GetSnapshot().Root.NumKeys, "Tree should be empty")
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Empty tree root should be branch")
+	assert.False(t, db.coord.GetSnapshot().Root.Leaf, "Empty tree root should be branch")
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
@@ -2152,7 +2152,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Check initial tree structure
-		initialIsLeaf := db.coord.GetSnapshot().Root.IsLeaf()
+		initialIsLeaf := db.coord.GetSnapshot().Root.Leaf
 		initialRootKeys := int(db.coord.GetSnapshot().Root.NumKeys)
 		t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
@@ -2180,7 +2180,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 			// Log tree structure changes at key points
 			if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
 				t.Logf("After %d random deletions: root IsLeaf=%v, NumKeys=%d",
-					i+1, db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+					i+1, db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 			}
 
 			// Verify deleted key is gone
@@ -2203,7 +2203,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 		// Final tree should be empty
 		assert.Equal(t, uint16(0), db.coord.GetSnapshot().Root.NumKeys, "Tree should be empty")
-		assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Empty tree root should be branch")
+		assert.False(t, db.coord.GetSnapshot().Root.Leaf, "Empty tree root should be branch")
 
 		// close database after each iteration
 		db.Close()
@@ -2226,7 +2226,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 
 	// Delete Keys in reverse order
 	for i := numKeys - 1; i >= 0; i-- {
@@ -2238,7 +2238,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 		deletedCount := numKeys - i
 		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
 			t.Logf("After %d reverse deletions: root IsLeaf=%v, NumKeys=%d",
-				deletedCount, db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+				deletedCount, db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -2354,7 +2354,7 @@ func TestSingleKey(t *testing.T) {
 	assert.Equal(t, string(newValue), string(val))
 
 	// Verify tree structure: root is always a branch (never leaf)
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should always be a branch node")
+	assert.False(t, db.coord.GetSnapshot().Root.Leaf, "Root should always be a branch node")
 	assert.Equal(t, 1, len(db.coord.GetSnapshot().Root.Children), "Root should have 1 child")
 
 	// Load the child and verify it has the key
@@ -2364,7 +2364,7 @@ func TestSingleKey(t *testing.T) {
 
 	child, err := tx.loadNode(db.coord.GetSnapshot().Root.Children[0])
 	assert.NoError(t, err)
-	assert.True(t, child.IsLeaf(), "Child should be a leaf")
+	assert.True(t, child.Leaf, "Child should be a leaf")
 	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
 }
 
@@ -2718,7 +2718,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 		}
 	}
 
-	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+	t.Logf("Tree root: IsLeaf=%v, NumKeys=%d", db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 }
 
 func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
@@ -2779,8 +2779,8 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	rootBucket := tx.Bucket([]byte("__root__"))
 	require.NotNil(t, rootBucket, "__root__ bucket should exist")
 
-	t.Logf("Root: IsLeaf=%v, NumKeys=%d, Children=%d", rootBucket.root.IsLeaf(), rootBucket.root.NumKeys, len(rootBucket.root.Children))
-	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should always be a branch node")
+	t.Logf("Root: IsLeaf=%v, NumKeys=%d, Children=%d", rootBucket.root.Leaf, rootBucket.root.NumKeys, len(rootBucket.root.Children))
+	assert.False(t, rootBucket.root.Leaf, "Bucket root should always be a branch node")
 	assert.GreaterOrEqual(t, len(rootBucket.root.Children), 2, "Bucket root should have at least 2 children after split")
 	tx.Rollback()
 
@@ -2805,7 +2805,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should be branch Node")
+	require.False(t, db.coord.GetSnapshot().Root.Leaf, "Root should be branch Node")
 
 	initialRootKeys := db.coord.GetSnapshot().Root.NumKeys
 	t.Logf("Initial root Keys: %d", initialRootKeys)
@@ -2816,12 +2816,12 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		require.NoError(t, err)
 
 		if i%(numKeys/4) == 0 {
-			t.Logf("After %d deletions: root.IsLeaf()=%v, root.NumKeys=%d",
-				i+1, db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+			t.Logf("After %d deletions: root.Leaf=%v, root.NumKeys=%d",
+				i+1, db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 		}
 	}
 
-	assert.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Final root should be branch")
+	assert.False(t, db.coord.GetSnapshot().Root.Leaf, "Final root should be branch")
 	assert.Equal(t, uint16(0), db.coord.GetSnapshot().Root.NumKeys, "Final root should have 0 Keys")
 }
 
@@ -2838,7 +2838,7 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.False(t, db.coord.GetSnapshot().Root.IsLeaf(), "Root should not be leaf for this test")
+	require.False(t, db.coord.GetSnapshot().Root.Leaf, "Root should not be leaf for this test")
 
 	t.Logf("Tree structure: root.NumKeys=%d, root.Children=%d",
 		db.coord.GetSnapshot().Root.NumKeys, len(db.coord.GetSnapshot().Root.Children))
@@ -2856,6 +2856,6 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	t.Logf("After deletions: root.IsLeaf()=%v, root.NumKeys=%d",
-		db.coord.GetSnapshot().Root.IsLeaf(), db.coord.GetSnapshot().Root.NumKeys)
+	t.Logf("After deletions: root.Leaf=%v, root.NumKeys=%d",
+		db.coord.GetSnapshot().Root.Leaf, db.coord.GetSnapshot().Root.NumKeys)
 }

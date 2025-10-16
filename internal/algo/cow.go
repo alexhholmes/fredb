@@ -35,7 +35,7 @@ func ApplyLeafDelete(node *base.Node, idx int) {
 // Assumes node is already writable
 func ApplyBranchRemoveSeparator(node *base.Node, sepIdx int) {
 	node.Keys = RemoveAt(node.Keys, sepIdx)
-	if node.IsLeaf() {
+	if node.Leaf {
 		node.Values = RemoveAt(node.Values, sepIdx)
 	}
 	node.Children = RemoveChildAt(node.Children, sepIdx+1)
@@ -48,7 +48,7 @@ func ApplyBranchRemoveSeparator(node *base.Node, sepIdx int) {
 // Assumes all nodes are already writable
 // Returns updated parent
 func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
-	if node.IsLeaf() {
+	if node.Leaf {
 		// Extract last from left sibling
 		borrowed := ExtractLastFromSibling(leftSibling)
 
@@ -94,7 +94,7 @@ func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
 // Updates parent separator key
 // Assumes all nodes are already writable
 func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
-	if node.IsLeaf() {
+	if node.Leaf {
 		// Extract first from right sibling
 		borrowed := ExtractFirstFromSibling(rightSibling)
 
@@ -169,6 +169,7 @@ func NewBranchRoot(leftChild, rightChild *base.Node, midKey []byte, pageID base.
 	return &base.Node{
 		PageID:   pageID,
 		Dirty:    true,
+		Leaf:     false,
 		NumKeys:  1,
 		Keys:     [][]byte{midKey},
 		Values:   nil,
@@ -182,7 +183,7 @@ func NewBranchRoot(leftChild, rightChild *base.Node, midKey []byte, pageID base.
 func ApplyChildSplit(parent *base.Node, childIdx int, leftChild, rightChild *base.Node, midKey, midVal []byte) {
 	// Insert middle key into parent
 	parent.Keys = InsertAt(parent.Keys, childIdx, midKey)
-	if parent.IsLeaf() {
+	if parent.Leaf {
 		parent.Values = InsertAt(parent.Values, childIdx, midVal)
 	}
 
@@ -205,7 +206,7 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 	copy(leftKeys, node.Keys[:sp.LeftCount])
 	node.Keys = leftKeys
 
-	if node.IsLeaf() {
+	if node.Leaf {
 		leftVals := make([][]byte, sp.LeftCount)
 		copy(leftVals, node.Values[:sp.LeftCount])
 		node.Values = leftVals

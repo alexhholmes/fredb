@@ -64,7 +64,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	// After loop: i points to first key > search_key (or NumKeys if all keys <= search_key)
 
 	// If leaf node, check if key found
-	if node.IsLeaf() {
+	if node.Leaf {
 		// In leaf, we need to check the previous position (since loop went past equal keys)
 		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
 			return node.Values[i-1], nil
@@ -469,6 +469,7 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	node := &base.Node{
 		PageID:   nodeID,
 		Dirty:    true,
+		Leaf:     child.Leaf,
 		NumKeys:  uint16(sp.RightCount),
 		Keys:     rightKeys,
 		Values:   rightVals,
@@ -494,7 +495,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	}
 
 	// Use coordinator's version-aware loading
-	node, err := tx.db.coord.GetNode(pageID, tx.txID)
+	node, err := tx.db.coord.GetNode(pageID)
 	if err != nil {
 		return nil, err
 	}
@@ -505,7 +506,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 // insertNonFull inserts into a non-full node with COW
 // Returns the (possibly new) root node after COW
 func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
-	if node.IsLeaf() {
+	if node.Leaf {
 		// COW before modifying leaf
 		n, err := tx.ensureWritable(node)
 		if err != nil {
@@ -677,7 +678,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 // Returns the (possibly new) node after COW
 func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	// B+ tree: if this is a leaf, check if key exists and delete
-	if node.IsLeaf() {
+	if node.Leaf {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
 			return tx.deleteFromLeaf(node, idx)
@@ -875,7 +876,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	// For large keys/values, two underflow nodes might be nearly full in bytes
 	// Calculate merged size before actually merging
 	mergedSize := leftNode.Size() + rightNode.Size()
-	if !leftNode.IsLeaf() {
+	if !leftNode.Leaf {
 		// Branch nodes: add separator key size
 		mergedSize += len(parent.Keys[parentKeyIdx])
 	}
@@ -996,6 +997,7 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	bucketLeaf := &base.Node{
 		PageID:   bucketLeafID,
 		Dirty:    true,
+		Leaf:     true,
 		NumKeys:  0,
 		Keys:     make([][]byte, 0),
 		Values:   make([][]byte, 0),
@@ -1006,6 +1008,7 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	bucketRoot := &base.Node{
 		PageID:   bucketRootID,
 		Dirty:    true,
+		Leaf:     false,
 		NumKeys:  0,
 		Keys:     make([][]byte, 0),
 		Values:   nil,
