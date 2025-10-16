@@ -56,23 +56,6 @@ func WithSyncEveryCommit() DBOption {
 	}
 }
 
-// WithSyncBytes configures the database to fsync when at least n bytes have
-// been written since the last fsync. If n is 0, this is equivalent to
-// DefaultDBOptions() (1MB).
-// This balances durability and performance, with some data loss possible on
-// crash (up to n bytes).
-//
-//goland:noinspection GoUnusedExportedFunction
-func WithSyncBytes(n uint) DBOption {
-	if n == 0 {
-		n = 1024 * 1024 // 1MB
-	}
-	return func(opts *DBOptions) {
-		opts.syncMode = SyncEveryCommit
-		opts.syncBytes = n
-	}
-}
-
 // WithSyncOff disables fsync entirely.
 // This provides maximum throughput but all unflushed data is lost on crash.
 // Only use for testing or bulk loads where data can be reconstructed.
