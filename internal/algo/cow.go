@@ -148,8 +148,8 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 		leftNode.Keys = append(leftNode.Keys, separatorKey)
 		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
 
-		// Always clear Values for branch nodes (defensive against corruption)
-		leftNode.Values = nil
+		// Clear Values field for branch nodes (in case of junk data)
+		leftNode.Values = leftNode.Values[:0]
 
 		// Merge children pointers
 		leftNode.Children = append(leftNode.Children, rightNode.Children...)
@@ -166,14 +166,15 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 
 // NewBranchRoot creates a new branch root node from two children after split
 func NewBranchRoot(leftChild, rightChild *base.Node, midKey []byte, pageID base.PageID) *base.Node {
-	return &base.Node{
-		PageID:   pageID,
-		Dirty:    true,
-		NumKeys:  1,
-		Keys:     [][]byte{midKey},
-		Values:   nil,
-		Children: []base.PageID{leftChild.PageID, rightChild.PageID},
-	}
+	node := base.Pool.Get().(*base.Node)
+	node.Reset()
+	node.PageID = pageID
+	node.Dirty = true
+	node.Leaf = false // Branch node
+	node.NumKeys = 1
+	node.Keys = append(node.Keys[:0], midKey)
+	node.Children = append(node.Children[:0], leftChild.PageID, rightChild.PageID)
+	return node
 }
 
 // ApplyChildSplit updates parent after splitting child at childIdx
@@ -210,7 +211,6 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 		copy(leftVals, node.Values[:sp.LeftCount])
 		node.Values = leftVals
 	} else {
-		node.Values = nil
 		leftChildren := make([]base.PageID, sp.Mid+1)
 		copy(leftChildren, node.Children[:sp.Mid+1])
 		node.Children = leftChildren

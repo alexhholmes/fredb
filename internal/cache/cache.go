@@ -63,6 +63,16 @@ func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
 	return nil, false
 }
 
+// Remove evicts a node from the cache.
+// Returns true if the node was present and removed.
+func (c *Cache) Remove(pageID base.PageID) bool {
+	removed := c.lru.Remove(pageID)
+	if removed {
+		c.evictions.Add(1)
+	}
+	return removed
+}
+
 // Size returns current number of cached entries
 func (c *Cache) Size() int {
 	return c.lru.Len()

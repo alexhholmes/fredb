@@ -2,24 +2,35 @@ package base
 
 import (
 	"bytes"
+	"sync"
 )
 
 const (
-	// MaxKeysPerNode must be small enough that a full Node can Serialize to PageSize
 	MaxKeysPerNode = 64
 	// MinKeysPerNode is the minimum Keys for non-root nodes
 	MinKeysPerNode = MaxKeysPerNode / 4
 )
 
+var Pool = sync.Pool{
+	New: func() any {
+		return &Node{
+			Keys:     make([][]byte, 0, MaxKeysPerNode),
+			Values:   make([][]byte, 0, MaxKeysPerNode),
+			Children: make([]PageID, 0, MaxKeysPerNode+1),
+		}
+	},
+}
+
 // Node represents a B-tree Node with decoded Page data
 type Node struct {
 	PageID PageID
 	Dirty  bool
+	Leaf   bool // Explicit flag: true for leaf nodes, false for branch nodes
 
 	// Decoded Node data
 	NumKeys  uint16
 	Keys     [][]byte
-	Values   [][]byte // If nil, this is a branch Node
+	Values   [][]byte
 	Children []PageID
 }
 
@@ -106,6 +117,7 @@ func (n *Node) Deserialize(p *Page) error {
 
 	if (header.Flags & LeafPageFlag) != 0 {
 		// Deserialize leaf Node
+		n.Leaf = true
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
@@ -132,6 +144,7 @@ func (n *Node) Deserialize(p *Page) error {
 		}
 	} else {
 		// Deserialize branch Node (B+ tree: only Keys, no Values)
+		n.Leaf = false
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = nil // Branch nodes don't have Values
 		n.Children = make([]PageID, n.NumKeys+1)
@@ -176,35 +189,48 @@ func (n *Node) FindKey(key []byte) int {
 // Clone creates a deep copy of this Node for copy-on-write
 // The Clone is marked Dirty and does not have a PageID allocated yet
 func (n *Node) Clone() *Node {
-	cloned := &Node{
-		PageID:  0,
-		Dirty:   true,
-		NumKeys: n.NumKeys,
-	}
+	cloned := Pool.Get().(*Node)
+	cloned.Reset() // Ensure clean state from pool
+	cloned.PageID = 0
+	cloned.Dirty = true
+	cloned.Leaf = n.Leaf
+	cloned.NumKeys = n.NumKeys
 
 	// Deep copy Keys
-	cloned.Keys = make([][]byte, len(n.Keys))
-	for i, key := range n.Keys {
-		cloned.Keys[i] = make([]byte, len(key))
-		copy(cloned.Keys[i], key)
+	cloned.Keys = cloned.Keys[:0] // Reset to 0 length, keep capacity
+	for _, key := range n.Keys {
+		keyCopy := make([]byte, len(key))
+		copy(keyCopy, key)
+		cloned.Keys = append(cloned.Keys, keyCopy)
 	}
 
 	// Deep copy Values (leaf nodes only)
-	if n.IsLeaf() && len(n.Values) > 0 {
-		cloned.Values = make([][]byte, len(n.Values))
-		for i, val := range n.Values {
-			cloned.Values[i] = make([]byte, len(val))
-			copy(cloned.Values[i], val)
+	if n.Leaf {
+		cloned.Values = cloned.Values[:0] // Reset to 0 length, keep capacity
+		for _, val := range n.Values {
+			valCopy := make([]byte, len(val))
+			copy(valCopy, val)
+			cloned.Values = append(cloned.Values, valCopy)
 		}
-	}
-
-	// Deep copy Children (branch nodes only)
-	if !n.IsLeaf() {
-		cloned.Children = make([]PageID, len(n.Children))
-		copy(cloned.Children, n.Children)
+		cloned.Children = cloned.Children[:0] // Clear children for leaves
+	} else {
+		// Deep copy Children (branch nodes only)
+		cloned.Values = cloned.Values[:0]     // Clear values for branches
+		cloned.Children = cloned.Children[:0] // Reset to 0 length, keep capacity
+		cloned.Children = append(cloned.Children, n.Children...)
 	}
 
 	return cloned
+}
+
+func (n *Node) Reset() {
+	n.PageID = 0
+	n.NumKeys = 0
+	n.Leaf = false
+	n.Keys = n.Keys[:0] // Keep capacity, zero length
+	n.Values = n.Values[:0]
+	n.Children = n.Children[:0]
+	n.Dirty = false
 }
 
 // IsUnderflow checks if Node has too few Keys (doesn't apply to root)
@@ -251,5 +277,5 @@ func (n *Node) Size() int {
 
 // IsLeaf returns true if this is a leaf Node
 func (n *Node) IsLeaf() bool {
-	return n.Values != nil
+	return n.Leaf
 }

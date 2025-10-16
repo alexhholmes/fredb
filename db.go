@@ -37,6 +37,9 @@ type DB struct {
 	readers  sync.Map           // Active read transactions (map[*Tx]struct{})
 	nextTxID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
+	// Node pool management (similar to freelist pending pages)
+	pending map[uint64][]*base.Node // txID -> nodes orphaned in that tx, awaiting pool return
+
 	options DBOptions // Store options for reference
 }
 
@@ -114,6 +117,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
 			Dirty:    true,
+			Leaf:     true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   make([][]byte, 0),
@@ -123,6 +127,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		root = &base.Node{
 			PageID:   rootPageID,
 			Dirty:    true,
+			Leaf:     false,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   nil,
@@ -145,6 +150,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
 			Dirty:    true,
+			Leaf:     true,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   make([][]byte, 0),
@@ -154,6 +160,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		rootBucketRoot := &base.Node{
 			PageID:   rootBucketRootID,
 			Dirty:    true,
+			Leaf:     false,
 			NumKeys:  0,
 			Keys:     make([][]byte, 0),
 			Values:   nil,
@@ -242,6 +249,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		options: opts,
 		cache:   c,
 		store:   store,
+		pending: make(map[uint64][]*base.Node),
 	}
 	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
 
@@ -308,7 +316,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			root:          snapshot.Root, // Atomic snapshot of root
 			pages:         make(map[base.PageID]*base.Node),
 			acquired:      make(map[base.PageID]struct{}),
-			freed:         make(map[base.PageID]struct{}),
+			freed:         make(map[base.PageID]*base.Node),
 			deletes:       make(map[string]base.PageID),
 			done:          false,
 			nextVirtualID: -1, // Start virtual page IDs at -1
@@ -332,7 +340,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		writable: false,
 		root:     snapshot.Root, // Atomic snapshot of root
 		acquired: make(map[base.PageID]struct{}),
-		freed:    make(map[base.PageID]struct{}),
+		freed:    make(map[base.PageID]*base.Node),
 		done:     false,
 		buckets:  make(map[string]*Bucket),
 	}
@@ -415,7 +423,7 @@ func (db *DB) Stats() coordinator.Stats {
 }
 
 // tryReleasePages releases pages that are safe to reuse based on active transactions.
-// Called by writers on commit/rollback. Lazy calculation - only scans when needed.
+// Also returns nodes to pool when safe. Called by writers on commit/rollback.
 func (db *DB) tryReleasePages() {
 	// Start with NEXT transaction ID (last assigned + 1)
 	minTxID := db.nextTxID.Load() + 1
@@ -436,7 +444,31 @@ func (db *DB) tryReleasePages() {
 		return true
 	})
 
+	// Release pages via coordinator
 	db.coord.ReleasePages(minTxID)
+
+	// Return nodes to pool when safe (no readers with txID < node's freeing txID)
+	// Two-pass approach: evict from cache first, then return to pool
+	for txID, nodes := range db.pending {
+		if txID < minTxID {
+			// Pass 1: Extract PageIDs and evict from cache BEFORE touching node pointers
+			// (node pointers might be stale if already reused from pool)
+			pageIDs := make([]base.PageID, 0, len(nodes))
+			for _, node := range nodes {
+				pageIDs = append(pageIDs, node.PageID)
+			}
+			for _, pageID := range pageIDs {
+				db.cache.Remove(pageID)
+			}
+
+			// Pass 2: Now safe to reset and return nodes to pool
+			for _, node := range nodes {
+				node.Reset()
+				base.Pool.Put(node)
+			}
+			delete(db.pending, txID)
+		}
+	}
 }
 
 // collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal

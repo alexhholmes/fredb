@@ -30,6 +30,7 @@ func equalByteSlices(a, b [][]byte) bool {
 // Helper: create leaf node for testing
 func newLeafNode(keys, values [][]byte) *base.Node {
 	return &base.Node{
+		Leaf:    true,
 		PageID:  1,
 		Dirty:   false,
 		NumKeys: uint16(len(keys)),
@@ -41,6 +42,7 @@ func newLeafNode(keys, values [][]byte) *base.Node {
 // Helper: create branch node for testing
 func newBranchNode(keys [][]byte, children []base.PageID) *base.Node {
 	return &base.Node{
+		Leaf:     false,
 		NumKeys:  uint16(len(keys)),
 		Keys:     keys,
 		Children: children,
@@ -295,7 +297,7 @@ func TestApplyBranchRemoveSeparator_BranchNode_Middle(t *testing.T) {
 
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k3")}
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['k1', 'k3']")
-	assert.Nil(t, node.Values, "values should be nil for branch node")
+	assert.Empty(t, node.Values, "values should be empty for branch node")
 
 	expectedChildren := []base.PageID{1, 2, 4}
 	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
@@ -845,7 +847,7 @@ func TestMergeNodes_BranchNodes(t *testing.T) {
 	// Verify left
 	expectedKeys := [][]byte{[]byte("k1"), []byte("k2"), []byte("k4"), []byte("k5"), []byte("k6")}
 	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should include separator")
-	assert.Nil(t, left.Values, "left values should be nil for branch node")
+	assert.Empty(t, left.Values, "left values should be empty for branch node")
 
 	expectedChildren := []base.PageID{1, 2, 3, 10, 11, 12}
 	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
@@ -935,8 +937,8 @@ func TestMergeNodes_BranchNodes_ValuesNilCheck(t *testing.T) {
 
 	MergeNodes(left, right, []byte("sep"))
 
-	// Verify left.Values is nil
-	assert.Nil(t, left.Values, "left values should be nil for branch node")
+	// Verify left.Values is empty for branch node (not nil, empty slice)
+	assert.Empty(t, left.Values, "left values should be empty for branch node")
 }
 
 // NewBranchRoot Tests
@@ -952,7 +954,7 @@ func TestNewBranchRoot_Basic(t *testing.T) {
 	assert.False(t, root.IsLeaf(), "root should not be a leaf")
 	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
 	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("m")}), "root keys should contain separator")
-	assert.Nil(t, root.Values, "root values should be nil for branch node")
+	assert.Empty(t, root.Values, "root values should be empty for branch node")
 
 	expectedChildren := []base.PageID{10, 20}
 	require.Equal(t, 2, len(root.Children), "root should have 2 children")
@@ -966,7 +968,7 @@ func TestNewBranchRoot_EmptyKey(t *testing.T) {
 	root := NewBranchRoot(leftChild, rightChild, []byte(""), 1)
 
 	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("")}), "root keys should contain empty separator")
-	assert.Nil(t, root.Values, "root values should be nil for branch node")
+	assert.Empty(t, root.Values, "root values should be empty for branch node")
 
 	expectedChildren := []base.PageID{5, 6}
 	require.Equal(t, 2, len(root.Children), "root should have 2 children")
@@ -1160,7 +1162,7 @@ func TestTruncateLeft_BranchNode(t *testing.T) {
 
 	expectedKeys := [][]byte{[]byte("k1")}
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1']")
-	assert.Nil(t, node.Values, "node values should be nil for branch node")
+	assert.Empty(t, node.Values, "node values should be empty for branch node")
 
 	expectedChildren := []base.PageID{1, 2}
 	require.Equal(t, 2, len(node.Children), "node should have 2 children")

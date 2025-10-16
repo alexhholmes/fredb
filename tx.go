@@ -26,7 +26,8 @@ type Tx struct {
 	buckets  map[string]*Bucket         // Cache of loaded buckets
 	acquired map[base.PageID]struct{}   // Buckets acquired from coordinator (need release)
 	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+	freed    map[base.PageID]*base.Node // Pages freed in this transaction (for freelist)
+	orphaned []*base.Node               // Nodes that became unreachable in this transaction (for node pool recovery)
 	deletes  map[string]base.PageID     // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
@@ -61,7 +62,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
 		i++
 	}
-	// After loop: i points to first key > search_key (or NumKeys if all keys <= search_key)
+	// After loop: `i` points to first key > search_key (or NumKeys if all keys <= search_key)
 
 	// If leaf node, check if key found
 	if node.IsLeaf() {
@@ -306,13 +307,24 @@ func (tx *Tx) Commit() error {
 
 	tx.db.writer.Store(nil)
 
-	// Phase 5: Release acquired buckets after marking deleted ones
+	// Phase 5: Add ONLY orphaned nodes to pending pool return BEFORE releasing buckets
+	// Orphaned nodes are pool-allocated transaction-local nodes that need delayed pool return
+	// Freed nodes are coordinator-loaded (heap-allocated) and should not go back to pool
+	// Nodes will be returned to pool when all readers with txID < this tx are done
+	if len(tx.orphaned) > 0 {
+		tx.db.pending[tx.txID] = tx.orphaned
+	}
+
+	// Phase 6: Release acquired buckets after marking deleted ones
 	// This must happen AFTER releasing DeletedMu to avoid deadlock in ReleaseBucket()
 	// Only release buckets that were actually acquired (not newly created ones)
-	tx.db.tryReleasePages()
 	for pageID := range tx.acquired {
 		tx.db.coord.ReleaseBucket(pageID, tx.db.freeTree)
 	}
+
+	// Phase 7: Try to release pages AFTER all bucket cleanup is done
+	// This ensures freeTree() can safely traverse deleted buckets before nodes are returned to pool
+	tx.db.tryReleasePages()
 
 	return nil
 }
@@ -410,7 +422,14 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// Track old Page as freed
 	// These pages will be added to freelist's pending list on commit
 	// and reclaimed when all readers that might reference them have finished
-	tx.addFreed(node.PageID)
+	tx.addFreed(node)
+
+	// Only add to orphaned if it's a REAL page (not virtual)
+	// Virtual pages are transaction-local and were never committed to disk/cache
+	// so they don't need delayed pool return - no other transaction can reference them
+	if int64(node.PageID) >= 0 {
+		tx.orphaned = append(tx.orphaned, node) // For node pool recovery
+	}
 
 	// store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
@@ -433,16 +452,16 @@ func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.
 // This prevents the same Page from being freed multiple times in a transaction.
-func (tx *Tx) addFreed(pageID base.PageID) {
-	if pageID == 0 {
+func (tx *Tx) addFreed(node *base.Node) {
+	if node.PageID == 0 {
 		return
 	}
 	// Skip virtual page IDs - they were never real pages, so don't free them
-	if int64(pageID) < 0 {
+	if int64(node.PageID) < 0 {
 		return
 	}
 	// Add to map (automatically handles duplicates)
-	tx.freed[pageID] = struct{}{}
+	tx.freed[node.PageID] = node
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
@@ -465,14 +484,18 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 		return nil, nil, nil, nil, err
 	}
 
-	// State: construct right node
-	node := &base.Node{
-		PageID:   nodeID,
-		Dirty:    true,
-		NumKeys:  uint16(sp.RightCount),
-		Keys:     rightKeys,
-		Values:   rightVals,
-		Children: rightChildren,
+	// State: construct right node (pool from base.Pool)
+	node := base.Pool.Get().(*base.Node)
+	node.Reset()
+	node.PageID = nodeID
+	node.Dirty = true
+	node.Leaf = child.IsLeaf() // Copy leaf status from child being split
+	node.NumKeys = uint16(sp.RightCount)
+	node.Keys = append(node.Keys[:0], rightKeys...)
+	if child.IsLeaf() {
+		node.Values = append(node.Values[:0], rightVals...)
+	} else {
+		node.Children = append(node.Children[:0], rightChildren...)
 	}
 
 	// State: truncate left (child already COW'd, safe to mutate)
@@ -640,11 +663,18 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		if bytes.Compare(key, midKey) >= 0 {
 			i++
 			rightChild, err = tx.insertNonFull(rightChild, key, value)
+			if err != nil {
+				return nil, err
+			}
+			// CRITICAL: Update parent's child pointer if COW'd
+			node.Children[i] = rightChild.PageID
 		} else {
 			leftChild, err = tx.insertNonFull(leftChild, key, value)
-		}
-		if err != nil {
-			return nil, err
+			if err != nil {
+				return nil, err
+			}
+			// CRITICAL: Update parent's child pointer if COW'd
+			node.Children[i] = leftChild.PageID
 		}
 
 		return node, nil
@@ -893,7 +923,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	parent.Children[parentKeyIdx] = leftNode.PageID
 
 	// Track right node as freed
-	tx.addFreed(rightNode.PageID)
+	tx.addFreed(rightNode)
 
 	return parent, nil
 }
@@ -942,7 +972,6 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 	if string(name) != "__root__" {
 		acquired := tx.db.coord.AcquireBucket(bucket.rootID)
 		if !acquired {
-			// Debug: bucket is marked for deletion
 			return nil
 		}
 		// Track that we acquired this bucket (for later release)
@@ -992,25 +1021,22 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, err
 	}
 
-	// Create bucket's leaf node (empty)
-	bucketLeaf := &base.Node{
-		PageID:   bucketLeafID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   make([][]byte, 0),
-		Children: nil,
-	}
+	// Create bucket's leaf node (empty) from pool
+	bucketLeaf := base.Pool.Get().(*base.Node)
+	bucketLeaf.Reset()
+	bucketLeaf.PageID = bucketLeafID
+	bucketLeaf.Dirty = true
+	bucketLeaf.Leaf = true // Leaf node
+	bucketLeaf.NumKeys = 0
 
-	// Create bucket's root node (branch with single child)
-	bucketRoot := &base.Node{
-		PageID:   bucketRootID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   nil,
-		Children: []base.PageID{bucketLeafID},
-	}
+	// Create bucket's root node (branch with single child) from pool
+	bucketRoot := base.Pool.Get().(*base.Node)
+	bucketRoot.Reset()
+	bucketRoot.PageID = bucketRootID
+	bucketRoot.Dirty = true
+	bucketRoot.Leaf = false // Branch node
+	bucketRoot.NumKeys = 0
+	bucketRoot.Children = append(bucketRoot.Children[:0], bucketLeafID)
 
 	// Add nodes to transaction cache
 	tx.pages[bucketLeafID] = bucketLeaf
@@ -1040,6 +1066,32 @@ func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
 		return b, nil
 	}
 	return tx.CreateBucket(name)
+}
+
+// collectAndOrphanBucketNodes recursively collects all nodes in a bucket's tree
+// and adds them to the freed list for the freelist
+func (tx *Tx) collectAndOrphanBucketNodes(rootID base.PageID) error {
+	// Load node
+	node, err := tx.loadNode(rootID)
+	if err != nil {
+		return err
+	}
+
+	// If branch node, recursively collect children first (post-order)
+	if !node.IsLeaf() {
+		for _, childID := range node.Children {
+			if err := tx.collectAndOrphanBucketNodes(childID); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Only add to freed (for freelist), NOT orphaned (for pool)
+	// These nodes are coordinator-loaded (heap allocated), not pool-allocated
+	// Cache eviction + GC will handle cleanup, no need for pool return
+	tx.addFreed(node)
+
+	return nil
 }
 
 // DeleteBucket removes a bucket and all its data
@@ -1078,6 +1130,14 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	// Deserialize just to get the rootID
 	var bucket Bucket
 	bucket.Deserialize(meta)
+
+	// CRITICAL: Collect ALL nodes in the bucket's tree and add to orphaned list
+	// This ensures all nodes go through the pending pool return mechanism
+	// and won't be returned to pool until all readers with txID < this tx are done
+	err = tx.collectAndOrphanBucketNodes(bucket.rootID)
+	if err != nil {
+		return err
+	}
 
 	// Delete bucket metadata from root tree
 	root, err := tx.deleteFromNode(tx.root, name)

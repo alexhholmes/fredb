@@ -369,10 +369,11 @@ func (c *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, err
 		}()
 	}
 
-	node := &base.Node{
-		PageID: pageID,
-		Dirty:  false,
-	}
+	// Get node from pool for consistent allocation strategy
+	node := base.Pool.Get().(*base.Node)
+	node.Reset() // Ensure clean state
+	node.PageID = pageID
+	node.Dirty = false
 
 	if err := node.Deserialize(page); err != nil {
 		return nil, err
@@ -491,7 +492,7 @@ func (c *Coordinator) MapVirtualPageIDs(
 func (c *Coordinator) WriteTransaction(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
-	freed map[base.PageID]struct{},
+	freed map[base.PageID]*base.Node,
 	txnID uint64,
 	syncMode SyncMode,
 ) error {
@@ -570,7 +571,7 @@ func (c *Coordinator) WriteTransaction(
 func (c *Coordinator) CommitTransaction(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
-	freed map[base.PageID]struct{},
+	freed map[base.PageID]*base.Node,
 	txnID uint64,
 	syncMode SyncMode,
 ) error {
