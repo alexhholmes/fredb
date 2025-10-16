@@ -994,26 +994,10 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	}
 
 	// Create bucket's leaf node (empty)
-	bucketLeaf := &base.Node{
-		PageID:   bucketLeafID,
-		Dirty:    true,
-		Leaf:     true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   make([][]byte, 0),
-		Children: nil,
-	}
+	bucketLeaf := base.NewLeaf(bucketLeafID, make([][]byte, 0), make([][]byte, 0))
 
 	// Create bucket's root node (branch with single child)
-	bucketRoot := &base.Node{
-		PageID:   bucketRootID,
-		Dirty:    true,
-		Leaf:     false,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   nil,
-		Children: []base.PageID{bucketLeafID},
-	}
+	bucketRoot := base.NewBranch(bucketRootID, make([][]byte, 0), []base.PageID{bucketLeafID})
 
 	// Add nodes to transaction cache
 	tx.pages[bucketLeafID] = bucketLeaf

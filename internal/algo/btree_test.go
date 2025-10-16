@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const MaxKeysPerNode = 64
+
 var _ = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a test node
@@ -342,11 +344,11 @@ func TestCalculateSplitPoint(t *testing.T) {
 		},
 		{
 			name:               "leaf_max_keys",
-			node:               makeFullLeaf(base.MaxKeysPerNode),
-			wantMid:            base.MaxKeysPerNode/2 - 1,
-			wantLeftCount:      base.MaxKeysPerNode / 2,
-			wantRightCount:     base.MaxKeysPerNode / 2,
-			wantSeparatorEqual: makeFullLeaf(base.MaxKeysPerNode).Keys[base.MaxKeysPerNode/2],
+			node:               makeFullLeaf(MaxKeysPerNode),
+			wantMid:            MaxKeysPerNode/2 - 1,
+			wantLeftCount:      MaxKeysPerNode / 2,
+			wantRightCount:     MaxKeysPerNode / 2,
+			wantSeparatorEqual: makeFullLeaf(MaxKeysPerNode).Keys[MaxKeysPerNode/2],
 		},
 	}
 
@@ -509,8 +511,8 @@ func TestCanBorrowFrom(t *testing.T) {
 		{
 			name: "can_borrow_max_keys",
 			node: makeLeafNode(
-				make([][]byte, base.MaxKeysPerNode),
-				make([][]byte, base.MaxKeysPerNode),
+				make([][]byte, MaxKeysPerNode),
+				make([][]byte, MaxKeysPerNode),
 			),
 			want: true,
 		},

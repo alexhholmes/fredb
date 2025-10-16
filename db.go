@@ -79,11 +79,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		root = &base.Node{
-			PageID: meta.RootPageID,
-			Dirty:  false,
-		}
-
+		root = base.NewBranch(0, nil, nil)
 		if err := root.Deserialize(rootPage); err != nil {
 			_ = coord.Close()
 			return nil, err
@@ -111,25 +107,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		rootLeaf := &base.Node{
-			PageID:   rootLeafID,
-			Dirty:    true,
-			Leaf:     true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
-
-		root = &base.Node{
-			PageID:   rootPageID,
-			Dirty:    true,
-			Leaf:     false,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{rootLeafID},
-		}
+		rootLeaf := base.NewLeaf(rootLeafID, make([][]byte, 0), make([][]byte, 0))
+		root = base.NewBranch(rootPageID, make([][]byte, 0), []base.PageID{rootLeafID})
 
 		// 2. Create __root__ bucket's tree (default namespace)
 		rootBucketRootID, err := coord.AssignPageID()
@@ -144,25 +123,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			return nil, err
 		}
 
-		rootBucketLeaf := &base.Node{
-			PageID:   rootBucketLeafID,
-			Dirty:    true,
-			Leaf:     true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
-
-		rootBucketRoot := &base.Node{
-			PageID:   rootBucketRootID,
-			Dirty:    true,
-			Leaf:     false,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{rootBucketLeafID},
-		}
+		rootBucketLeaf := base.NewLeaf(rootBucketLeafID, make([][]byte, 0), make([][]byte, 0))
+		rootBucketRoot := base.NewBranch(rootBucketRootID, make([][]byte, 0), []base.PageID{rootBucketLeafID})
 
 		// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
 		// We serialize manually since we don't have a Bucket object yet
@@ -446,7 +408,7 @@ func (db *DB) tryReleasePages() {
 // collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal
 func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error {
 	// Load node from disk
-	node, ok := tx.db.coord.LoadNode(pageID, tx.txID)
+	node, ok := tx.db.coord.LoadNode(pageID)
 	if !ok {
 		return ErrCorruption
 	}

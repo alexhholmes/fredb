@@ -369,12 +369,8 @@ func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 		}()
 	}
 
-	node := &base.Node{
-		PageID: pageID,
-		Dirty:  false,
-	}
-
-	if err := node.Deserialize(page); err != nil {
+	node := &base.Node{}
+	if err = node.Deserialize(page); err != nil {
 		return nil, err
 	}
 
@@ -385,7 +381,7 @@ func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 
 // LoadNode loads a node, coordinating cache and disk I/O.
 // Routes TX calls through Coordinator instead of direct cache access.
-func (c *Coordinator) LoadNode(pageID base.PageID, txnID uint64) (*base.Node, bool) {
+func (c *Coordinator) LoadNode(pageID base.PageID) (*base.Node, bool) {
 	node, err := c.GetNode(pageID)
 	if err != nil {
 		return nil, false

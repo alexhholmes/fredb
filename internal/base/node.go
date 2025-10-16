@@ -5,10 +5,8 @@ import (
 )
 
 const (
-	// MaxKeysPerNode must be small enough that a full Node can Serialize to PageSize
-	MaxKeysPerNode = 64
 	// MinKeysPerNode is the minimum Keys for non-root nodes
-	MinKeysPerNode = MaxKeysPerNode / 4
+	MinKeysPerNode = 16
 )
 
 // Node represents a B-tree Node with decoded Page data
@@ -22,6 +20,28 @@ type Node struct {
 	Keys     [][]byte
 	Values   [][]byte
 	Children []PageID
+}
+
+func NewLeaf(id PageID, keys, values [][]byte) *Node {
+	return &Node{
+		PageID:  id,
+		Dirty:   true,
+		Leaf:    true,
+		NumKeys: uint16(len(keys)),
+		Keys:    keys,
+		Values:  values,
+	}
+}
+
+func NewBranch(id PageID, keys [][]byte, children []PageID) *Node {
+	return &Node{
+		PageID:   id,
+		Dirty:    true,
+		Leaf:     false,
+		NumKeys:  uint16(len(keys)),
+		Keys:     keys,
+		Children: children,
+	}
 }
 
 // Serialize encodes the Node data into a fresh Page

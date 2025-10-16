@@ -166,15 +166,7 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 
 // NewBranchRoot creates a new branch root node from two children after split
 func NewBranchRoot(leftChild, rightChild *base.Node, midKey []byte, pageID base.PageID) *base.Node {
-	return &base.Node{
-		PageID:   pageID,
-		Dirty:    true,
-		Leaf:     false,
-		NumKeys:  1,
-		Keys:     [][]byte{midKey},
-		Values:   nil,
-		Children: []base.PageID{leftChild.PageID, rightChild.PageID},
-	}
+	return base.NewBranch(pageID, [][]byte{midKey}, []base.PageID{leftChild.PageID, rightChild.PageID})
 }
 
 // ApplyChildSplit updates parent after splitting child at childIdx
