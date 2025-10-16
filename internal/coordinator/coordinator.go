@@ -70,9 +70,6 @@ func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator,
 
 // AssignPageID allocates a new Page (from freelist or grows file)
 func (c *Coordinator) AssignPageID() (base.PageID, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	// Try freelist first
 	id := c.allocate()
 	if id != 0 {
@@ -382,6 +379,9 @@ const (
 
 // allocate returns a free Page ID, or 0 if none available
 func (c *Coordinator) allocate() base.PageID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// Caller must hold c.mu
 	if len(c.freed) == 0 {
 		// No free pages available
