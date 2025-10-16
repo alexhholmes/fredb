@@ -21,8 +21,7 @@ const (
 // DBOptions configures database behavior.
 type DBOptions struct {
 	syncMode       SyncMode
-	syncBytes      uint // Number of bytes to write before fsync when SyncMode is SyncBytes.
-	maxCacheSizeMB int  // Maximum size of in-memory cache in MB. 0 means no limit.
+	maxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
 // DefaultDBOptions returns safe default configuration.
@@ -31,8 +30,7 @@ type DBOptions struct {
 func DefaultDBOptions() DBOptions {
 	return DBOptions{
 		syncMode:       SyncEveryCommit,
-		syncBytes:      1024 * 1024, // 1MB
-		maxCacheSizeMB: 512,         // 512MB
+		maxCacheSizeMB: 512, // 512MB
 	}
 }
 
