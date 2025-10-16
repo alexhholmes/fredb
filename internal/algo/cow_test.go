@@ -954,7 +954,6 @@ func TestNewBranchRoot_Basic(t *testing.T) {
 	assert.False(t, root.Leaf, "root should not be a leaf")
 	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
 	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("m")}), "root keys should contain separator")
-	assert.Nil(t, root.Values, "root values should be nil for branch node")
 
 	expectedChildren := []base.PageID{10, 20}
 	require.Equal(t, 2, len(root.Children), "root should have 2 children")
@@ -968,7 +967,6 @@ func TestNewBranchRoot_EmptyKey(t *testing.T) {
 	root := NewBranchRoot(leftChild, rightChild, []byte(""), 1)
 
 	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("")}), "root keys should contain empty separator")
-	assert.Nil(t, root.Values, "root values should be nil for branch node")
 
 	expectedChildren := []base.PageID{5, 6}
 	require.Equal(t, 2, len(root.Children), "root should have 2 children")

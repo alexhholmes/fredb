@@ -2,12 +2,23 @@ package base
 
 import (
 	"bytes"
+	"sync"
 )
 
 const (
 	// MinKeysPerNode is the minimum Keys for non-root nodes
 	MinKeysPerNode = 16
 )
+
+var Pool = sync.Pool{
+	New: func() any {
+		return &Node{
+			Keys:     make([][]byte, 0, MinKeysPerNode),
+			Values:   make([][]byte, 0, MinKeysPerNode),
+			Children: make([]PageID, 0, MinKeysPerNode),
+		}
+	},
+}
 
 // Node represents a B-tree Node with decoded Page data
 type Node struct {
@@ -23,25 +34,25 @@ type Node struct {
 }
 
 func NewLeaf(id PageID, keys, values [][]byte) *Node {
-	return &Node{
-		PageID:  id,
-		Dirty:   true,
-		Leaf:    true,
-		NumKeys: uint16(len(keys)),
-		Keys:    keys,
-		Values:  values,
-	}
+	node := Pool.Get().(*Node)
+	node.PageID = id
+	node.Dirty = true
+	node.Leaf = true
+	node.NumKeys = uint16(len(keys))
+	node.Keys = append(node.Keys[:0], keys...)
+	node.Values = append(node.Values[:0], values...)
+	return node
 }
 
 func NewBranch(id PageID, keys [][]byte, children []PageID) *Node {
-	return &Node{
-		PageID:   id,
-		Dirty:    true,
-		Leaf:     false,
-		NumKeys:  uint16(len(keys)),
-		Keys:     keys,
-		Children: children,
-	}
+	node := Pool.Get().(*Node)
+	node.PageID = id
+	node.Dirty = true
+	node.Leaf = false
+	node.NumKeys = uint16(len(keys))
+	node.Keys = append(node.Keys[:0], keys...)
+	node.Children = append(node.Children[:0], children...)
+	return node
 }
 
 // Serialize encodes the Node data into a fresh Page

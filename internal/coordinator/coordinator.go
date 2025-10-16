@@ -369,7 +369,7 @@ func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 		}()
 	}
 
-	node := &base.Node{}
+	node := base.Pool.Get().(*base.Node)
 	if err = node.Deserialize(page); err != nil {
 		return nil, err
 	}

@@ -466,15 +466,14 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	}
 
 	// State: construct right node
-	node := &base.Node{
-		PageID:   nodeID,
-		Dirty:    true,
-		Leaf:     child.Leaf,
-		NumKeys:  uint16(sp.RightCount),
-		Keys:     rightKeys,
-		Values:   rightVals,
-		Children: rightChildren,
-	}
+	node := base.Pool.Get().(*base.Node)
+	node.PageID = nodeID
+	node.Dirty = true
+	node.Leaf = child.Leaf
+	node.NumKeys = uint16(sp.RightCount)
+	node.Keys = append(node.Keys[:0], rightKeys...)
+	node.Values = append(node.Values[:0], rightVals...)
+	node.Children = append(node.Children[:0], rightChildren...)
 
 	// State: truncate left (child already COW'd, safe to mutate)
 	algo.TruncateLeft(child, sp)
