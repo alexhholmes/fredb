@@ -15,6 +15,8 @@ import (
 	"fredb/internal/base"
 )
 
+var MaxKeysPerNode = 64
+
 // Use -slow flag to run longer tests
 var slow = flag.Bool("slow", false, "run slow tests")
 
@@ -1786,7 +1788,7 @@ func TestBTreeSplitting(t *testing.T) {
 
 	// Insert MaxKeysPerNode + 1 Keys to force a split
 	keys := make(map[string]string)
-	for i := 0; i <= base.MaxKeysPerNode; i++ {
+	for i := 0; i <= MaxKeysPerNode; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
 		keys[key] = value
@@ -1817,7 +1819,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert enough Keys to cause multiple splits (3x MaxKeysPerNode should cause multiple levels)
-	numKeys := base.MaxKeysPerNode * 3
+	numKeys := MaxKeysPerNode * 3
 	keys := make(map[string]string)
 
 	for i := 0; i < numKeys; i++ {
@@ -2094,7 +2096,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert enough Keys to create a multi-level tree
-	numKeys := base.MaxKeysPerNode * 2 // Enough to cause splits
+	numKeys := MaxKeysPerNode * 2 // Enough to cause splits
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -2141,7 +2143,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 		db, _ := setup(t)
 
 		// Insert Keys
-		numKeys := base.MaxKeysPerNode * 2
+		numKeys := MaxKeysPerNode * 2
 		keys := make([]string, numKeys)
 		for i := 0; i < numKeys; i++ {
 			key := fmt.Sprintf("key%06d", i)
@@ -2217,7 +2219,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert Keys
-	numKeys := base.MaxKeysPerNode * 2
+	numKeys := MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -2691,7 +2693,7 @@ func TestBoundaryExactly64KeysNoUnderflow(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert enough Keys to create multi-level tree
-	numKeys := base.MaxKeysPerNode * 2
+	numKeys := MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -2726,7 +2728,7 @@ func TestBoundaryDelete63rdKeyTriggersUnderflow(t *testing.T) {
 
 	db, _ := setup(t)
 
-	numKeys := base.MaxKeysPerNode * 2
+	numKeys := MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -2797,7 +2799,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 
 	db, _ := setup(t)
 
-	numKeys := base.MaxKeysPerNode * 2
+	numKeys := MaxKeysPerNode * 2
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
@@ -2830,7 +2832,7 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 
 	db, _ := setup(t)
 
-	numKeys := base.MaxKeysPerNode * 3
+	numKeys := MaxKeysPerNode * 3
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
