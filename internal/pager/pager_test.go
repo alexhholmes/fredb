@@ -1,4 +1,4 @@
-package coordinator
+package pager
 
 import (
 	"flag"
@@ -14,15 +14,15 @@ import (
 
 var _ = flag.Bool("slow", false, "run slow tests")
 
-// Helper to create a coordinator with dependencies for testing
-func createTestCoordinator(t *testing.T, tmpFile string) (*Coordinator, func()) {
+// Helper to create a pager with dependencies for testing
+func createTestPager(t *testing.T, tmpFile string) (*Pager, func()) {
 	stor, err := storage.NewDirectIO(tmpFile)
 	require.NoError(t, err, "Failed to create store")
 
 	cacheInstance := cache.NewCache(1024)
 
-	pm, err := NewCoordinator(stor, cacheInstance)
-	require.NoError(t, err, "Failed to create Coordinator")
+	pm, err := NewPager(stor, cacheInstance)
+	require.NoError(t, err, "Failed to create Pager")
 
 	cleanup := func() {
 		_ = pm.Close()
@@ -35,7 +35,7 @@ func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, cleanup := createTestCoordinator(t, tmpFile)
+	pm, cleanup := createTestPager(t, tmpFile)
 	defer cleanup()
 
 	// Release on empty pending should do nothing
@@ -52,9 +52,9 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 
 	tmpFile := t.TempDir() + "/test.db"
 
-	// Create Coordinator and add data
+	// Create Pager and add data
 	{
-		pm, cleanup := createTestCoordinator(t, tmpFile)
+		pm, cleanup := createTestPager(t, tmpFile)
 
 		// Add some free pages
 		require.NoError(t, pm.FreePage(10), "FreePage failed")
@@ -66,7 +66,7 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 
 	// Reopen and verify
 	{
-		pm, cleanup := createTestCoordinator(t, tmpFile)
+		pm, cleanup := createTestPager(t, tmpFile)
 		defer cleanup()
 
 		// Try to allocate - should get freed pages first
@@ -86,7 +86,7 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	t.Parallel()
 
 	tmpFile := t.TempDir() + "/test.db"
-	pm, cleanup := createTestCoordinator(t, tmpFile)
+	pm, cleanup := createTestPager(t, tmpFile)
 	defer cleanup()
 
 	// Allocate some pages

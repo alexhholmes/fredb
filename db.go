@@ -8,7 +8,7 @@ import (
 
 	"fredb/internal/base"
 	"fredb/internal/cache"
-	"fredb/internal/coordinator"
+	"fredb/internal/pager"
 	"fredb/internal/storage"
 	"fredb/internal/writebuf"
 )
@@ -27,7 +27,7 @@ const (
 
 type DB struct {
 	mu     sync.Mutex // Lock only for writers
-	coord  *coordinator.Coordinator
+	pager  *pager.Pager
 	closed atomic.Bool // Database closed flag
 
 	cache *cache.Cache    // Page cache
@@ -63,8 +63,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	// Create cache (Page size is 4096 bytes, so 256 pages per MB)
 	c := cache.NewCache(opts.maxCacheSizeMB * 256)
 
-	// Create coordinator with dependencies
-	coord, err := coordinator.NewCoordinator(store, c)
+	// Create pager with dependencies
+	pager, err := pager.NewPager(store, c)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -72,13 +72,13 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	// Initialize root (was newTree logic)
 	var root *base.Node
-	meta := coord.GetMeta()
+	meta := pager.GetMeta()
 
 	if meta.RootPageID != 0 {
 		// Load existing root
 		rootPage, err := store.ReadPage(meta.RootPageID)
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
@@ -88,29 +88,29 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		if err := root.Deserialize(rootPage); err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
 		// Bundle root with metadata and make visible atomically
-		if err := coord.PutSnapshot(meta, root); err != nil {
-			_ = coord.Close()
+		if err := pager.PutSnapshot(meta, root); err != nil {
+			_ = pager.Close()
 			return nil, err
 		}
-		coord.CommitSnapshot()
+		pager.CommitSnapshot()
 	} else {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID, err := coord.AssignPageID()
+		rootPageID, err := pager.AssignPageID()
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
-		rootLeafID, err := coord.AssignPageID()
+		rootLeafID, err := pager.AssignPageID()
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
@@ -133,15 +133,15 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID, err := coord.AssignPageID()
+		rootBucketRootID, err := pager.AssignPageID()
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
-		rootBucketLeafID, err := coord.AssignPageID()
+		rootBucketLeafID, err := pager.AssignPageID()
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
@@ -180,68 +180,68 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		leafPage := &base.Page{}
 		err = rootLeaf.Serialize(0, leafPage)
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootLeafID, leafPage); err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
 		rootPage := &base.Page{}
 		err = root.Serialize(0, rootPage)
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootPageID, rootPage); err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
 		bucketLeafPage := &base.Page{}
 		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
 		bucketRootPage := &base.Page{}
 		err = rootBucketRoot.Serialize(0, bucketRootPage)
 		if err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootBucketRootID, bucketRootPage); err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
 		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
 
-		if err = coord.PutSnapshot(meta, root); err != nil {
-			_ = coord.Close()
+		if err = pager.PutSnapshot(meta, root); err != nil {
+			_ = pager.Close()
 			return nil, err
 		}
 
-		// 7. CRITICAL: Sync coord to persist the initial allocations
+		// 7. CRITICAL: Sync pager to persist the initial allocations
 		// This ensures root and leaf are not returned by future AssignPageID() calls
 		if err = store.Sync(); err != nil {
-			_ = coord.Close()
+			_ = pager.Close()
 			return nil, err
 		}
 
 		// 8. Make metapage AND root visible to readers atomically
-		coord.CommitSnapshot()
+		pager.CommitSnapshot()
 	}
 
 	db := &DB{
-		coord:   coord,
+		pager:   pager,
 		options: opts,
 		cache:   c,
 		store:   store,
@@ -301,7 +301,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		txnID := db.nextTxID.Add(1)
 
 		// Atomically load current snapshot (meta + root)
-		snapshot := db.coord.GetSnapshot()
+		snapshot := db.pager.GetSnapshot()
 
 		// Create write transaction
 		tx := &Tx{
@@ -327,7 +327,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 
 	// READERS: NO LOCK - completely lock-free path
 	// Atomically capture current snapshot (meta + root)
-	snapshot := db.coord.GetSnapshot()
+	snapshot := db.pager.GetSnapshot()
 
 	// Create read transaction
 	tx := &Tx{
@@ -388,10 +388,10 @@ func (db *DB) Close() error {
 	db.closed.Store(true)
 
 	// Release all pending pages
-	db.coord.ReleasePages(math.MaxUint64)
+	db.pager.ReleasePages(math.MaxUint64)
 
 	// Flush root if dirty (was algo.close logic)
-	snapshot := db.coord.GetSnapshot()
+	snapshot := db.pager.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
 		page := &base.Page{}
 		err := snapshot.Root.Serialize(snapshot.Meta.TxID, page)
@@ -409,12 +409,12 @@ func (db *DB) Close() error {
 		return err
 	}
 
-	// Close coord
-	return db.coord.Close()
+	// Close pager
+	return db.pager.Close()
 }
 
-func (db *DB) Stats() coordinator.Stats {
-	return db.coord.Stats()
+func (db *DB) Stats() pager.Stats {
+	return db.pager.Stats()
 }
 
 // tryReleasePages releases pages that are safe to reuse based on active transactions.
@@ -439,13 +439,13 @@ func (db *DB) tryReleasePages() {
 		return true
 	})
 
-	db.coord.ReleasePages(minTxID)
+	db.pager.ReleasePages(minTxID)
 }
 
 // collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal
 func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error {
 	// Load node from disk
-	node, ok := tx.db.coord.LoadNode(pageID)
+	node, ok := tx.db.pager.LoadNode(pageID)
 	if !ok {
 		return ErrCorruption
 	}
@@ -485,7 +485,7 @@ func (db *DB) freeTree(rootID base.PageID) error {
 	defer db.mu.Unlock()
 
 	for _, pageID := range pageIDs {
-		db.coord.FreePage(pageID) // Add to freelist
+		db.pager.FreePage(pageID) // Add to freelist
 	}
 
 	return nil

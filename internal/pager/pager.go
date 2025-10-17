@@ -1,4 +1,4 @@
-package coordinator
+package pager
 
 import (
 	"fmt"
@@ -20,8 +20,8 @@ const (
 	SyncOff
 )
 
-// Coordinator coordinates store, cache, meta, and freelist
-type Coordinator struct {
+// Pager coordinates store, cache, meta, and freelist
+type Pager struct {
 	cache *cache.Cache    // Simple LRU cache
 	store storage.Storage // File I/O backend
 
@@ -45,9 +45,9 @@ type Coordinator struct {
 	Deleted   map[base.PageID]struct{} // Buckets pending deletion, 0 ref count
 }
 
-// NewCoordinator creates a coordinator with injected dependencies
-func NewCoordinator(storage storage.Storage, cache *cache.Cache) (*Coordinator, error) {
-	c := &Coordinator{
+// NewPager creates a pager with injected dependencies
+func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
+	c := &Pager{
 		store:    storage,
 		cache:    cache,
 		freelist: freelist.New(),
@@ -179,47 +179,47 @@ func NewCoordinator(storage storage.Storage, cache *cache.Cache) (*Coordinator, 
 }
 
 // AssignPageID allocates a new Page (from freelist or grows file)
-func (c *Coordinator) AssignPageID() (base.PageID, error) {
+func (p *Pager) AssignPageID() (base.PageID, error) {
 	// Try freelist first
-	id := c.freelist.Allocate()
+	id := p.freelist.Allocate()
 	if id != 0 {
 		return id, nil
 	}
 
 	// Grow file - use atomic pages counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
-	id = base.PageID(c.pages.Add(1) - 1)
+	id = base.PageID(p.pages.Add(1) - 1)
 
 	return id, nil
 }
 
 // FreePage adds a Page to the freelist
-func (c *Coordinator) FreePage(id base.PageID) error {
-	c.freelist.Free(id)
+func (p *Pager) FreePage(id base.PageID) error {
+	p.freelist.Free(id)
 	return nil
 }
 
 // ReleasePages moves pages from pending to free for all transactions < minTxnID
-func (c *Coordinator) ReleasePages(minTxnID uint64) int {
-	return c.freelist.Release(minTxnID)
+func (p *Pager) ReleasePages(minTxnID uint64) int {
+	return p.freelist.Release(minTxnID)
 }
 
 // GetMeta returns the current metadata
-func (c *Coordinator) GetMeta() base.MetaPage {
-	return c.active.Load().Meta
+func (p *Pager) GetMeta() base.MetaPage {
+	return p.active.Load().Meta
 }
 
 // GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
 // Returns by value to prevent data races with concurrent PutSnapshot updates
-func (c *Coordinator) GetSnapshot() base.Snapshot {
-	return *c.active.Load()
+func (p *Pager) GetSnapshot() base.Snapshot {
+	return *p.active.Load()
 }
 
 // PutSnapshot updates the metadata and root pointer, persists metadata to disk
 // Does NOT make it visible to readers - call CommitSnapshot after fsync
-func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
+func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	// Sync NumPages from atomic counter (may have uncommitted allocations)
-	meta.NumPages = c.pages.Load()
+	meta.NumPages = p.pages.Load()
 
 	// Update checksum (after NumPages sync)
 	meta.Checksum = meta.CalculateChecksum()
@@ -229,7 +229,7 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 
 	// Write to disk
 	var buf []byte
-	if store, ok := c.store.(*storage.DirectIO); ok {
+	if store, ok := p.store.(*storage.DirectIO); ok {
 		// DirectIO requires aligned buffers
 		buf = store.GetBuffer()
 		defer store.PutBuffer(buf)
@@ -239,17 +239,17 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	}
 	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
 	metaPage.WriteMeta(&meta)
-	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
+	if err := p.store.WritePage(metaPageID, metaPage); err != nil {
 		return err
 	}
 
 	// Update inactive in-memory copy with both meta and root (don't swap pointer yet)
 	if metaPageID == 0 {
-		c.meta0.Meta = meta
-		c.meta0.Root = root
+		p.meta0.Meta = meta
+		p.meta0.Root = root
 	} else {
-		c.meta1.Meta = meta
-		c.meta1.Root = root
+		p.meta1.Meta = meta
+		p.meta1.Root = root
 	}
 
 	return nil
@@ -258,32 +258,32 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 // CommitSnapshot atomically makes the last PutSnapshot visible to readers
 // Call AFTER fsync to ensure durability before visibility
 // Lock-free: single writer guarantee + atomic swap
-func (c *Coordinator) CommitSnapshot() {
+func (p *Pager) CommitSnapshot() {
 	// Swap to the meta with higher or equal TxID
 	// Use >= to handle initial case where both metas have TxID=0
-	if c.meta0.Meta.TxID >= c.meta1.Meta.TxID {
-		c.active.Swap(&c.meta0)
+	if p.meta0.Meta.TxID >= p.meta1.Meta.TxID {
+		p.active.Swap(&p.meta0)
 	} else {
-		c.active.Swap(&c.meta1)
+		p.active.Swap(&p.meta1)
 	}
 }
 
 // GetNode retrieves a node, checking cache first then loading from disk.
-func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
+func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
 	// Check cache first
-	if node, hit := c.cache.Get(pageID); hit {
+	if node, hit := p.cache.Get(pageID); hit {
 		return node, nil
 	}
 
 	// Load from disk
-	page, err := c.store.ReadPage(pageID)
+	page, err := p.store.ReadPage(pageID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Return buffer to pool after deserialization (DirectIO only)
 	// MMap mode allocates non-pooled, non-aligned buffers
-	if store, ok := c.store.(*storage.DirectIO); ok {
+	if store, ok := p.store.(*storage.DirectIO); ok {
 		defer func() {
 			buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
 			store.PutBuffer(buf)
@@ -300,14 +300,14 @@ func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 	}
 
 	// Cache and return
-	c.cache.Put(pageID, node)
+	p.cache.Put(pageID, node)
 	return node, nil
 }
 
 // LoadNode loads a node, coordinating cache and disk I/O.
-// Routes TX calls through Coordinator instead of direct cache access.
-func (c *Coordinator) LoadNode(pageID base.PageID) (*base.Node, bool) {
-	node, err := c.GetNode(pageID)
+// Routes TX calls through Pager instead of direct cache access.
+func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, bool) {
+	node, err := p.GetNode(pageID)
 	if err != nil {
 		return nil, false
 	}
@@ -318,7 +318,7 @@ func (c *Coordinator) LoadNode(pageID base.PageID) (*base.Node, bool) {
 // This is phase 1 of commit: mapping virtual IDs to real IDs without writing to disk.
 // Returns a map of virtual->real page ID mappings.
 // Caller must hold db.mu.
-func (c *Coordinator) MapVirtualPageIDs(
+func (p *Pager) MapVirtualPageIDs(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
 ) (map[base.PageID]base.PageID, error) {
@@ -327,11 +327,11 @@ func (c *Coordinator) MapVirtualPageIDs(
 
 	for pageID := range pages {
 		if int64(pageID) < 0 { // Virtual page ID
-			realPageID, err := c.AssignPageID()
+			realPageID, err := p.AssignPageID()
 			if err != nil {
 				// Rollback partial allocation
 				for _, allocated := range virtualToReal {
-					_ = c.FreePage(allocated)
+					_ = p.FreePage(allocated)
 				}
 				return nil, err
 			}
@@ -367,11 +367,11 @@ func (c *Coordinator) MapVirtualPageIDs(
 
 	// Pass 3: Handle root separately
 	if root != nil && int64(root.PageID) < 0 {
-		realPageID, err := c.AssignPageID()
+		realPageID, err := p.AssignPageID()
 		if err != nil {
 			// Rollback
 			for _, allocated := range virtualToReal {
-				_ = c.FreePage(allocated)
+				_ = p.FreePage(allocated)
 			}
 			return nil, err
 		}
@@ -394,7 +394,7 @@ func (c *Coordinator) MapVirtualPageIDs(
 // WriteTransaction writes all pages to disk, handles freed pages, updates metadata, and syncs.
 // This is phase 2 of commit: writing pages with real IDs to disk.
 // Caller must hold db.mu.
-func (c *Coordinator) WriteTransaction(
+func (p *Pager) WriteTransaction(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
 	freed map[base.PageID]struct{},
@@ -403,7 +403,7 @@ func (c *Coordinator) WriteTransaction(
 ) error {
 	// Write all pages to disk
 	var buf []byte
-	if store, ok := c.store.(*storage.DirectIO); ok {
+	if store, ok := p.store.(*storage.DirectIO); ok {
 		buf = store.GetBuffer()
 		defer store.PutBuffer(buf)
 	} else {
@@ -416,12 +416,12 @@ func (c *Coordinator) WriteTransaction(
 			return err
 		}
 
-		if err := c.store.WritePage(node.PageID, page); err != nil {
+		if err := p.store.WritePage(node.PageID, page); err != nil {
 			return err
 		}
 
 		node.Dirty = false
-		c.cache.Put(node.PageID, node)
+		p.cache.Put(node.PageID, node)
 	}
 
 	// Write root separately if dirty
@@ -432,12 +432,12 @@ func (c *Coordinator) WriteTransaction(
 			return err
 		}
 
-		if err = c.store.WritePage(root.PageID, page); err != nil {
+		if err = p.store.WritePage(root.PageID, page); err != nil {
 			return err
 		}
 
 		root.Dirty = false
-		c.cache.Put(root.PageID, root)
+		p.cache.Put(root.PageID, root)
 	}
 
 	// Add freed pages to pending
@@ -446,30 +446,30 @@ func (c *Coordinator) WriteTransaction(
 		for pageID := range freed {
 			freedSlice = append(freedSlice, pageID)
 		}
-		c.freelist.Pending(txnID, freedSlice)
+		p.freelist.Pending(txnID, freedSlice)
 	}
 
 	// Update meta
-	meta := c.active.Load().Meta
+	meta := p.active.Load().Meta
 	if root != nil {
 		meta.RootPageID = root.PageID
 	}
 	meta.TxID = txnID
 	meta.Checksum = meta.CalculateChecksum()
 
-	if err := c.PutSnapshot(meta, root); err != nil {
+	if err := p.PutSnapshot(meta, root); err != nil {
 		return err
 	}
 
 	// Conditional sync (this is the commit point!)
 	if syncMode == SyncEveryCommit {
-		if err := c.store.Sync(); err != nil {
+		if err := p.store.Sync(); err != nil {
 			return err
 		}
 	}
 
 	// Make meta visible to readers atomically
-	c.CommitSnapshot()
+	p.CommitSnapshot()
 
 	return nil
 }
@@ -477,7 +477,7 @@ func (c *Coordinator) WriteTransaction(
 // CommitTransaction coordinates the full transaction commit (legacy compatibility).
 // This combines MapVirtualPageIDs and WriteTransaction into a single operation.
 // Preserved for backward compatibility.
-func (c *Coordinator) CommitTransaction(
+func (p *Pager) CommitTransaction(
 	pages map[base.PageID]*base.Node,
 	root *base.Node,
 	freed map[base.PageID]struct{},
@@ -485,29 +485,29 @@ func (c *Coordinator) CommitTransaction(
 	syncMode SyncMode,
 ) error {
 	// Phase 1: Map virtual to real page IDs
-	_, err := c.MapVirtualPageIDs(pages, root)
+	_, err := p.MapVirtualPageIDs(pages, root)
 	if err != nil {
 		return err
 	}
 
 	// Phase 2: Write everything to disk
-	return c.WriteTransaction(pages, root, freed, txnID, syncMode)
+	return p.WriteTransaction(pages, root, freed, txnID, syncMode)
 }
 
 // AcquireBucket increments the reference count for a bucket's root page.
 // Returns false if the bucket is marked for deletion (new transactions cannot access it).
 // Returns true if successfully acquired.
-func (c *Coordinator) AcquireBucket(rootID base.PageID) bool {
+func (p *Pager) AcquireBucket(rootID base.PageID) bool {
 	// Quick check before acquiring lock
-	if _, deleted := c.Deleted[rootID]; deleted {
+	if _, deleted := p.Deleted[rootID]; deleted {
 		return false // Bucket is pending deletion, reject new access
 	}
 
-	c.DeletedMu.RLock()
-	defer c.DeletedMu.RUnlock()
+	p.DeletedMu.RLock()
+	defer p.DeletedMu.RUnlock()
 
 	// Check if bucket is marked for deletion WHILE holding read lock
-	if _, deleted := c.Deleted[rootID]; deleted {
+	if _, deleted := p.Deleted[rootID]; deleted {
 		return false // Bucket is pending deletion, reject new access
 	}
 
@@ -515,11 +515,11 @@ func (c *Coordinator) AcquireBucket(rootID base.PageID) bool {
 	// This prevents the bucket from being marked deleted between check and increment
 	counter := &atomic.Int32{}
 	counter.Store(1)
-	refCount, loaded := c.buckets.LoadOrStore(rootID, counter)
+	refCount, loaded := p.buckets.LoadOrStore(rootID, counter)
 	if loaded {
 		// We hold a reference to the atomic
 		refCount.(*atomic.Int32).Add(1)
-		if currentRefCount, ok := c.buckets.Load(rootID); !ok || currentRefCount != refCount {
+		if currentRefCount, ok := p.buckets.Load(rootID); !ok || currentRefCount != refCount {
 			// In case the bucket was deleted in between loading it and incrementing
 			// the ref count. The reference to this atomic does not matter since
 			// we are rejecting access anyway in ReleaseBucket (in another goroutine).
@@ -533,9 +533,9 @@ func (c *Coordinator) AcquireBucket(rootID base.PageID) bool {
 // ReleaseBucket decrements the reference count for a bucket's root page.
 // If the count reaches 0 and the bucket is marked for deletion, triggers background cleanup.
 // The cleanup callback is provided by the caller (typically db.freeTree).
-func (c *Coordinator) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.PageID) error) {
+func (p *Pager) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.PageID) error) {
 	// Decrement reference count
-	refCountVal, exists := c.buckets.Load(rootID)
+	refCountVal, exists := p.buckets.Load(rootID)
 	if !exists {
 		panic("ref count decrement of bucket count that does not exist") // Should not occur
 	}
@@ -545,33 +545,33 @@ func (c *Coordinator) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.Pa
 
 	// If count reaches 0, check if this bucket is marked for deletion
 	if newCount == 0 {
-		c.DeletedMu.Lock()
-		_, shouldDelete := c.Deleted[rootID]
+		p.DeletedMu.Lock()
+		_, shouldDelete := p.Deleted[rootID]
 		if shouldDelete {
 			// Remove from deleted map
-			delete(c.Deleted, rootID)
-			c.DeletedMu.Unlock()
+			delete(p.Deleted, rootID)
+			p.DeletedMu.Unlock()
 
 			// Trigger background cleanup
 			go func() {
 				_ = cleanupFunc(rootID)
 			}()
 		} else {
-			c.DeletedMu.Unlock()
+			p.DeletedMu.Unlock()
 		}
 
 		// Clean up empty reference count entry
-		c.buckets.Delete(rootID)
+		p.buckets.Delete(rootID)
 	}
 }
 
 // Close serializes freelist to disk and closes the file
-func (c *Coordinator) Close() error {
+func (p *Pager) Close() error {
 	// Get active meta for reading
-	meta := c.active.Load().Meta
+	meta := p.active.Load().Meta
 
 	// Serialize freelist to disk
-	pagesNeeded := c.freelist.PagesNeeded()
+	pagesNeeded := p.freelist.PagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
 	if uint64(pagesNeeded) > meta.FreelistPages {
@@ -581,10 +581,10 @@ func (c *Coordinator) Close() error {
 		for i := uint64(0); i < meta.FreelistPages; i++ {
 			oldPages[i] = meta.FreelistID + base.PageID(i)
 		}
-		c.freelist.Pending(meta.TxID, oldPages)
+		p.freelist.Pending(meta.TxID, oldPages)
 
 		// Recalculate pages needed after adding old freelist pages to pending
-		pagesNeeded = c.freelist.PagesNeeded()
+		pagesNeeded = p.freelist.PagesNeeded()
 
 		// Move freelist to new pages at end of file
 		meta.FreelistID = base.PageID(meta.NumPages)
@@ -597,10 +597,10 @@ func (c *Coordinator) Close() error {
 	for i := 0; i < pagesNeeded; i++ {
 		freelistPages[i] = &base.Page{}
 	}
-	c.freelist.Serialize(freelistPages)
+	p.freelist.Serialize(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := c.store.WritePage(meta.FreelistID+base.PageID(i),
+		if err := p.store.WritePage(meta.FreelistID+base.PageID(i),
 			freelistPages[i]); err != nil {
 			return err
 		}
@@ -616,20 +616,20 @@ func (c *Coordinator) Close() error {
 	// Write meta to disk
 	metaPage := &base.Page{}
 	metaPage.WriteMeta(&meta)
-	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
+	if err := p.store.WritePage(metaPageID, metaPage); err != nil {
 		return err
 	}
 
 	// Update in-memory and swap pointer
 	if metaPageID == 0 {
-		c.meta0.Meta = meta
-		c.active.Swap(&c.meta0)
+		p.meta0.Meta = meta
+		p.active.Swap(&p.meta0)
 	} else {
-		c.meta1.Meta = meta
-		c.active.Swap(&c.meta1)
+		p.meta1.Meta = meta
+		p.active.Swap(&p.meta1)
 	}
 
-	return c.store.Close()
+	return p.store.Close()
 }
 
 type Stats struct {
@@ -639,10 +639,10 @@ type Stats struct {
 }
 
 // Stats returns disk I/O statistics
-func (c *Coordinator) Stats() Stats {
+func (p *Pager) Stats() Stats {
 	return Stats{
-		Cache:      c.cache.Stats(),
-		Store:      c.store.Stats(),
-		FreedPages: c.freelist.Stats(),
+		Cache:      p.cache.Stats(),
+		Store:      p.store.Stats(),
+		FreedPages: p.freelist.Stats(),
 	}
 }

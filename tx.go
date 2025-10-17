@@ -8,7 +8,7 @@ import (
 
 	"fredb/internal/algo"
 	"fredb/internal/base"
-	"fredb/internal/coordinator"
+	"fredb/internal/pager"
 	"fredb/internal/writebuf"
 )
 
@@ -28,7 +28,7 @@ type Tx struct {
 	root *base.Node // Root Node at transaction start (stores bucket metadata)
 
 	buckets  map[string]*Bucket         // Cache of loaded buckets
-	acquired map[base.PageID]struct{}   // Buckets acquired from coordinator (need release)
+	acquired map[base.PageID]struct{}   // Buckets acquired from pager (need release)
 	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
 	deletes  map[string]base.PageID     // Root pages of buckets deleted in this transaction, for background cleanup upon commit
@@ -332,15 +332,15 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Convert syncMode to storage package type
-	var syncMode coordinator.SyncMode
+	var syncMode pager.SyncMode
 	if tx.db.options.syncMode == SyncEveryCommit {
-		syncMode = coordinator.SyncEveryCommit
+		syncMode = pager.SyncEveryCommit
 	} else {
-		syncMode = coordinator.SyncOff
+		syncMode = pager.SyncOff
 	}
 
 	// Phase 1: Map all virtual page IDs to real page IDs (no disk writes yet)
-	_, err := tx.db.coord.MapVirtualPageIDs(tx.pages, tx.root)
+	_, err := tx.db.pager.MapVirtualPageIDs(tx.pages, tx.root)
 	if err != nil {
 		return err
 	}
@@ -448,7 +448,7 @@ func (tx *Tx) Commit() error {
 
 	// Phase 2b: Map any NEW virtual pages that were created during bucket metadata insertion
 	// These weren't present during Phase 1, so they need to be mapped now
-	_, err = tx.db.coord.MapVirtualPageIDs(tx.pages, tx.root)
+	_, err = tx.db.pager.MapVirtualPageIDs(tx.pages, tx.root)
 	if err != nil {
 		return err
 	}
@@ -462,7 +462,7 @@ func (tx *Tx) Commit() error {
 
 	// Phase 3: Write everything to disk in a single operation
 	// This handles: page writes, freed pages, meta update, sync (if needed), and CommitSnapshot
-	err = tx.db.coord.WriteTransaction(
+	err = tx.db.pager.WriteTransaction(
 		tx.pages,
 		tx.root,
 		tx.freed,
@@ -475,14 +475,14 @@ func (tx *Tx) Commit() error {
 
 	tx.done = true
 
-	// Phase 4: Add deleted buckets to coordinator's Deleted map BEFORE releasing buckets
+	// Phase 4: Add deleted buckets to pager's Deleted map BEFORE releasing buckets
 	// This prevents new readers from acquiring deleted buckets after this commit
 	if tx.writable {
-		tx.db.coord.DeletedMu.Lock()
+		tx.db.pager.DeletedMu.Lock()
 		for _, pageID := range tx.deletes {
-			tx.db.coord.Deleted[pageID] = struct{}{}
+			tx.db.pager.Deleted[pageID] = struct{}{}
 		}
-		tx.db.coord.DeletedMu.Unlock()
+		tx.db.pager.DeletedMu.Unlock()
 	}
 
 	tx.db.writer.Store(nil)
@@ -492,7 +492,7 @@ func (tx *Tx) Commit() error {
 	// Only release buckets that were actually acquired (not newly created ones)
 	tx.db.tryReleasePages()
 	for pageID := range tx.acquired {
-		tx.db.coord.ReleaseBucket(pageID, tx.db.freeTree)
+		tx.db.pager.ReleaseBucket(pageID, tx.db.freeTree)
 	}
 
 	return nil
@@ -510,7 +510,7 @@ func (tx *Tx) Rollback() error {
 	// Release all acquired buckets (both read and write transactions)
 	// Only release buckets that were actually acquired (not newly created ones)
 	for pageID := range tx.acquired {
-		tx.db.coord.ReleaseBucket(pageID, tx.db.freeTree)
+		tx.db.pager.ReleaseBucket(pageID, tx.db.freeTree)
 	}
 
 	// Remove from DB tracking
@@ -520,7 +520,7 @@ func (tx *Tx) Rollback() error {
 		defer tx.db.mu.Unlock()
 
 		// Discard all transaction-local state
-		// Virtual pages were never allocated from Coordinator, so nothing to free
+		// Virtual pages were never allocated from Pager, so nothing to free
 		tx.pages = nil
 
 		tx.db.writer.Store(nil)
@@ -594,7 +594,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 // Returns a virtual page ID (negative) that will be mapped to a real page at commit time.
 func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
 	// Generate virtual page ID (negative number)
-	// These are transaction-local and never touch Coordinator until commit
+	// These are transaction-local and never touch Pager until commit
 	virtualID := base.PageID(tx.nextVirtualID)
 	tx.nextVirtualID--
 
@@ -655,7 +655,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
-// loadNode loads a node using the coordinator: tx.pages → Coordinator → Storage
+// loadNode loads a node using the pager: tx.pages → Pager → Storage
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
@@ -664,7 +664,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 		}
 	}
 
-	node, err := tx.db.coord.GetNode(pageID)
+	node, err := tx.db.pager.GetNode(pageID)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,12 +1105,12 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 		return nil
 	}
 
-	// Important, get a lock on the bucket through the coordinator in case
+	// Important, get a lock on the bucket through the pager in case
 	// the bucket is being deleted concurrently by another transaction.
 	// This must be released on rollback or commit.
 	// Exception: __root__ bucket is never deleted, so no need to track it
 	if string(name) != "__root__" {
-		acquired := tx.db.coord.AcquireBucket(bucket.rootID)
+		acquired := tx.db.pager.AcquireBucket(bucket.rootID)
 		if !acquired {
 			// Debug: bucket is marked for deletion
 			return nil
