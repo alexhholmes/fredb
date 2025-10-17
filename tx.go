@@ -326,16 +326,6 @@ func (tx *Tx) Rollback() error {
 	}
 	tx.done = true
 
-	// Clean up deleted buckets from Coordinator's Deleted map
-	// If we marked buckets for deletion but are now rolling back, they should not be deleted
-	if tx.writable && len(tx.deletes) > 0 {
-		tx.db.coord.DeletedMu.Lock()
-		for _, pageID := range tx.deletes {
-			delete(tx.db.coord.Deleted, pageID)
-		}
-		tx.db.coord.DeletedMu.Unlock()
-	}
-
 	// Release all acquired buckets (both read and write transactions)
 	// Only release buckets that were actually acquired (not newly created ones)
 	for pageID := range tx.acquired {

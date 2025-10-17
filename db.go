@@ -332,9 +332,8 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		writable: false,
 		root:     snapshot.Root, // Atomic snapshot of root
 		acquired: make(map[base.PageID]struct{}),
-		freed:    make(map[base.PageID]struct{}),
-		done:     false,
 		buckets:  make(map[string]*Bucket),
+		done:     false,
 	}
 
 	// Register reader (lock-free via sync.Map)
