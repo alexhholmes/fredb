@@ -30,8 +30,8 @@ type DB struct {
 	coord  *coordinator.Coordinator
 	closed atomic.Bool // Database closed flag
 
-	cache *cache.Cache     // Page cache
-	store *storage.Storage // Underlying storage
+	cache *cache.Cache    // Page cache
+	store storage.Storage // Underlying storage
 
 	// Transaction state
 	writer   atomic.Pointer[Tx] // Current write transaction (nil if none)
@@ -49,11 +49,13 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Create disk storage
-	mode := storage.MMap
+	var store storage.Storage
+	var err error
 	if opts.syncMode == SyncEveryCommit {
-		mode = storage.DirectIO
+		store, err = storage.NewDirectIO(path)
+	} else {
+		store, err = storage.NewMMap(path)
 	}
-	store, err := storage.NewStorage(path, mode)
 	if err != nil {
 		return nil, err
 	}

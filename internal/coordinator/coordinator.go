@@ -22,8 +22,8 @@ const (
 
 // Coordinator coordinates store, cache, meta, and freelist
 type Coordinator struct {
-	cache *cache.Cache     // Simple LRU cache
-	store *storage.Storage // File I/O backend
+	cache *cache.Cache    // Simple LRU cache
+	store storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
 	active atomic.Pointer[base.Snapshot]
@@ -46,7 +46,7 @@ type Coordinator struct {
 }
 
 // NewCoordinator creates a coordinator with injected dependencies
-func NewCoordinator(storage *storage.Storage, cache *cache.Cache) (*Coordinator, error) {
+func NewCoordinator(storage storage.Storage, cache *cache.Cache) (*Coordinator, error) {
 	c := &Coordinator{
 		store:    storage,
 		cache:    cache,
@@ -228,8 +228,8 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write to disk
-	buf := c.store.GetBuffer()
-	defer c.store.PutBuffer(buf)
+	buf := storage.GetBuffer()
+	defer storage.PutBuffer(buf)
 	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
 	metaPage.WriteMeta(&meta)
 	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
@@ -276,10 +276,10 @@ func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 
 	// Return buffer to pool after deserialization (DirectIO only)
 	// MMap mode allocates non-pooled, non-aligned buffers
-	if c.store.GetMode() == storage.DirectIO {
+	if _, ok := c.store.(*storage.DirectIO); ok {
 		defer func() {
 			buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
-			c.store.PutBuffer(buf)
+			storage.PutBuffer(buf)
 		}()
 	}
 
@@ -395,8 +395,8 @@ func (c *Coordinator) WriteTransaction(
 	syncMode SyncMode,
 ) error {
 	// Write all pages to disk
-	buf := c.store.GetBuffer()
-	defer c.store.PutBuffer(buf)
+	buf := storage.GetBuffer()
+	defer storage.PutBuffer(buf)
 	for _, node := range pages {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
 		if err := node.Serialize(txnID, page); err != nil {
