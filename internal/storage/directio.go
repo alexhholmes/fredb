@@ -115,3 +115,11 @@ func (d *DirectIO) Stats() Stats {
 func (d *DirectIO) Close() error {
 	return d.file.Close()
 }
+
+func (d *DirectIO) GetBuffer() []byte {
+	return d.bufPool.Get().([]byte)
+}
+
+func (d *DirectIO) PutBuffer(buf []byte) {
+	d.bufPool.Put(buf)
+}

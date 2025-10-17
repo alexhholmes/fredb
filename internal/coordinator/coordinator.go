@@ -228,8 +228,15 @@ func (c *Coordinator) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write to disk
-	buf := storage.GetBuffer()
-	defer storage.PutBuffer(buf)
+	var buf []byte
+	if store, ok := c.store.(*storage.DirectIO); ok {
+		// DirectIO requires aligned buffers
+		buf = store.GetBuffer()
+		defer store.PutBuffer(buf)
+	} else {
+		// MMap can use normal buffers
+		buf = make([]byte, base.PageSize)
+	}
 	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
 	metaPage.WriteMeta(&meta)
 	if err := c.store.WritePage(metaPageID, metaPage); err != nil {
@@ -276,10 +283,10 @@ func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 
 	// Return buffer to pool after deserialization (DirectIO only)
 	// MMap mode allocates non-pooled, non-aligned buffers
-	if _, ok := c.store.(*storage.DirectIO); ok {
+	if store, ok := c.store.(*storage.DirectIO); ok {
 		defer func() {
 			buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
-			storage.PutBuffer(buf)
+			store.PutBuffer(buf)
 		}()
 	}
 
@@ -395,8 +402,14 @@ func (c *Coordinator) WriteTransaction(
 	syncMode SyncMode,
 ) error {
 	// Write all pages to disk
-	buf := storage.GetBuffer()
-	defer storage.PutBuffer(buf)
+	var buf []byte
+	if store, ok := c.store.(*storage.DirectIO); ok {
+		buf = store.GetBuffer()
+		defer store.PutBuffer(buf)
+	} else {
+		// MMap can use normal buffers
+		buf = make([]byte, base.PageSize)
+	}
 	for _, node := range pages {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
 		if err := node.Serialize(txnID, page); err != nil {

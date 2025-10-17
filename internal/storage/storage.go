@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"sync"
-
 	"fredb/internal/base"
 )
 
@@ -22,18 +20,4 @@ type Stats struct {
 	Writes  uint64 // Total write operations
 	Read    uint64 // Total bytes read
 	Written uint64 // Total bytes written
-}
-
-var bufPool = sync.Pool{
-	New: func() any {
-		return make([]byte, base.PageSize)
-	},
-}
-
-func GetBuffer() []byte {
-	return bufPool.Get().([]byte)
-}
-
-func PutBuffer(buf []byte) {
-	bufPool.Put(buf)
 }
