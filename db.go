@@ -38,7 +38,7 @@ type DB struct {
 	readers  sync.Map           // Active read transactions (map[*Tx]struct{})
 	nextTxID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
-	options DBOptions // Store options for reference
+	options Options // Store options for reference
 }
 
 func Open(path string, options ...DBOption) (*DB, error) {

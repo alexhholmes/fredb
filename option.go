@@ -18,8 +18,8 @@ const (
 	SyncOff
 )
 
-// DBOptions configures database behavior.
-type DBOptions struct {
+// Options configures database behavior.
+type Options struct {
 	syncMode        SyncMode
 	maxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
 	writeBufferSize int // Write buffer size in bytes
@@ -28,8 +28,8 @@ type DBOptions struct {
 // DefaultDBOptions returns safe default configuration.
 //
 // goland:noinspection GoUnusedExportedFunction
-func DefaultDBOptions() DBOptions {
-	return DBOptions{
+func DefaultDBOptions() Options {
+	return Options{
 		syncMode:        SyncEveryCommit,
 		maxCacheSizeMB:  512,             // 512MB
 		writeBufferSize: 1 * 1024 * 1024, // 1MB
@@ -37,14 +37,14 @@ func DefaultDBOptions() DBOptions {
 }
 
 // DBOption configures database options using the functional options pattern.
-type DBOption func(*DBOptions)
+type DBOption func(*Options)
 
 // WithSyncEveryCommit configures the database to fsync on every commit.
 // This provides maximum durability (zero data loss) but lower throughput.
 //
 //goland:noinspection GoUnusedExportedFunction
 func WithSyncEveryCommit() DBOption {
-	return func(opts *DBOptions) {
+	return func(opts *Options) {
 		opts.syncMode = SyncEveryCommit
 	}
 }
@@ -55,7 +55,7 @@ func WithSyncEveryCommit() DBOption {
 //
 //goland:noinspection GoUnusedExportedFunction
 func WithSyncOff() DBOption {
-	return func(opts *DBOptions) {
+	return func(opts *Options) {
 		opts.syncMode = SyncOff
 	}
 }
@@ -65,7 +65,7 @@ func WithSyncOff() DBOption {
 //
 //goland:noinspection GoUnusedExportedFunction
 func WithMaxCacheSizeMB(mb int) DBOption {
-	return func(opts *DBOptions) {
+	return func(opts *Options) {
 		opts.maxCacheSizeMB = mb
 	}
 }
@@ -76,7 +76,7 @@ func WithMaxCacheSizeMB(mb int) DBOption {
 // Larger sizes can improve write throughput at the cost of higher memory usage.
 // Defaults to 1MB.
 func WithWriteBufferSize(size int) DBOption {
-	return func(opts *DBOptions) {
+	return func(opts *Options) {
 		opts.writeBufferSize = size
 	}
 }
