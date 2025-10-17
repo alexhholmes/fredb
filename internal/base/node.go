@@ -5,10 +5,8 @@ import (
 )
 
 const (
-	// MaxKeysPerNode must be small enough that a full Node can Serialize to PageSize
-	MaxKeysPerNode = 64
 	// MinKeysPerNode is the minimum Keys for non-root nodes
-	MinKeysPerNode = MaxKeysPerNode / 4
+	MinKeysPerNode = 16
 )
 
 // Node represents a B-tree Node with decoded Page data
