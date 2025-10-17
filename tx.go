@@ -3,11 +3,19 @@ package fredb
 import (
 	"bytes"
 	"errors"
+	"sort"
+	"strings"
 
 	"fredb/internal/algo"
 	"fredb/internal/base"
 	"fredb/internal/coordinator"
 )
+
+// entry represents a buffered write operation
+type entry struct {
+	value   []byte
+	deleted bool // Tombstone flag for deletions
+}
 
 // Tx represents a transaction on the database.
 //
@@ -31,6 +39,12 @@ type Tx struct {
 
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
 	done          bool  // Has Commit() or Rollback() been called?
+
+	// Write buffer for batching mutations
+	writeBuf     map[string]*entry
+	bufSize      int
+	bufThreshold int
+	opCount      int // Track number of buffered operations
 }
 
 // Get retrieves the value for a key from the default bucket.
@@ -83,7 +97,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	return tx.search(child, key)
 }
 
-// Set stores a key-value pair in the default bucket.
+// Set buffers a write operation, flushing when threshold is reached.
 // Returns ErrTxNotWritable if called on a read-only transaction.
 func (tx *Tx) Set(key, value []byte) error {
 	if err := tx.check(); err != nil {
@@ -93,13 +107,225 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Delegate to __root__ bucket (default namespace)
-	bucket := tx.Bucket([]byte("__root__"))
+	// Validate key/value size (same as Put)
+	if len(key) > MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > MaxValueSize {
+		return ErrValueTooLarge
+	}
+
+	// Create composite key: bucket + key
+	compositeKey := "__root__" + "\x00" + string(key)
+
+	// Track size delta and check if new operation
+	oldSize := 0
+	old, exists := tx.writeBuf[compositeKey]
+	if exists {
+		oldSize = len(old.value)
+	}
+
+	// Track operation count (first Set doesn't create entry yet)
+	if !exists {
+		tx.opCount++
+	}
+
+	// Single operation? Direct insert, skip buffering overhead
+	if tx.opCount == 1 && !exists {
+		bucket := tx.Bucket([]byte("__root__"))
+		if bucket == nil {
+			return ErrBucketNotFound
+		}
+		return bucket.Put(key, value)
+	}
+
+	// Buffer the write
+	tx.writeBuf[compositeKey] = &entry{
+		value:   append([]byte(nil), value...), // Defensive copy
+		deleted: false,
+	}
+
+	tx.bufSize += len(key) + len(value) - oldSize
+
+	// Auto-flush if buffer exceeds threshold
+	if tx.bufSize >= tx.bufThreshold {
+		return tx.flushBuffer("__root__")
+	}
+
+	return nil
+}
+
+// deleteBuffered buffers a delete operation (tombstone), flushing when threshold is reached.
+// Returns ErrTxNotWritable if called on a read-only transaction.
+// Returns ErrKeyNotFound if key doesn't exist (unless it was just written in this buffer).
+func (tx *Tx) deleteBuffered(key []byte) error {
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	compositeKey := "__root__" + "\x00" + string(key)
+
+	// Check if key is in buffer
+	e, exists := tx.writeBuf[compositeKey]
+	if exists {
+		// Key already buffered - update to tombstone
+		oldSize := len(e.value)
+		e.deleted = true
+		e.value = nil
+		tx.bufSize -= oldSize
+	} else {
+		// Track new operation
+		tx.opCount++
+
+		// Single operation? Direct delete, skip buffering overhead
+		if tx.opCount == 1 {
+			bucket := tx.Bucket([]byte("__root__"))
+			if bucket == nil {
+				return ErrBucketNotFound
+			}
+			// Direct tree delete
+			newRoot, err := tx.deleteFromNode(bucket.root, key)
+			if err != nil {
+				return err
+			}
+			bucket.root = newRoot
+			return nil
+		}
+
+		// Key not in buffer. Check if it exists in the tree.
+		// This ensures Delete() fails on non-existent keys (not idempotent).
+		bucket := tx.Bucket([]byte("__root__"))
+		if bucket != nil {
+			_, err := tx.search(bucket.root, key)
+			if err != nil {
+				return err // Key not found in tree
+			}
+		}
+
+		// Add new tombstone to buffer
+		tx.writeBuf[compositeKey] = &entry{
+			value:   nil,
+			deleted: true,
+		}
+		tx.bufSize += len(key)
+	}
+
+	// Auto-flush if buffer exceeds threshold
+	if tx.bufSize >= tx.bufThreshold {
+		return tx.flushBuffer("__root__")
+	}
+
+	return nil
+}
+
+// flushBuffer applies all buffered writes to the tree in sorted order
+func (tx *Tx) flushBuffer(bucketName string) error {
+	if len(tx.writeBuf) == 0 {
+		return nil
+	}
+
+	// Get the root bucket
+	bucket := tx.Bucket([]byte(bucketName))
 	if bucket == nil {
 		return ErrBucketNotFound
 	}
 
-	return bucket.Put(key, value)
+	// Sort keys for sequential insertion (reduces split cascades)
+	keys := make([]string, 0, len(tx.writeBuf))
+	for k := range tx.writeBuf {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Batch apply operations in sorted order
+	for _, compositeKey := range keys {
+		entry := tx.writeBuf[compositeKey]
+
+		// Extract real key (strip bucket prefix: "__root__\x00")
+		parts := strings.SplitN(compositeKey, "\x00", 2)
+		if len(parts) != 2 {
+			continue // Skip malformed keys
+		}
+		key := []byte(parts[1])
+
+		// Validate key/value size (same as Bucket.Put)
+		if !entry.deleted {
+			if len(key) > MaxKeySize {
+				return ErrKeyTooLarge
+			}
+			if len(entry.value) > MaxValueSize {
+				return ErrValueTooLarge
+			}
+			// Check practical limit based on page size
+			maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+			if len(key)+len(entry.value) > maxSize {
+				return ErrPageOverflow
+			}
+		}
+
+		if entry.deleted {
+			// Apply delete to tree
+			newRoot, err := tx.deleteFromNode(bucket.root, key)
+			if err != nil && !errors.Is(err, ErrKeyNotFound) {
+				return err
+			}
+			if newRoot != nil {
+				bucket.root = newRoot
+			}
+		} else {
+			// Apply insert to tree
+			// Handle root split if needed
+			if bucket.root.IsFull(key, entry.value) {
+				leftChild, rightChild, midKey, _, err := tx.splitChild(bucket.root, key)
+				if err != nil {
+					return err
+				}
+
+				newRootID, _, err := tx.allocatePage()
+				if err != nil {
+					return err
+				}
+
+				bucket.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+				tx.pages[newRootID] = bucket.root
+			}
+
+			// Insert with retry logic (same as Bucket.Put)
+			for {
+				newRoot, err := tx.insertNonFull(bucket.root, key, entry.value)
+				if !errors.Is(err, ErrPageOverflow) {
+					if err == nil {
+						bucket.root = newRoot
+					}
+					if err != nil {
+						return err
+					}
+					break
+				}
+
+				// Root couldn't fit - split it
+				leftChild, rightChild, midKey, _, err := tx.splitChild(bucket.root, key)
+				if err != nil {
+					return err
+				}
+
+				newRootID, _, err := tx.allocatePage()
+				if err != nil {
+					return err
+				}
+
+				bucket.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
+				tx.pages[newRootID] = bucket.root
+			}
+		}
+	}
+
+	// Clear buffer
+	tx.writeBuf = make(map[string]*entry)
+	tx.bufSize = 0
+	tx.opCount = 0
+
+	return nil
 }
 
 // Delete removes a key from the default bucket.
@@ -149,6 +375,11 @@ func (tx *Tx) Commit() error {
 
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
+
+	// Flush any remaining buffered writes before committing
+	if err := tx.flushBuffer("__root__"); err != nil {
+		return err
+	}
 
 	// Convert syncMode to storage package type
 	var syncMode coordinator.SyncMode

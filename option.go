@@ -20,8 +20,9 @@ const (
 
 // DBOptions configures database behavior.
 type DBOptions struct {
-	syncMode       SyncMode
-	maxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
+	syncMode        SyncMode
+	maxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
+	writeBufferSize int // Write buffer size in bytes
 }
 
 // DefaultDBOptions returns safe default configuration.
@@ -29,8 +30,9 @@ type DBOptions struct {
 // goland:noinspection GoUnusedExportedFunction
 func DefaultDBOptions() DBOptions {
 	return DBOptions{
-		syncMode:       SyncEveryCommit,
-		maxCacheSizeMB: 512, // 512MB
+		syncMode:        SyncEveryCommit,
+		maxCacheSizeMB:  512,             // 512MB
+		writeBufferSize: 1 * 1024 * 1024, // 1MB
 	}
 }
 
@@ -65,5 +67,16 @@ func WithSyncOff() DBOption {
 func WithMaxCacheSizeMB(mb int) DBOption {
 	return func(opts *DBOptions) {
 		opts.maxCacheSizeMB = mb
+	}
+}
+
+// WithWriteBufferSize sets the write buffer size in bytes. This is used within
+// a write transaction to keep track of uncommitted changes before writing to
+// the in-memory btree with sorted writes (improving btree localization).
+// Larger sizes can improve write throughput at the cost of higher memory usage.
+// Defaults to 1MB.
+func WithWriteBufferSize(size int) DBOption {
+	return func(opts *DBOptions) {
+		opts.writeBufferSize = size
 	}
 }

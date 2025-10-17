@@ -40,6 +40,21 @@ func (b *Bucket) Deserialize(data []byte) {
 
 // Get retrieves the value for a key from this bucket
 func (b *Bucket) Get(key []byte) []byte {
+	// Check write buffer first (read-your-writes consistency)
+	if b.tx.writeBuf != nil {
+		compositeKey := "__root__\x00" + string(key)
+		if entry, exists := b.tx.writeBuf[compositeKey]; exists {
+			if entry.deleted {
+				return nil  // Tombstone - key was deleted
+			}
+			// Return defensive copy
+			result := make([]byte, len(entry.value))
+			copy(result, entry.value)
+			return result
+		}
+	}
+
+	// Fall back to tree search
 	if b.root == nil {
 		return nil
 	}
@@ -127,17 +142,17 @@ func (b *Bucket) Delete(key []byte) error {
 		return ErrTxNotWritable
 	}
 
-	newRoot, err := b.tx.deleteFromNode(b.root, key)
-	if err != nil {
-		return err
-	}
-
-	b.root = newRoot
-	return nil
+	return b.tx.deleteBuffered(key)
 }
 
 // Cursor returns a cursor for iterating over this bucket's keys
 func (b *Bucket) Cursor() *Cursor {
+	// Flush any buffered writes before creating cursor
+	// This ensures the cursor sees all mutations within the same transaction
+	if b.tx.writable && len(b.tx.writeBuf) > 0 {
+		_ = b.tx.flushBuffer("__root__")
+	}
+
 	return &Cursor{
 		tx:         b.tx,
 		bucketRoot: b.root,
