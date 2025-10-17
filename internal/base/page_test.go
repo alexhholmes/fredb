@@ -16,7 +16,7 @@ func TestPageHeaderAlignment(t *testing.T) {
 
 	// Verify struct sizes match expectations (no padding)
 	assert.Equal(t, uintptr(8), unsafe.Sizeof(PageID(0)), "PageID Size")
-	assert.Equal(t, uintptr(40), unsafe.Sizeof(PageHeader{}), "PageHeader Size")
+	assert.Equal(t, uintptr(24), unsafe.Sizeof(PageHeader{}), "PageHeader Size")
 
 	// Verify field offsets (no padding needed)
 	var h PageHeader
@@ -25,8 +25,6 @@ func TestPageHeaderAlignment(t *testing.T) {
 	assert.Equal(t, uintptr(10), unsafe.Offsetof(h.NumKeys), "NumKeys offset")
 	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.Padding), "Padding offset")
 	assert.Equal(t, uintptr(16), unsafe.Offsetof(h.TxnID), "TxID offset")
-	assert.Equal(t, uintptr(24), unsafe.Offsetof(h._NextLeaf), "_NextLeaf offset")
-	assert.Equal(t, uintptr(32), unsafe.Offsetof(h._PrevLeaf), "_PrevLeaf offset")
 }
 
 func TestPageHeaderRoundTrip(t *testing.T) {
@@ -61,13 +59,11 @@ func TestPageHeaderByteLayout(t *testing.T) {
 
 	// Write Header with known Values
 	hdr := PageHeader{
-		PageID:    0x0123456789ABCDEF, // 8 bytes
-		Flags:     0x1234,             // 2 bytes
-		NumKeys:   0x5678,             // 2 bytes
-		Padding:   0x9ABCDEF0,         // 4 bytes
-		TxnID:     0x1122334455667788, // 8 bytes
-		_NextLeaf: 0xFEDCBA9876543210, // 8 bytes
-		_PrevLeaf: 0x0011223344556677, // 8 bytes
+		PageID:  0x0123456789ABCDEF, // 8 bytes
+		Flags:   0x1234,             // 2 bytes
+		NumKeys: 0x5678,             // 2 bytes
+		Padding: 0x9ABCDEF0,         // 4 bytes
+		TxnID:   0x1122334455667788, // 8 bytes
 	}
 	page.WriteHeader(&hdr)
 
@@ -83,10 +79,6 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		0xF0, 0xDE, 0xBC, 0x9A,
 		// TxID (8 bytes, little-endian)
 		0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
-		// _NextLeaf (8 bytes, little-endian)
-		0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
-		// _PrevLeaf (8 bytes, little-endian)
-		0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
 	}
 
 	for i, expectedByte := range expected {

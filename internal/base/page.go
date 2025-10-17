@@ -39,7 +39,7 @@ type PageID uint64
 // LEAF PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (40 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxID, _NextLeaf, _PrevLeaf        │
+// │ PageID, Flags, NumKeys, Padding, TxID                               │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ LeafElement[0] (12 bytes)                                           │
 // │ KeyOffset, KeySize, ValueOffset, ValueSize, Reserved                │
@@ -58,7 +58,7 @@ type PageID uint64
 // BRANCH PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (40 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxID, _NextLeaf, _PrevLeaf        │
+// │ PageID, Flags, NumKeys, Padding, TxID                               │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[0] (16 bytes)                                         │
 // │ KeyOffset, KeySize, Reserved, ChildID                               │
@@ -82,13 +82,11 @@ type Page struct {
 // PageHeader represents the fixed-Size Header at the start of each Page
 // Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8][_NextLeaf: 8][_PrevLeaf: 8]
 type PageHeader struct {
-	PageID    PageID // 8 bytes
-	Flags     uint16 // 2 bytes (leaf/branch)
-	NumKeys   uint16 // 2 bytes
-	Padding   uint32 // 4 bytes (alignment)
-	TxnID     uint64 // 8 bytes - transaction that committed this Page version
-	_NextLeaf PageID // 8 bytes - next leaf in linked list (0 if none) (Reserved)
-	_PrevLeaf PageID // 8 bytes - prev leaf in linked list (0 if none) (Reserved)
+	PageID  PageID // 8 bytes
+	Flags   uint16 // 2 bytes (leaf/branch)
+	NumKeys uint16 // 2 bytes
+	Padding uint32 // 4 bytes (alignment)
+	TxnID   uint64 // 8 bytes - transaction that committed this Page version
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf Page
