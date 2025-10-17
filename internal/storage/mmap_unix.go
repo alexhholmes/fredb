@@ -1,3 +1,6 @@
+// mmap_unix.go
+//go:build linux || darwin
+
 package storage
 
 import (
@@ -99,7 +102,7 @@ func (m *MMap) WritePage(id base.PageID, page *base.Page) error {
 	if offset+base.PageSize > m.mmapSize {
 		// Grow mmap region
 		minSize := offset + base.PageSize
-		
+
 		// Round up to 1GB chunks to reduce remap frequency
 		const growthSize = 1024 * 1024 * 1024 // 1GB
 		newSize := ((minSize + growthSize - 1) / growthSize) * growthSize
@@ -133,8 +136,6 @@ func (m *MMap) WritePage(id base.PageID, page *base.Page) error {
 	m.written.Add(base.PageSize)
 	return nil
 }
-
-
 
 // Sync flushes the memory-mapped region to disk
 func (m *MMap) Sync() error {
