@@ -348,7 +348,7 @@ func (c *Coordinator) loadExistingDB() error {
 }
 
 // GetNode retrieves a node, checking cache first then loading from disk.
-func (c *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, error) {
+func (c *Coordinator) GetNode(pageID base.PageID) (*base.Node, error) {
 	// Check cache first
 	if node, hit := c.cache.Get(pageID); hit {
 		return node, nil
@@ -374,7 +374,7 @@ func (c *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, err
 		Dirty:  false,
 	}
 
-	if err := node.Deserialize(page); err != nil {
+	if err = node.Deserialize(page); err != nil {
 		return nil, err
 	}
 
@@ -385,8 +385,8 @@ func (c *Coordinator) GetNode(pageID base.PageID, txnID uint64) (*base.Node, err
 
 // LoadNode loads a node, coordinating cache and disk I/O.
 // Routes TX calls through Coordinator instead of direct cache access.
-func (c *Coordinator) LoadNode(pageID base.PageID, txnID uint64) (*base.Node, bool) {
-	node, err := c.GetNode(pageID, txnID)
+func (c *Coordinator) LoadNode(pageID base.PageID) (*base.Node, bool) {
+	node, err := c.GetNode(pageID)
 	if err != nil {
 		return nil, false
 	}

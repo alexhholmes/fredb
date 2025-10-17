@@ -442,7 +442,7 @@ func (db *DB) tryReleasePages() {
 // collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal
 func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error {
 	// Load node from disk
-	node, ok := tx.db.coord.LoadNode(pageID, tx.txID)
+	node, ok := tx.db.coord.LoadNode(pageID)
 	if !ok {
 		return ErrCorruption
 	}

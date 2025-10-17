@@ -81,7 +81,13 @@ func (c *Cursor) First() ([]byte, []byte) {
 			return c.Next()
 		}
 
-		return c.key, c.value
+		// Important: return a copy of the key/value to avoid external mutation
+		resultK := make([]byte, len(c.key))
+		copy(resultK, c.key)
+		resultV := make([]byte, len(c.value))
+		copy(resultV, c.value)
+
+		return resultK, resultV
 	}
 
 	return nil, nil
@@ -129,7 +135,13 @@ func (c *Cursor) Last() ([]byte, []byte) {
 			return c.Prev()
 		}
 
-		return c.key, c.value
+		// Important: return a copy of the key/value to avoid external mutation
+		resultK := make([]byte, len(c.key))
+		copy(resultK, c.key)
+		resultV := make([]byte, len(c.value))
+		copy(resultV, c.value)
+
+		return resultK, resultV
 	}
 
 	return nil, nil
@@ -196,7 +208,13 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 			return c.Next()
 		}
 
-		return c.key, c.value
+		// Important: return a copy of the key/value to avoid external mutation
+		resultK := make([]byte, len(c.key))
+		copy(resultK, c.key)
+		resultV := make([]byte, len(c.value))
+		copy(resultV, c.value)
+
+		return resultK, resultV
 	}
 
 	return nil, nil
@@ -226,7 +244,14 @@ func (c *Cursor) Next() ([]byte, []byte) {
 		if c.shouldSkip(c.key) {
 			return c.Next()
 		}
-		return c.key, c.value
+
+		// Important: return a copy of the key/value to avoid external mutation
+		resultK := make([]byte, len(c.key))
+		copy(resultK, c.key)
+		resultV := make([]byte, len(c.value))
+		copy(resultV, c.value)
+
+		return resultK, resultV
 	}
 
 	// Exhausted current leaf, move to next
@@ -239,7 +264,14 @@ func (c *Cursor) Next() ([]byte, []byte) {
 	if c.shouldSkip(c.key) {
 		return c.Next()
 	}
-	return c.key, c.value
+
+	// Important: return a copy of the key/value to avoid external mutation
+	resultK := make([]byte, len(c.key))
+	copy(resultK, c.key)
+	resultV := make([]byte, len(c.value))
+	copy(resultV, c.value)
+
+	return resultK, resultV
 }
 
 // Prev moves cursor to previous key
@@ -266,7 +298,13 @@ func (c *Cursor) Prev() ([]byte, []byte) {
 		if c.shouldSkip(c.key) {
 			return c.Prev()
 		}
-		return c.key, c.value
+
+		resultK := make([]byte, len(c.key))
+		copy(resultK, c.key)
+		resultV := make([]byte, len(c.value))
+		copy(resultV, c.value)
+
+		return resultK, resultV
 	}
 
 	// Exhausted current leaf, move to previous
@@ -279,7 +317,13 @@ func (c *Cursor) Prev() ([]byte, []byte) {
 	if c.shouldSkip(c.key) {
 		return c.Prev()
 	}
-	return c.key, c.value
+
+	resultK := make([]byte, len(c.key))
+	copy(resultK, c.key)
+	resultV := make([]byte, len(c.value))
+	copy(resultV, c.value)
+
+	return resultK, resultV
 }
 
 // Key returns current key (only valid when Valid() == true)
@@ -287,7 +331,10 @@ func (c *Cursor) Key() []byte {
 	if err := c.active(); err != nil {
 		return nil
 	}
-	return c.key
+
+	result := make([]byte, len(c.key))
+	copy(result, c.key)
+	return result
 }
 
 // Value returns current value (only valid when Valid() == true)
@@ -295,7 +342,9 @@ func (c *Cursor) Value() []byte {
 	if err := c.active(); err != nil {
 		return nil
 	}
-	return c.value
+	result := make([]byte, len(c.value))
+	copy(result, c.value)
+	return result
 }
 
 // Valid returns true if cursor is positioned on a valid key

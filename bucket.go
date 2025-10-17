@@ -49,7 +49,10 @@ func (b *Bucket) Get(key []byte) []byte {
 		return nil
 	}
 
-	return val
+	// Important: return a copy of the value to avoid external mutation
+	result := make([]byte, len(val))
+	copy(result, val)
+	return result
 }
 
 // Put stores a key-value pair in this bucket

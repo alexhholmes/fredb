@@ -484,7 +484,7 @@ func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []by
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
 
-// loadNode loads a node using version-aware coordinator: tx.pages → Coordinator → Storage
+// loadNode loads a node using the coordinator: tx.pages → Coordinator → Storage
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
@@ -493,8 +493,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 		}
 	}
 
-	// Use coordinator's version-aware loading
-	node, err := tx.db.coord.GetNode(pageID, tx.txID)
+	node, err := tx.db.coord.GetNode(pageID)
 	if err != nil {
 		return nil, err
 	}
