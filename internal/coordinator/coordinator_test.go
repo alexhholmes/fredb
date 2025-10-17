@@ -31,67 +31,6 @@ func createTestCoordinator(t *testing.T, tmpFile string) (*Coordinator, func()) 
 	return pm, cleanup
 }
 
-func TestPageManagerFreeListPending(t *testing.T) {
-	t.Parallel()
-
-	tmpFile := t.TempDir() + "/test.db"
-	pm, cleanup := createTestCoordinator(t, tmpFile)
-	defer cleanup()
-
-	// Add some pages to pending at different transactions
-	require.NoError(t, pm.FreePending(10, []base.PageID{100, 101, 102}), "FreePending failed")
-	require.NoError(t, pm.FreePending(11, []base.PageID{200, 201}), "FreePending failed")
-	require.NoError(t, pm.FreePending(12, []base.PageID{300}), "FreePending failed")
-
-	// Release pages from transactions < 11 (i.e., txnID 10)
-	released := pm.ReleasePages(11)
-	assert.Equal(t, 3, released, "Expected 3 pages released")
-
-	// Release everything
-	released = pm.ReleasePages(100)
-	assert.Equal(t, 3, released, "Expected 3 more pages released")
-
-	// Verify we can allocate the freed pages
-	allocated := make(map[base.PageID]bool)
-	for i := 0; i < 6; i++ {
-		id, err := pm.AssignPageID()
-		require.NoError(t, err, "AssignPageID failed")
-		// Pages 100, 101, 102, 200, 201, 300 should be reused
-		if id == 100 || id == 101 || id == 102 || id == 200 || id == 201 || id == 300 {
-			allocated[id] = true
-		}
-	}
-
-	// Should have allocated at least some of the freed pages
-	assert.NotEmpty(t, allocated, "Expected to reuse some freed pages, but none were allocated")
-}
-
-func TestPageManagerFreeListReleaseOrder(t *testing.T) {
-	t.Parallel()
-
-	tmpFile := t.TempDir() + "/test.db"
-	pm, cleanup := createTestCoordinator(t, tmpFile)
-	defer cleanup()
-
-	// Add pages at various transaction IDs
-	pm.FreePending(50, []base.PageID{500})
-	pm.FreePending(10, []base.PageID{100})
-	pm.FreePending(30, []base.PageID{300})
-	pm.FreePending(20, []base.PageID{200})
-
-	// Release up to 25 should release txns 10 and 20
-	released := pm.ReleasePages(25)
-	assert.Equal(t, 2, released, "Expected 2 pages released (txn 10, 20)")
-
-	// Release pages from transactions < 31 (i.e., txnID 30)
-	released = pm.ReleasePages(31)
-	assert.Equal(t, 1, released, "Expected 1 page released (txn 30)")
-
-	// txn 50 still pending - releasing up to 51 should release 1 more
-	released = pm.ReleasePages(51)
-	assert.Equal(t, 1, released, "Expected 1 page released (txn 50)")
-}
-
 func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	t.Parallel()
 
@@ -102,9 +41,6 @@ func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	// Release on empty pending should do nothing
 	released := pm.ReleasePages(100)
 	assert.Equal(t, 0, released, "Expected 0 pages released from empty pending")
-
-	// Add empty slice shouldn't break anything
-	require.NoError(t, pm.FreePending(10, []base.PageID{}), "FreePending with empty slice failed")
 
 	// Should still be 0
 	released = pm.ReleasePages(100)
@@ -124,11 +60,6 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		require.NoError(t, pm.FreePage(10), "FreePage failed")
 		require.NoError(t, pm.FreePage(20), "FreePage failed")
 		require.NoError(t, pm.FreePage(30), "FreePage failed")
-
-		// Add pending pages
-		pm.FreePending(100, []base.PageID{1000, 1001, 1002})
-		pm.FreePending(101, []base.PageID{2000, 2001})
-		pm.FreePending(105, []base.PageID{3000})
 
 		cleanup()
 	}

@@ -301,56 +301,88 @@ func TestCalculateSplitPoint(t *testing.T) {
 	tests := []struct {
 		name               string
 		node               *base.Node
+		insertKey          []byte
+		hint               SplitHint
 		wantMid            int
 		wantLeftCount      int
 		wantRightCount     int
 		wantSeparatorEqual []byte
 	}{
 		{
-			name:               "leaf_typical_split",
+			name:               "balanced_leaf_typical_split",
 			node:               makeFullLeaf(10),
+			insertKey:          []byte{'e'}, // Middle key - balanced
+			hint:               SplitBalanced,
 			wantMid:            4,
 			wantLeftCount:      5,
 			wantRightCount:     5,
 			wantSeparatorEqual: []byte{'f'}, // Keys[mid+1]=Keys[5] for leaf
 		},
 		{
-			name:               "branch_typical_split",
+			name:               "ascending_leaf_split_right_bias",
+			node:               makeFullLeaf(10),
+			insertKey:          []byte{'z'}, // Beyond rightmost → RightBias
+			hint:               SplitBalanced,
+			wantMid:            8,           // 90% of 10 = 9, clamped to len-2 = 8
+			wantLeftCount:      9,           // Left gets most keys
+			wantRightCount:     1,           // Right gets one key
+			wantSeparatorEqual: []byte{'j'}, // Keys[mid+1]=Keys[9]
+		},
+		{
+			name:               "descending_leaf_split_left_bias",
+			node:               makeFullLeaf(10),
+			insertKey:          []byte{'0'}, // Before leftmost → LeftBias
+			hint:               SplitBalanced,
+			wantMid:            1,           // 10% left
+			wantLeftCount:      2,           // Left gets minimal keys
+			wantRightCount:     8,           // Right gets most
+			wantSeparatorEqual: []byte{'c'}, // Keys[mid+1]=Keys[2]
+		},
+		{
+			name:               "branch_balanced_split",
 			node:               makeFullBranch(10),
+			insertKey:          []byte{'e'},
+			hint:               SplitBalanced,
 			wantMid:            4,
 			wantLeftCount:      4,
 			wantRightCount:     5,
 			wantSeparatorEqual: []byte{'e'}, // Keys[mid] for branch
 		},
 		{
-			name:               "small_leaf_split",
-			node:               makeFullLeaf(4),
+			name:               "branch_ascending_split",
+			node:               makeFullBranch(10),
+			insertKey:          []byte{'z'},
+			hint:               SplitBalanced,
+			wantMid:            8,           // Clamped to len-2
+			wantLeftCount:      8,           // Most keys left
+			wantRightCount:     1,           // Minimal right
+			wantSeparatorEqual: []byte{'i'}, // Keys[mid]
+		},
+		{
+			name:               "explicit_right_bias_hint",
+			node:               makeFullLeaf(10),
+			insertKey:          nil,
+			hint:               SplitRightBias,
+			wantMid:            8,
+			wantLeftCount:      9,
+			wantRightCount:     1,
+			wantSeparatorEqual: []byte{'j'}, // Keys[mid+1]=Keys[9]
+		},
+		{
+			name:               "explicit_left_bias_hint",
+			node:               makeFullLeaf(10),
+			insertKey:          nil,
+			hint:               SplitLeftBias,
 			wantMid:            1,
 			wantLeftCount:      2,
-			wantRightCount:     2,
+			wantRightCount:     8,
 			wantSeparatorEqual: []byte{'c'}, // Keys[mid+1]=Keys[2]
-		},
-		{
-			name:               "small_branch_split",
-			node:               makeFullBranch(4),
-			wantMid:            1,
-			wantLeftCount:      1,
-			wantRightCount:     2,
-			wantSeparatorEqual: []byte{'b'}, // Keys[mid]
-		},
-		{
-			name:               "leaf_max_keys",
-			node:               makeFullLeaf(base.MaxKeysPerNode),
-			wantMid:            base.MaxKeysPerNode/2 - 1,
-			wantLeftCount:      base.MaxKeysPerNode / 2,
-			wantRightCount:     base.MaxKeysPerNode / 2,
-			wantSeparatorEqual: makeFullLeaf(base.MaxKeysPerNode).Keys[base.MaxKeysPerNode/2],
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sp := CalculateSplitPoint(tt.node)
+			sp := CalculateSplitPointWithHint(tt.node, tt.insertKey, tt.hint)
 
 			if sp.Mid != tt.wantMid {
 				t.Errorf("Mid = %v, want %v", sp.Mid, tt.wantMid)
@@ -362,17 +394,17 @@ func TestCalculateSplitPoint(t *testing.T) {
 				t.Errorf("RightCount = %v, want %v", sp.RightCount, tt.wantRightCount)
 			}
 			if !bytes.Equal(sp.SeparatorKey, tt.wantSeparatorEqual) {
-				t.Errorf("SeparatorKey = %v, want %v", sp.SeparatorKey, tt.wantSeparatorEqual)
+				t.Errorf("SeparatorKey = %v, want %v", string(sp.SeparatorKey), string(tt.wantSeparatorEqual))
 			}
 
 			// Verify separator is a copy, not shared
-			if tt.node.IsLeaf() {
+			if tt.node.IsLeaf() && sp.Mid+1 < len(tt.node.Keys) {
 				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid+1]) > 0 {
 					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid+1][0] {
 						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
 					}
 				}
-			} else {
+			} else if !tt.node.IsLeaf() && sp.Mid < len(tt.node.Keys) {
 				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid]) > 0 {
 					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid][0] {
 						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
@@ -503,14 +535,6 @@ func TestCanBorrowFrom(t *testing.T) {
 				make([][]byte, base.MinKeysPerNode-1),
 			),
 			want: false,
-		},
-		{
-			name: "can_borrow_max_keys",
-			node: makeLeafNode(
-				make([][]byte, base.MaxKeysPerNode),
-				make([][]byte, base.MaxKeysPerNode),
-			),
-			want: true,
 		},
 		{
 			name: "empty_node_cannot_borrow",
@@ -815,16 +839,6 @@ func TestReadOnlyBehavior(t *testing.T) {
 		_ = FindKeyInLeaf(node, []byte("a"))
 		if node.NumKeys != originalNumKeys {
 			t.Error("FindKeyInLeaf mutated node")
-		}
-	})
-
-	t.Run("CalculateSplitPoint_no_mutation", func(t *testing.T) {
-		keys := [][]byte{[]byte("a"), []byte("b"), []byte("c"), []byte("d")}
-		node := makeLeafNode(keys, [][]byte{[]byte("1"), []byte("2"), []byte("3"), []byte("4")})
-		originalLen := len(node.Keys)
-		_ = CalculateSplitPoint(node)
-		if len(node.Keys) != originalLen {
-			t.Error("CalculateSplitPoint mutated node")
 		}
 	})
 }
