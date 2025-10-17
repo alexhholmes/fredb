@@ -47,6 +47,15 @@ func FindDeleteChildIndex(node *base.Node, key []byte) int {
 	return idx
 }
 
+// SplitHint guides how to bias the split point
+type SplitHint int
+
+const (
+	SplitBalanced  SplitHint = iota // Default: 50/50
+	SplitLeftBias                   // Left heavy: 90/10 (descending inserts)
+	SplitRightBias                  // Right heavy: 10/90 (ascending inserts)
+)
+
 // SplitPoint contains split calculation results
 type SplitPoint struct {
 	Mid          int
@@ -55,8 +64,8 @@ type SplitPoint struct {
 	SeparatorKey []byte
 }
 
-// CalculateSplitPoint determines split position (read-only)
-func CalculateSplitPoint(node *base.Node) SplitPoint {
+// CalculateSplitPointWithHint determines split position with adaptive strategy
+func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHint) SplitPoint {
 	// Handle edge case: node with only 1 key (can happen with large values)
 	if len(node.Keys) <= 1 {
 		if len(node.Keys) == 0 {
@@ -74,9 +83,37 @@ func CalculateSplitPoint(node *base.Node) SplitPoint {
 		}
 	}
 
-	mid := len(node.Keys)/2 - 1
-	if mid < 0 {
-		mid = 0
+	// Detect pattern if hint not provided
+	if hint == SplitBalanced && insertKey != nil {
+		if bytes.Compare(insertKey, node.Keys[len(node.Keys)-1]) > 0 {
+			// Inserting beyond rightmost key → ascending pattern
+			hint = SplitRightBias
+		} else if bytes.Compare(insertKey, node.Keys[0]) < 0 {
+			// Inserting before leftmost key → descending pattern
+			hint = SplitLeftBias
+		}
+	}
+
+	var mid int
+	switch hint {
+	case SplitRightBias:
+		// Keep left node nearly full (90%), right node minimal (10%)
+		mid = int(float64(len(node.Keys)) * 0.9)
+		if mid >= len(node.Keys)-1 {
+			mid = len(node.Keys) - 2
+		}
+	case SplitLeftBias:
+		// Keep right node nearly full (90%), left node minimal (10%)
+		mid = int(float64(len(node.Keys)) * 0.1)
+		if mid < 1 {
+			mid = 1
+		}
+	default:
+		// Balanced split
+		mid = len(node.Keys)/2 - 1
+		if mid < 0 {
+			mid = 0
+		}
 	}
 
 	var sep []byte

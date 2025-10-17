@@ -77,7 +77,7 @@ func (b *Bucket) Put(key, value []byte) error {
 
 	// Handle root split if needed
 	if b.root.IsFull(key, value) {
-		leftChild, rightChild, midKey, _, err := b.tx.splitChild(b.root)
+		leftChild, rightChild, midKey, _, err := b.tx.splitChild(b.root, key)
 		if err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ func (b *Bucket) Put(key, value []byte) error {
 		}
 
 		// Root couldn't fit - split it
-		leftChild, rightChild, midKey, _, err := b.tx.splitChild(b.root)
+		leftChild, rightChild, midKey, _, err := b.tx.splitChild(b.root, key)
 		if err != nil {
 			return err
 		}

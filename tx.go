@@ -200,7 +200,7 @@ func (tx *Tx) Commit() error {
 			// Handle root split with COW
 			if root.IsFull(key, value) {
 				// Split root using COW
-				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
+				leftChild, rightChild, midKey, _, err := tx.splitChild(root, key)
 				if err != nil {
 					return err
 				}
@@ -237,7 +237,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Root couldn't fit the new entry - split it
-				leftChild, rightChild, midKey, _, err := tx.splitChild(root)
+				leftChild, rightChild, midKey, _, err := tx.splitChild(root, key)
 				if err != nil {
 					return err
 				}
@@ -436,15 +436,15 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
-func (tx *Tx) splitChild(child *base.Node) (*base.Node, *base.Node, []byte, []byte, error) {
+func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.Node, []byte, []byte, error) {
 	// I/O: COW BEFORE any computation
 	child, err := tx.ensureWritable(child)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
-	// Pure: calculate split point
-	sp := algo.CalculateSplitPoint(child)
+	// Pure: calculate split point with adaptive hint
+	sp := algo.CalculateSplitPointWithHint(child, insertKey, algo.SplitBalanced)
 
 	// Pure: extract right portion (read-only)
 	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
@@ -549,7 +549,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	// Handle full child with COW-aware split
 	if child.IsFull(key, value) {
 		// Split child using COW
-		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child)
+		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child, key)
 		if err != nil {
 			return nil, err
 		}
@@ -595,7 +595,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	newChild, err := tx.insertNonFull(child, key, value)
 	if errors.Is(err, ErrPageOverflow) {
 		// Child couldn't fit the key/value - split it (use original child, not nil from error)
-		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child)
+		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child, key)
 		if err != nil {
 			return nil, err
 		}
