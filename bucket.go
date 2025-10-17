@@ -43,14 +43,12 @@ func (b *Bucket) Get(key []byte) []byte {
 	// Check write buffer first (read-your-writes consistency)
 	if b.tx.writeBuf != nil {
 		compositeKey := "__root__\x00" + string(key)
-		if entry, exists := b.tx.writeBuf[compositeKey]; exists {
-			if entry.deleted {
+		value, deleted, found := b.tx.writeBuf.Get(compositeKey)
+		if found {
+			if deleted {
 				return nil  // Tombstone - key was deleted
 			}
-			// Return defensive copy
-			result := make([]byte, len(entry.value))
-			copy(result, entry.value)
-			return result
+			return value // Already a defensive copy
 		}
 	}
 
@@ -149,7 +147,7 @@ func (b *Bucket) Delete(key []byte) error {
 func (b *Bucket) Cursor() *Cursor {
 	// Flush any buffered writes before creating cursor
 	// This ensures the cursor sees all mutations within the same transaction
-	if b.tx.writable && len(b.tx.writeBuf) > 0 {
+	if b.tx.writable && b.tx.writeBuf.Len() > 0 {
 		_ = b.tx.flushBuffer("__root__")
 	}
 

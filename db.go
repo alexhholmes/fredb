@@ -10,6 +10,7 @@ import (
 	"fredb/internal/cache"
 	"fredb/internal/coordinator"
 	"fredb/internal/storage"
+	"fredb/internal/writebuf"
 )
 
 const (
@@ -313,9 +314,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			done:          false,
 			nextVirtualID: -1, // Start virtual page IDs at -1
 			buckets:       make(map[string]*Bucket),
-			writeBuf:      make(map[string]*entry),
-			bufSize:       0,
-			bufThreshold:  db.options.writeBufferSize,
+			writeBuf:      writebuf.NewBuffer(db.options.writeBufferSize),
 		}
 
 		// Register writer (atomic store)
