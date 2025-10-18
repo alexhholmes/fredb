@@ -102,17 +102,9 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
+		rootPageID := pager.AssignPage()
 
-		rootLeafID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
+		rootLeafID := pager.AssignPage()
 
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
@@ -133,18 +125,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
-
-		rootBucketLeafID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
-
+		rootBucketLeafID := pager.AssignPage()
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
 			Dirty:    true,
@@ -153,7 +134,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			Values:   make([][]byte, 0),
 			Children: nil,
 		}
-
+		rootBucketRootID := pager.AssignPage()
 		rootBucketRoot := &base.Node{
 			PageID:   rootBucketRootID,
 			Dirty:    true,
@@ -230,7 +211,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 7. CRITICAL: Sync pager to persist the initial allocations
-		// This ensures root and leaf are not returned by future AssignPageID() calls
+		// This ensures root and leaf are not returned by future AssignPage() calls
 		if err = store.Sync(); err != nil {
 			_ = pager.Close()
 			return nil, err

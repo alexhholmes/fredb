@@ -137,6 +137,59 @@ func (m *MMap) WritePage(id base.PageID, page *base.Page) error {
 	return nil
 }
 
+// WritePageRange writes a contiguous range of pages to the memory-mapped region
+func (m *MMap) WritePageRange(startID base.PageID, buffer []byte) error {
+	if m.mmapData == nil {
+		return fmt.Errorf("storage closed")
+	}
+
+	if len(buffer)%base.PageSize != 0 {
+		return fmt.Errorf("buffer size %d not multiple of page size %d", len(buffer), base.PageSize)
+	}
+
+	offset := int64(startID) * base.PageSize
+	endOffset := offset + int64(len(buffer))
+
+	// Check if we need to grow the mmap region
+	if endOffset > m.mmapSize {
+		minSize := endOffset
+
+		// Round up to 1GB chunks to reduce remap frequency
+		const growthSize = 1024 * 1024 * 1024 // 1GB
+		newSize := ((minSize + growthSize - 1) / growthSize) * growthSize
+
+		// Start async flush to reduce munmap blocking time
+		_ = unix.Msync(m.mmapData, unix.MS_ASYNC)
+
+		// Unmap old region
+		if err := syscall.Munmap(m.mmapData); err != nil {
+			return err
+		}
+
+		// Grow file (sparse allocation)
+		if err := m.file.Truncate(newSize); err != nil {
+			return err
+		}
+
+		// Remap with new size
+		data, err := syscall.Mmap(int(m.file.Fd()), 0, int(newSize),
+			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		if err != nil {
+			return err
+		}
+
+		m.mmapData = data
+		m.mmapSize = newSize
+	}
+
+	pageCount := len(buffer) / base.PageSize
+	m.writes.Add(uint64(pageCount))
+	copy(m.mmapData[offset:], buffer)
+	m.written.Add(uint64(len(buffer)))
+
+	return nil
+}
+
 // Sync flushes the memory-mapped region to disk
 func (m *MMap) Sync() error {
 	if err := unix.Msync(m.mmapData, unix.MS_SYNC); err != nil {

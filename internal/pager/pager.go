@@ -178,19 +178,28 @@ func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
 	return c, nil
 }
 
-// AssignPageID allocates a new Page (from freelist or grows file)
-func (p *Pager) AssignPageID() (base.PageID, error) {
+// AssignPage allocates a new Page (from freelist or grows file)
+func (p *Pager) AssignPage() base.PageID {
 	// Try freelist first
 	id := p.freelist.Allocate()
 	if id != 0 {
-		return id, nil
+		return id
 	}
 
 	// Grow file - use atomic pages counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
 	id = base.PageID(p.pages.Add(1) - 1)
 
-	return id, nil
+	return id
+}
+
+// AssignPageRange allocates a range of pages from start to finish (inclusive of finish)
+func (p *Pager) AssignPageRange(count int) (start base.PageID, finish base.PageID) {
+	// Needs to be an atomic operation if bulk load is concurrent with other write
+	// txs in the future.
+	finish = base.PageID(p.pages.Add(uint64(count)))
+	start = finish - base.PageID(count)
+	return start, finish
 }
 
 // FreePage adds a Page to the freelist
@@ -327,14 +336,7 @@ func (p *Pager) MapVirtualPageIDs(
 
 	for pageID := range pages {
 		if int64(pageID) < 0 { // Virtual page ID
-			realPageID, err := p.AssignPageID()
-			if err != nil {
-				// Rollback partial allocation
-				for _, allocated := range virtualToReal {
-					_ = p.FreePage(allocated)
-				}
-				return nil, err
-			}
+			realPageID := p.AssignPage()
 			virtualToReal[pageID] = realPageID
 		}
 	}
@@ -367,14 +369,7 @@ func (p *Pager) MapVirtualPageIDs(
 
 	// Pass 3: Handle root separately
 	if root != nil && int64(root.PageID) < 0 {
-		realPageID, err := p.AssignPageID()
-		if err != nil {
-			// Rollback
-			for _, allocated := range virtualToReal {
-				_ = p.FreePage(allocated)
-			}
-			return nil, err
-		}
+		realPageID := p.AssignPage()
 		virtualToReal[root.PageID] = realPageID
 		root.PageID = realPageID
 	}

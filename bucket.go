@@ -46,7 +46,7 @@ func (b *Bucket) Get(key []byte) []byte {
 		value, deleted, found := b.tx.writeBuf.Get(compositeKey)
 		if found {
 			if deleted {
-				return nil  // Tombstone - key was deleted
+				return nil // Tombstone - key was deleted
 			}
 			return value // Already a defensive copy
 		}
@@ -154,17 +154,13 @@ func (b *Bucket) BulkLoad(fn func(*BulkLoader) error) error {
 	}
 
 	loader := &BulkLoader{
-		tx:     b.tx,
-		bucket: b,
-		nodes:  make(map[base.PageID]*base.Node),
+		tx:        b.tx,
+		bucket:    b,
+		nodeCache: make(map[base.PageID]*base.Node),
 	}
 
-	// Allocate initial leaf
-	leafID, _, err := b.tx.allocatePage()
-	if err != nil {
-		return err
-	}
-
+	// Allocate initial leaf (use real page ID since we write to disk immediately)
+	leafID := b.tx.db.pager.AssignPage()
 	loader.currentLeaf = &base.Node{
 		PageID:  leafID,
 		Dirty:   true,
@@ -172,22 +168,20 @@ func (b *Bucket) BulkLoad(fn func(*BulkLoader) error) error {
 		Keys:    make([][]byte, 0),
 		Values:  make([][]byte, 0),
 	}
-	loader.nodes[leafID] = loader.currentLeaf
-	loader.leaves = append(loader.leaves, loader.currentLeaf)
 
 	// Execute user's load function
 	if err := fn(loader); err != nil {
 		return err
 	}
 
-	// Build internal nodes bottom-up
+	// Build internal nodes bottom-up (writes leaves and branches to disk)
 	if err := loader.finalize(); err != nil {
 		return err
 	}
 
-	// Add all nodes to tx.pages for commit
-	for pageID, node := range loader.nodes {
-		b.tx.pages[pageID] = node
+	// Add shadowRoot to tx.pages so it gets committed with metadata
+	if loader.shadowRoot != nil {
+		b.tx.pages[loader.shadowRoot.PageID] = loader.shadowRoot
 	}
 
 	// Free old tree pages
