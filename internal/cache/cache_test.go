@@ -24,7 +24,7 @@ func makeTestNode(pageID base.PageID) *base.Node {
 func TestPageCacheBasics(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(10)
+	cache := NewCache(10, nil)
 
 	// Test cache miss
 	_, hit := cache.Get(base.PageID(1))
