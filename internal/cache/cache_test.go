@@ -52,7 +52,7 @@ func TestPageCacheBasics(t *testing.T) {
 func TestPageCacheReplacement(t *testing.T) {
 	t.Parallel()
 
-	cache := NewCache(10)
+	cache := NewCache(10, nil)
 
 	// Add Page 1
 	node1 := makeTestNode(base.PageID(1))

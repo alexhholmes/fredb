@@ -26,7 +26,7 @@ const (
 )
 
 // NewCache creates a new Page cache with the specified maximum size
-func NewCache(size int) *Cache {
+func NewCache(size int, onEvict func(base.PageID, *base.Node)) *Cache {
 	hash := func(s base.PageID) uint32 {
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:], uint64(s))
@@ -37,6 +37,10 @@ func NewCache(size int) *Cache {
 	lru, err := freelru.NewSharded[base.PageID, *base.Node](uint32(size), hash)
 	if err != nil {
 		panic(err)
+	}
+
+	if onEvict != nil {
+		lru.SetOnEvict(onEvict)
 	}
 
 	return &Cache{

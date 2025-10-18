@@ -281,15 +281,6 @@ func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
 		return nil, err
 	}
 
-	// Return buffer to pool after deserialization (DirectIO only)
-	// MMap mode allocates non-pooled, non-aligned buffers
-	if store, ok := p.store.(*storage.DirectIO); ok {
-		defer func() {
-			buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
-			store.PutBuffer(buf)
-		}()
-	}
-
 	node := &base.Node{
 		PageID: pageID,
 		Dirty:  false,
