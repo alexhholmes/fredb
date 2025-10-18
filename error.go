@@ -15,13 +15,14 @@ var (
 	ErrValueTooLarge  = errors.New("value too large")
 	ErrCorruption     = errors.New("data corruption detected")
 
-	ErrTxNotWritable  = errors.New("transaction is read-only")
-	ErrTxInProgress   = errors.New("write transaction already in progress")
-	ErrTxDone         = errors.New("transaction has been committed or rolled back")
-	ErrTooManyReaders = readslots.ErrTooManyReaders
+	ErrTxNotWritable = errors.New("transaction is read-only")
+	ErrTxInProgress  = errors.New("write transaction already in progress")
+	ErrTxDone        = errors.New("transaction has been committed or rolled back")
 
 	ErrBucketExists   = errors.New("bucket already exists")
 	ErrBucketNotFound = errors.New("bucket not found")
+
+	ErrTooManyReaders = readslots.ErrTooManyReaders
 
 	ErrPageOverflow       = base.ErrPageOverflow
 	ErrInvalidOffset      = base.ErrInvalidOffset

@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/pebble"
-	badger "github.com/dgraph-io/badger/v4"
+	"github.com/dgraph-io/badger/v4"
 	bolt "go.etcd.io/bbolt"
 	_ "modernc.org/sqlite"
 
@@ -1377,5 +1378,401 @@ func BenchmarkReadWriteMix(b *testing.B) {
 			b.ReportMetric(float64(totalWriteNs)/float64(writeCount), "write-ns/op")
 			b.ReportMetric(float64(writeCount), "writes")
 		}
+	})
+}
+
+// Latency Benchmarks
+
+func BenchmarkWriteLatency(b *testing.B) {
+	b.Run("Fredb/SyncOn", func(b *testing.B) {
+		path := "/tmp/bench_write_latency_fredb_sync.db"
+		defer os.Remove(path)
+
+		db, _ := fredb.Open(path, fredb.WithSyncEveryCommit())
+		defer db.Close()
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Update(func(tx *fredb.Tx) error {
+				return tx.Set(key, value)
+			})
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Fredb/SyncOff", func(b *testing.B) {
+		path := "/tmp/bench_write_latency_fredb_nosync.db"
+		defer os.Remove(path)
+
+		db, _ := fredb.Open(path, fredb.WithSyncOff())
+		defer db.Close()
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Update(func(tx *fredb.Tx) error {
+				return tx.Set(key, value)
+			})
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Bbolt/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_bbolt_sync.db"
+		defer os.Remove(path)
+
+		db, _ := bolt.Open(path, 0600, &bolt.Options{NoSync: false})
+		defer db.Close()
+
+		db.Update(func(tx *bolt.Tx) error {
+			tx.CreateBucket([]byte("test"))
+			return nil
+		})
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte("test")).Put(key, value)
+			})
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Bbolt/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_bbolt_nosync.db"
+		defer os.Remove(path)
+
+		db, _ := bolt.Open(path, 0600, &bolt.Options{NoSync: true})
+		defer db.Close()
+
+		db.Update(func(tx *bolt.Tx) error {
+			tx.CreateBucket([]byte("test"))
+			return nil
+		})
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte("test")).Put(key, value)
+			})
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Badger/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_badger_sync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		opts := badger.DefaultOptions(path).WithSyncWrites(true).WithLogger(nil)
+		db, _ := badger.Open(opts)
+		defer db.Close()
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Update(func(txn *badger.Txn) error {
+				return txn.Set(key, value)
+			})
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Badger/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_badger_nosync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		opts := badger.DefaultOptions(path).WithSyncWrites(false).WithLogger(nil)
+		db, _ := badger.Open(opts)
+		defer db.Close()
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Update(func(txn *badger.Txn) error {
+				return txn.Set(key, value)
+			})
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Pebble/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_pebble_sync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		db, _ := pebble.Open(path, &pebble.Options{Logger: nil})
+		defer db.Close()
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Set(key, value, pebble.Sync)
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("Pebble/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_pebble_nosync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		db, _ := pebble.Open(path, &pebble.Options{Logger: nil})
+		defer db.Close()
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Set(key, value, pebble.NoSync)
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("SQLite/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_sqlite_sync.db"
+		os.Remove(path)
+		defer os.Remove(path)
+
+		db, _ := sql.Open("sqlite", path)
+		defer db.Close()
+
+		db.Exec("PRAGMA synchronous=FULL")
+		db.Exec("PRAGMA journal_mode=WAL")
+		db.Exec("CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)")
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", key, value)
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
+	})
+
+	b.Run("SQLite/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_write_latency_sqlite_nosync.db"
+		os.Remove(path)
+		defer os.Remove(path)
+
+		db, _ := sql.Open("sqlite", path)
+		defer db.Close()
+
+		db.Exec("PRAGMA synchronous=OFF")
+		db.Exec("PRAGMA journal_mode=WAL")
+		db.Exec("CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)")
+
+		value := make([]byte, benchValueSize)
+		latencies := make([]time.Duration, 0, b.N)
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			start := time.Now()
+			db.Exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", key, value)
+			latencies = append(latencies, time.Since(start))
+		}
+		b.StopTimer()
+
+		// Calculate percentiles
+		sort.Slice(latencies, func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		})
+
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		p999 := latencies[len(latencies)*999/1000]
+
+		b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+		b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
 	})
 }
