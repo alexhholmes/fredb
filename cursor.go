@@ -338,7 +338,6 @@ func (c *Cursor) active() error {
 func (c *Cursor) nextLeaf() error {
 	// Fast path: use leaf pointer linked list
 	leaf := c.stack[len(c.stack)-1]
-	useLinkedList := false
 
 	if leaf.node.NextLeaf != 0 {
 		nextLeaf, err := c.tx.loadNode(leaf.node.NextLeaf)
@@ -349,8 +348,6 @@ func (c *Cursor) nextLeaf() error {
 
 		// Validate leaf pointer: must point to actual leaf
 		if nextLeaf.IsLeaf() {
-			useLinkedList = true
-
 			// Replace leaf in stack
 			c.stack[len(c.stack)-1] = path{node: nextLeaf, childIndex: 0}
 
@@ -367,56 +364,53 @@ func (c *Cursor) nextLeaf() error {
 		// If not a leaf, fall through to tree navigation
 	}
 
-	if !useLinkedList {
-		// Fallback: tree navigation (for backward compat with old data)
-		// Pop up the stack to find a parent with more Children
-		for len(c.stack) > 1 {
-			// Pop current leaf
-			c.stack = c.stack[:len(c.stack)-1]
+	// Fallback: tree navigation (for backward compat with old data)
+	// Pop up the stack to find a parent with more Children
+	for len(c.stack) > 1 {
+		// Pop current leaf
+		c.stack = c.stack[:len(c.stack)-1]
 
-			// Check parent
-			parent := &c.stack[len(c.stack)-1]
-			parent.childIndex++
+		// Check parent
+		parent := &c.stack[len(c.stack)-1]
+		parent.childIndex++
 
-			// Does parent have more Children?
-			if parent.childIndex < len(parent.node.Children) {
-				// Descend to leftmost leaf of next subtree
-				node, err := c.tx.loadNode(parent.node.Children[parent.childIndex])
+		// Does parent have more Children?
+		if parent.childIndex < len(parent.node.Children) {
+			// Descend to leftmost leaf of next subtree
+			node, err := c.tx.loadNode(parent.node.Children[parent.childIndex])
+			if err != nil {
+				c.valid = false
+				return err
+			}
+
+			// Keep descending to leftmost child
+			for !node.IsLeaf() {
+				c.stack = append(c.stack, path{node: node, childIndex: 0})
+				child, err := c.tx.loadNode(node.Children[0])
 				if err != nil {
 					c.valid = false
 					return err
 				}
-
-				// Keep descending to leftmost child
-				for !node.IsLeaf() {
-					c.stack = append(c.stack, path{node: node, childIndex: 0})
-					child, err := c.tx.loadNode(node.Children[0])
-					if err != nil {
-						c.valid = false
-						return err
-					}
-					node = child
-				}
-
-				// Reached leaf
-				c.stack = append(c.stack, path{node: node, childIndex: 0})
-
-				if node.NumKeys > 0 {
-					c.key = node.Keys[0]
-					c.value = node.Values[0]
-					c.valid = true
-				} else {
-					c.valid = false
-				}
-
-				return nil
+				node = child
 			}
-		}
 
-		// Reached root with no more Children
-		c.valid = false
-		return nil
+			// Reached leaf
+			c.stack = append(c.stack, path{node: node, childIndex: 0})
+
+			if node.NumKeys > 0 {
+				c.key = node.Keys[0]
+				c.value = node.Values[0]
+				c.valid = true
+			} else {
+				c.valid = false
+			}
+
+			return nil
+		}
 	}
+
+	// Reached root with no more Children
+	c.valid = false
 	return nil
 }
 
