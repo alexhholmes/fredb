@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"fredb/internal/base"
+	"fredb/internal/readslots"
 )
 
 //goland:noinspection GoUnusedGlobalVariable
@@ -17,7 +18,7 @@ var (
 	ErrTxNotWritable  = errors.New("transaction is read-only")
 	ErrTxInProgress   = errors.New("write transaction already in progress")
 	ErrTxDone         = errors.New("transaction has been committed or rolled back")
-	ErrTooManyReaders = errors.New("too many concurrent readers (increase maxReaders)")
+	ErrTooManyReaders = readslots.ErrTooManyReaders
 
 	ErrBucketExists   = errors.New("bucket already exists")
 	ErrBucketNotFound = errors.New("bucket not found")

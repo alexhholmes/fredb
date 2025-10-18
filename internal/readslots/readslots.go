@@ -1,11 +1,12 @@
 package readslots
 
 import (
+	"errors"
 	"math"
 	"sync/atomic"
-
-	"fredb"
 )
+
+var ErrTooManyReaders = errors.New("too many concurrent readers (increase maxReaders)")
 
 // ReaderSlots provides fixed-size slot-based reader tracking for bounded concurrency
 // Each slot stores a txID directly, giving O(1) register/unregister with no allocation
@@ -48,7 +49,7 @@ func (rs *ReaderSlots) Register(txID uint64) (int, error) {
 			return i, nil
 		}
 	}
-	return -1, fredb.ErrTooManyReaders
+	return -1, ErrTooManyReaders
 }
 
 // Unregister atomically clears the slot and handles cache invalidation
