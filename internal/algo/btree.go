@@ -3,17 +3,26 @@ package algo
 
 import (
 	"bytes"
+	"sort"
 
 	"fredb/internal/base"
 )
 
+const searchThreshold = 32
+
 // FindChildIndex returns the index of child pointer to follow for key
 func FindChildIndex(node *base.Node, key []byte) int {
-	i := 0
-	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
-		i++
+	if node.NumKeys < searchThreshold {
+		i := 0
+		for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
+			i++
+		}
+		return i
 	}
-	return i
+
+	return sort.Search(int(node.NumKeys), func(i int) bool {
+		return bytes.Compare(key, node.Keys[i]) < 0
+	})
 }
 
 // FindKeyInLeaf returns index of key in leaf, or -1 if not found
@@ -21,30 +30,53 @@ func FindKeyInLeaf(node *base.Node, key []byte) int {
 	if !node.IsLeaf() {
 		return -1
 	}
-	for i := 0; i < int(node.NumKeys); i++ {
-		if bytes.Equal(key, node.Keys[i]) {
-			return i
+
+	if node.NumKeys < searchThreshold {
+		for i := 0; i < int(node.NumKeys); i++ {
+			if bytes.Equal(key, node.Keys[i]) {
+				return i
+			}
 		}
+		return -1
+	}
+
+	idx := sort.Search(int(node.NumKeys), func(i int) bool {
+		return bytes.Compare(node.Keys[i], key) >= 0
+	})
+	if idx < int(node.NumKeys) && bytes.Equal(node.Keys[idx], key) {
+		return idx
 	}
 	return -1
 }
 
 // FindInsertPosition returns position to insert key in leaf
 func FindInsertPosition(node *base.Node, key []byte) int {
-	pos := 0
-	for pos < int(node.NumKeys) && bytes.Compare(key, node.Keys[pos]) > 0 {
-		pos++
+	if node.NumKeys < searchThreshold {
+		pos := 0
+		for pos < int(node.NumKeys) && bytes.Compare(key, node.Keys[pos]) > 0 {
+			pos++
+		}
+		return pos
 	}
-	return pos
+
+	return sort.Search(int(node.NumKeys), func(i int) bool {
+		return bytes.Compare(key, node.Keys[i]) <= 0
+	})
 }
 
 // FindDeleteChildIndex returns child index for deletion in branch node
 func FindDeleteChildIndex(node *base.Node, key []byte) int {
-	idx := 0
-	for idx < int(node.NumKeys) && bytes.Compare(key, node.Keys[idx]) >= 0 {
-		idx++
+	if node.NumKeys < searchThreshold {
+		idx := 0
+		for idx < int(node.NumKeys) && bytes.Compare(key, node.Keys[idx]) >= 0 {
+			idx++
+		}
+		return idx
 	}
-	return idx
+
+	return sort.Search(int(node.NumKeys), func(i int) bool {
+		return bytes.Compare(key, node.Keys[i]) < 0
+	})
 }
 
 // SplitHint guides how to bias the split point
