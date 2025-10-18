@@ -24,6 +24,10 @@ type Node struct {
 	Keys     [][]byte // Slices into PageData (clean) or allocated (dirty)
 	Values   [][]byte // If nil, this is a branch Node
 	Children []PageID
+
+	// Leaf pointer linked list (only for leaf nodes)
+	NextLeaf PageID // Points to next leaf in key order
+	PrevLeaf PageID // Points to previous leaf in key order
 }
 
 // Serialize encodes the Node data into a fresh Page
@@ -40,6 +44,8 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 	}
 	if n.IsLeaf() {
 		header.Flags = LeafPageFlag
+		header.NextLeaf = n.NextLeaf
+		header.PrevLeaf = n.PrevLeaf
 	} else {
 		header.Flags = BranchPageFlag
 	}
@@ -114,6 +120,8 @@ func (n *Node) Deserialize(p *Page) error {
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
+		n.NextLeaf = header.NextLeaf
+		n.PrevLeaf = header.PrevLeaf
 
 		elements := p.LeafElements()
 		for i := 0; i < int(n.NumKeys); i++ {
@@ -169,6 +177,8 @@ func (n *Node) Clone() *Node {
 		Dirty:    true,
 		PageData: nil, // Dirty nodes never reference page
 		NumKeys:  n.NumKeys,
+		NextLeaf: n.NextLeaf,
+		PrevLeaf: n.PrevLeaf,
 	}
 
 	// If source is clean (PageData != nil), Keys/Values point into PageData

@@ -46,9 +46,9 @@ func (b *Bucket) Get(key []byte) []byte {
 		value, deleted, found := b.tx.writeBuf.Get(compositeKey)
 		if found {
 			if deleted {
-				return nil  // Tombstone - key was deleted
+				return nil // Tombstone - key was deleted
 			}
-			return value // Already a defensive copy
+			return value
 		}
 	}
 
@@ -62,10 +62,7 @@ func (b *Bucket) Get(key []byte) []byte {
 		return nil
 	}
 
-	// Important: return a copy of the value to avoid external mutation
-	result := make([]byte, len(val))
-	copy(result, val)
-	return result
+	return val
 }
 
 // Put stores a key-value pair in this bucket

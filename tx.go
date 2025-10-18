@@ -464,6 +464,12 @@ func (tx *Tx) Commit() error {
 	}
 	tx.pages = remappedPages
 
+	// Phase 2c: Link leaves together for fast range scans
+	// This must happen AFTER all PageIDs are mapped to real IDs
+	if err := tx.linkLeaves(tx.root); err != nil {
+		return err
+	}
+
 	// Phase 3: Write everything to disk in a single operation
 	// This handles: page writes, freed pages, meta update, sync (if needed), and CommitSnapshot
 	err = tx.db.pager.WriteTransaction(
@@ -595,6 +601,35 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// Will be flushed to global cache on Commit()
 	tx.pages[pageID] = cloned
 
+	// Fix leaf pointers in siblings if this is a leaf node
+	// When we COW a leaf, siblings still point to old PageID - update them
+	if cloned.IsLeaf() {
+		if cloned.PrevLeaf != 0 {
+			prev, err := tx.loadNode(cloned.PrevLeaf)
+			if err != nil {
+				return nil, err
+			}
+			// COW prev if needed to update its NextLeaf pointer
+			prev, err = tx.ensureWritable(prev)
+			if err != nil {
+				return nil, err
+			}
+			prev.NextLeaf = cloned.PageID
+		}
+		if cloned.NextLeaf != 0 {
+			next, err := tx.loadNode(cloned.NextLeaf)
+			if err != nil {
+				return nil, err
+			}
+			// COW next if needed to update its PrevLeaf pointer
+			next, err = tx.ensureWritable(next)
+			if err != nil {
+				return nil, err
+			}
+			next.PrevLeaf = cloned.PageID
+		}
+	}
+
 	return cloned, nil
 }
 
@@ -622,6 +657,51 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 	}
 	// Add to map (automatically handles duplicates)
 	tx.freed[pageID] = struct{}{}
+}
+
+// linkLeaves wires up leaf pointers after all page IDs have been mapped to real IDs
+func (tx *Tx) linkLeaves(root *base.Node) error {
+	if root == nil {
+		return nil
+	}
+
+	leaves := make([]*base.Node, 0)
+	if err := tx.collectLeaves(root, &leaves); err != nil {
+		return err
+	}
+
+	for i, leaf := range leaves {
+		if i > 0 {
+			leaf.PrevLeaf = leaves[i-1].PageID
+		}
+		if i < len(leaves)-1 {
+			leaf.NextLeaf = leaves[i+1].PageID
+		}
+	}
+
+	return nil
+}
+
+// collectLeaves performs in-order traversal to collect all leaves
+func (tx *Tx) collectLeaves(node *base.Node, leaves *[]*base.Node) error {
+	if node.IsLeaf() {
+		*leaves = append(*leaves, node)
+		return nil
+	}
+
+	// Branch node: traverse children in order
+	for i := 0; i <= int(node.NumKeys); i++ {
+		childID := node.Children[i]
+		child, err := tx.loadNode(childID)
+		if err != nil {
+			return err
+		}
+		if err := tx.collectLeaves(child, leaves); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling

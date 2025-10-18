@@ -80,13 +80,15 @@ type Page struct {
 }
 
 // PageHeader represents the fixed-Size Header at the start of each Page
-// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8][_NextLeaf: 8][_PrevLeaf: 8]
+// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8][NextLeaf: 8][PrevLeaf: 8]
 type PageHeader struct {
-	PageID  PageID // 8 bytes
-	Flags   uint16 // 2 bytes (leaf/branch)
-	NumKeys uint16 // 2 bytes
-	Padding uint32 // 4 bytes (alignment)
-	TxnID   uint64 // 8 bytes - transaction that committed this Page version
+	PageID   PageID // 8 bytes
+	Flags    uint16 // 2 bytes (leaf/branch)
+	NumKeys  uint16 // 2 bytes
+	Padding  uint32 // 4 bytes (alignment)
+	TxnID    uint64 // 8 bytes - transaction that committed this Page version
+	NextLeaf PageID // 8 bytes - next leaf in key order (0 if none)
+	PrevLeaf PageID // 8 bytes - previous leaf in key order (0 if none)
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf Page

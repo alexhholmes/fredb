@@ -148,7 +148,7 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 		leftNode.Keys = append(leftNode.Keys, separatorKey)
 		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
 
-		// Always clear Values for branch nodes (defensive against corruption)
+		// Always clear Values for branch nodes (defense against corruption)
 		leftNode.Values = nil
 
 		// Merge children pointers
