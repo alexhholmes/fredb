@@ -16,7 +16,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 	_ "modernc.org/sqlite"
 
-	"fredb"
+	"github.com/alexhholmes/fredb"
 )
 
 var (

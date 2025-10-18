@@ -128,6 +128,15 @@ func (b *Buffer) GetEntry(key string) (*Entry, bool) {
 	return entry, found
 }
 
+// Remove deletes a specific key from the buffer
+func (b *Buffer) Remove(key string) {
+	if entry, exists := b.entries[key]; exists {
+		b.size -= len(key) + len(entry.Value)
+		delete(b.entries, key)
+		b.ops--
+	}
+}
+
 // Clear empties the buffer
 func (b *Buffer) Clear() {
 	b.entries = make(map[string]*Entry)

@@ -42,7 +42,7 @@ func (b *Bucket) Deserialize(data []byte) {
 func (b *Bucket) Get(key []byte) []byte {
 	// Check write buffer first (read-your-writes consistency)
 	if b.tx.writeBuf != nil {
-		compositeKey := "__root__\x00" + string(key)
+		compositeKey := string(b.name) + "\x00" + string(key)
 		value, deleted, found := b.tx.writeBuf.Get(compositeKey)
 		if found {
 			if deleted {
@@ -72,6 +72,40 @@ func (b *Bucket) Put(key, value []byte) error {
 	}
 
 	// Validate key/value size
+	if len(key) > MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > MaxValueSize {
+		return ErrValueTooLarge
+	}
+
+	// Check practical limit based on page size
+	maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+	if len(key)+len(value) > maxSize {
+		return ErrPageOverflow
+	}
+
+	// Check if buffer is empty - bypass buffering for single operations
+	if b.tx.writeBuf.Len() == 0 {
+		return b.putDirect(key, value)
+	}
+
+	// Buffer write to maintain ordering with Delete
+	compositeKey := string(b.name) + "\x00" + string(key)
+
+	_, shouldFlush := b.tx.writeBuf.Set(compositeKey, value)
+
+	if shouldFlush {
+		bucketName := string(b.name)
+		return b.tx.flushBuffer(bucketName)
+	}
+
+	return nil
+}
+
+// putDirect writes directly to the tree (bypasses buffer)
+func (b *Bucket) putDirect(key, value []byte) error {
+	// Validate key/value size (same as Put)
 	if len(key) > MaxKeySize {
 		return ErrKeyTooLarge
 	}
@@ -132,12 +166,36 @@ func (b *Bucket) Put(key, value []byte) error {
 }
 
 // Delete removes a key from this bucket
+// Returns nil if key doesn't exist (idempotent)
 func (b *Bucket) Delete(key []byte) error {
 	if !b.writable {
 		return ErrTxNotWritable
 	}
 
-	return b.tx.deleteBuffered(key)
+	// Check if buffer is empty - bypass buffering for single operations
+	if b.tx.writeBuf.Len() == 0 {
+		// Direct tree delete (idempotent - ignore ErrKeyNotFound)
+		newRoot, err := b.tx.deleteFromNode(b.root, key)
+		if err != nil && !errors.Is(err, ErrKeyNotFound) {
+			return err
+		}
+		if newRoot != nil {
+			b.root = newRoot
+		}
+		return nil
+	}
+
+	// Buffer delete with tombstone to maintain ordering with Put operations
+	compositeKey := string(b.name) + "\x00" + string(key)
+
+	_, shouldFlush := b.tx.writeBuf.Delete(compositeKey)
+
+	if shouldFlush {
+		bucketName := string(b.name)
+		return b.tx.flushBuffer(bucketName)
+	}
+
+	return nil
 }
 
 // Cursor returns a cursor for iterating over this bucket's keys
@@ -145,7 +203,8 @@ func (b *Bucket) Cursor() *Cursor {
 	// Flush any buffered writes before creating cursor
 	// This ensures the cursor sees all mutations within the same transaction
 	if b.tx.writable && b.tx.writeBuf.Len() > 0 {
-		_ = b.tx.flushBuffer("__root__")
+		bucketName := string(b.name)
+		_ = b.tx.flushBuffer(bucketName)
 	}
 
 	return &Cursor{

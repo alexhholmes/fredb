@@ -3,7 +3,7 @@ module bench
 go 1.24.6
 
 require (
-	fredb v0.0.0
+	github.com/alexhholmes/fredb v0.0.0
 	go.etcd.io/bbolt v1.4.3
 )
 
@@ -57,4 +57,4 @@ require (
 	modernc.org/sqlite v1.39.1 // indirect
 )
 
-replace fredb => ../
+replace github.com/alexhholmes/fredb => ../

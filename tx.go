@@ -112,18 +112,19 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrValueTooLarge
 	}
 
-	// Create composite key: bucket + key
-	compositeKey := "__root__" + "\x00" + string(key)
-
-	shouldBypass, shouldFlush := tx.writeBuf.Set(compositeKey, value)
-
-	if shouldBypass {
+	// Check if buffer is empty - bypass buffering for single operations
+	if tx.writeBuf.Len() == 0 {
 		bucket := tx.Bucket([]byte("__root__"))
 		if bucket == nil {
 			return ErrBucketNotFound
 		}
-		return bucket.Put(key, value)
+		return bucket.putDirect(key, value)
 	}
+
+	// Create composite key: bucket + key
+	compositeKey := "__root__" + "\x00" + string(key)
+
+	_, shouldFlush := tx.writeBuf.Set(compositeKey, value)
 
 	if shouldFlush {
 		return tx.flushBuffer("__root__")
@@ -134,41 +135,32 @@ func (tx *Tx) Set(key, value []byte) error {
 
 // deleteBuffered buffers a delete operation (tombstone), flushing when threshold is reached.
 // Returns ErrTxNotWritable if called on a read-only transaction.
-// Returns ErrKeyNotFound if key doesn't exist (unless it was just written in this buffer).
+// Idempotent: returns nil if key doesn't exist.
 func (tx *Tx) deleteBuffered(key []byte) error {
 	if !tx.writable {
 		return ErrTxNotWritable
 	}
 
-	compositeKey := "__root__" + "\x00" + string(key)
-
-	shouldBypass, shouldFlush := tx.writeBuf.Delete(compositeKey)
-
-	if shouldBypass {
+	// Check if buffer is empty - bypass buffering for single operations
+	if tx.writeBuf.Len() == 0 {
 		bucket := tx.Bucket([]byte("__root__"))
 		if bucket == nil {
 			return ErrBucketNotFound
 		}
-		// Direct tree delete
+		// Direct tree delete (idempotent - ignore ErrKeyNotFound)
 		newRoot, err := tx.deleteFromNode(bucket.root, key)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrKeyNotFound) {
 			return err
 		}
-		bucket.root = newRoot
+		if newRoot != nil {
+			bucket.root = newRoot
+		}
 		return nil
 	}
 
-	// If not bypassing, need to check if key exists in tree (same as before)
-	_, alreadyBuffered := tx.writeBuf.GetEntry(compositeKey)
-	if !alreadyBuffered {
-		bucket := tx.Bucket([]byte("__root__"))
-		if bucket != nil {
-			_, err := tx.search(bucket.root, key)
-			if err != nil {
-				return err
-			}
-		}
-	}
+	compositeKey := "__root__" + "\x00" + string(key)
+
+	_, shouldFlush := tx.writeBuf.Delete(compositeKey)
 
 	if shouldFlush {
 		return tx.flushBuffer("__root__")
@@ -183,7 +175,7 @@ func (tx *Tx) flushBuffer(bucketName string) error {
 		return nil
 	}
 
-	// Get the root bucket
+	// Get the bucket
 	bucket := tx.Bucket([]byte(bucketName))
 	if bucket == nil {
 		return ErrBucketNotFound
@@ -193,16 +185,26 @@ func (tx *Tx) flushBuffer(bucketName string) error {
 	keys := tx.writeBuf.SortedKeys()
 	sort.Strings(keys)
 
-	// Batch apply operations in sorted order
+	// Build prefix for this bucket
+	bucketPrefix := bucketName + "\x00"
+
+	// Batch apply operations in sorted order (only for this bucket)
+	keysToRemove := make([]string, 0)
 	for _, compositeKey := range keys {
+		// Skip keys that don't belong to this bucket
+		if !strings.HasPrefix(compositeKey, bucketPrefix) {
+			continue
+		}
+
 		entry, _ := tx.writeBuf.GetEntry(compositeKey)
 
-		// Extract real key (strip bucket prefix: "__root__\x00")
+		// Extract real key (strip bucket prefix)
 		parts := strings.SplitN(compositeKey, "\x00", 2)
 		if len(parts) != 2 {
 			continue // Skip malformed keys
 		}
 		key := []byte(parts[1])
+		keysToRemove = append(keysToRemove, compositeKey)
 
 		// Validate key/value size (same as Bucket.Put)
 		if !entry.Deleted {
@@ -276,14 +278,17 @@ func (tx *Tx) flushBuffer(bucketName string) error {
 		}
 	}
 
-	// Clear buffer
-	tx.writeBuf.Clear()
+	// Remove only the keys we processed from the buffer
+	for _, key := range keysToRemove {
+		tx.writeBuf.Remove(key)
+	}
 
 	return nil
 }
 
 // Delete removes a key from the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
+// Buffers delete as tombstone to maintain ordering with Set operations.
 func (tx *Tx) Delete(key []byte) error {
 	if err := tx.check(); err != nil {
 		return err
@@ -292,13 +297,8 @@ func (tx *Tx) Delete(key []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Delegate to __root__ bucket (default namespace)
-	bucket := tx.Bucket([]byte("__root__"))
-	if bucket == nil {
-		return ErrBucketNotFound
-	}
-
-	return bucket.Delete(key)
+	// Buffer delete with tombstone (maintains ordering with Set)
+	return tx.deleteBuffered(key)
 }
 
 // Cursor creates a cursor for the default bucket.
@@ -330,9 +330,21 @@ func (tx *Tx) Commit() error {
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
-	// Flush any remaining buffered writes before committing
-	if err := tx.flushBuffer("__root__"); err != nil {
-		return err
+	// Flush any remaining buffered writes for all buckets before committing
+	// Collect unique bucket names from write buffer
+	buckets := make(map[string]struct{})
+	for _, key := range tx.writeBuf.SortedKeys() {
+		parts := strings.SplitN(key, "\x00", 2)
+		if len(parts) == 2 {
+			buckets[parts[0]] = struct{}{}
+		}
+	}
+
+	// Flush each bucket's buffer
+	for bucketName := range buckets {
+		if err := tx.flushBuffer(bucketName); err != nil {
+			return err
+		}
 	}
 
 	// Convert syncMode to storage package type

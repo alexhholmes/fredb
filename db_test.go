@@ -82,9 +82,9 @@ func TestDBErrors(t *testing.T) {
 	_, err := db.Get([]byte("non-existent"))
 	assert.ErrorIs(t, err, ErrKeyNotFound)
 
-	// Delete non-existent key
+	// Delete non-existent key (idempotent - should not error)
 	err = db.Delete([]byte("non-existent"))
-	assert.ErrorIs(t, err, ErrKeyNotFound)
+	assert.NoError(t, err)
 }
 
 func TestDBClose(t *testing.T) {
@@ -2032,9 +2032,9 @@ func TestBTreeDelete(t *testing.T) {
 	err = db.Delete([]byte("key5"))
 	assert.NoError(t, err)
 
-	// Delete non-existent key
+	// Delete non-existent key (idempotent - should not error)
 	err = db.Delete([]byte("nonexistent"))
-	assert.Equal(t, ErrKeyNotFound, err)
+	assert.NoError(t, err)
 
 	// Verify remaining Keys
 	for _, k := range []string{"key2", "key4"} {
