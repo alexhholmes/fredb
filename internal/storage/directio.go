@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"fredb/internal/base"
-	"fredb/internal/directio"
+	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/directio"
 )
 
 // DirectIO implements Storage using direct I/O with aligned buffers

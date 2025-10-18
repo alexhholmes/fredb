@@ -4,7 +4,7 @@ import (
 	"sort"
 	"unsafe"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 const (

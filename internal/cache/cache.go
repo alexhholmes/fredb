@@ -7,7 +7,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/elastic/go-freelru"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 // Cache implements a simple LRU cache without awareness of version tracking or

@@ -3,7 +3,7 @@ package fredb
 import (
 	"bytes"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 var (

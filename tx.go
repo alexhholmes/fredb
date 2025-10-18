@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"fredb/internal/algo"
-	"fredb/internal/base"
-	"fredb/internal/pager"
-	"fredb/internal/writebuf"
+	"github.com/alexhholmes/fredb/internal/algo"
+	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/pager"
+	"github.com/alexhholmes/fredb/internal/writebuf"
 )
 
 // Tx represents a transaction on the database.

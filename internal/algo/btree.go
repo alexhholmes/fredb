@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"sort"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 const searchThreshold = 32

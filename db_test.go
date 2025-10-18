@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 var MaxKeysPerNode = 64

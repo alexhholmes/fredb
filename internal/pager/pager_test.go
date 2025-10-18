@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"fredb/internal/base"
-	"fredb/internal/cache"
-	"fredb/internal/storage"
+	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/cache"
+	"github.com/alexhholmes/fredb/internal/storage"
 )
 
 var _ = flag.Bool("slow", false, "run slow tests")

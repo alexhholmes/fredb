@@ -3,8 +3,8 @@ package fredb
 import (
 	"errors"
 
-	"fredb/internal/base"
-	"fredb/internal/readslots"
+	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/readslots"
 )
 
 //goland:noinspection GoUnusedGlobalVariable

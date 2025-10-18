@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"fredb/internal/base"
-	"fredb/internal/cache"
-	"fredb/internal/freelist"
-	"fredb/internal/storage"
+	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/cache"
+	"github.com/alexhholmes/fredb/internal/freelist"
+	"github.com/alexhholmes/fredb/internal/storage"
 )
 
 // SyncMode controls when to fsync (copied from main package to avoid import cycle)

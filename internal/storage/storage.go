@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 // Storage provides page-based I/O interface

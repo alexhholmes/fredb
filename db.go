@@ -6,12 +6,12 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"fredb/internal/base"
-	"fredb/internal/cache"
-	"fredb/internal/pager"
-	"fredb/internal/readslots"
-	"fredb/internal/storage"
-	"fredb/internal/writebuf"
+	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/cache"
+	"github.com/alexhholmes/fredb/internal/pager"
+	"github.com/alexhholmes/fredb/internal/readslots"
+	"github.com/alexhholmes/fredb/internal/storage"
+	"github.com/alexhholmes/fredb/internal/writebuf"
 )
 
 const (

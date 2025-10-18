@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"fredb/internal/algo"
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/algo"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 // Bucket represents a namespace with its own B+tree

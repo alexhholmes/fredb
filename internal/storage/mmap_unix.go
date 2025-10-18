@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 // MMap implements Storage using memory-mapped I/O

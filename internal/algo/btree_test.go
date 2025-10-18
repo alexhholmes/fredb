@@ -5,7 +5,7 @@ import (
 	"flag"
 	"testing"
 
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 
 	"github.com/stretchr/testify/assert"
 )

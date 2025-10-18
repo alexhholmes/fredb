@@ -1,7 +1,7 @@
 package algo
 
 import (
-	"fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/base"
 )
 
 // ApplyLeafUpdate updates a key's value in leaf node
