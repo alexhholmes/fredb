@@ -8,6 +8,7 @@ import (
 type Storage interface {
 	ReadPage(id base.PageID) (*base.Page, error)
 	WritePage(id base.PageID, page *base.Page) error
+	WritePageRange(startID base.PageID, buffer []byte) error // Batch write contiguous pages
 	Sync() error
 	Empty() (bool, error)
 	Close() error

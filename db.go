@@ -102,17 +102,9 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
+		rootPageID := pager.AssignPage()
 
-		rootLeafID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
+		rootLeafID := pager.AssignPage()
 
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
@@ -133,18 +125,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
-
-		rootBucketLeafID, err := pager.AssignPageID()
-		if err != nil {
-			_ = pager.Close()
-			return nil, err
-		}
-
+		rootBucketLeafID := pager.AssignPage()
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
 			Dirty:    true,
@@ -153,7 +134,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 			Values:   make([][]byte, 0),
 			Children: nil,
 		}
-
+		rootBucketRootID := pager.AssignPage()
 		rootBucketRoot := &base.Node{
 			PageID:   rootBucketRootID,
 			Dirty:    true,
@@ -230,7 +211,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 7. CRITICAL: Sync pager to persist the initial allocations
-		// This ensures root and leaf are not returned by future AssignPageID() calls
+		// This ensures root and leaf are not returned by future AssignPage() calls
 		if err = store.Sync(); err != nil {
 			_ = pager.Close()
 			return nil, err
@@ -442,51 +423,50 @@ func (db *DB) tryReleasePages() {
 	db.pager.ReleasePages(minTxID)
 }
 
-// collectTreePages recursively collects all page IDs in a B+ tree via post-order traversal
-func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error {
-	// Load node from disk
-	node, ok := tx.db.pager.LoadNode(pageID)
-	if !ok {
-		return ErrCorruption
+// freeTree recursively frees all pages in a tree within a transaction context.
+// Used by BulkLoad to free the old tree before replacing it with a new one.
+func (db *DB) freeTree(rootPageID base.PageID) error {
+	tx := db.writer.Load()
+	if tx == nil {
+		return ErrNoActiveTx
+	}
+	return db.freeTreeInTransaction(tx, rootPageID)
+}
+
+// freeTreeInTransaction recursively frees a node and all its children within a transaction.
+// Marks pages as freed in tx.freed map for commit-time processing.
+func (db *DB) freeTreeInTransaction(tx *Tx, pageID base.PageID) error {
+	if pageID == 0 {
+		return nil
 	}
 
-	// If branch node, recursively collect children first (post-order)
+	// Skip virtual pages (allocated this tx)
+	if int64(pageID) < 0 {
+		return nil
+	}
+
+	// Skip already freed pages
+	if _, alreadyFreed := tx.freed[pageID]; alreadyFreed {
+		return nil
+	}
+
+	// Load the node to recurse to children
+	node, err := tx.loadNode(pageID)
+	if err != nil {
+		return err
+	}
+
+	// Recurse to children first
 	if !node.IsLeaf() {
 		for _, childID := range node.Children {
-			if err := collectTreePages(tx, childID, pageIDs); err != nil {
+			if err := db.freeTreeInTransaction(tx, childID); err != nil {
 				return err
 			}
 		}
 	}
 
-	// Add this node's page ID after processing children
-	*pageIDs = append(*pageIDs, pageID)
-
-	return nil
-}
-
-// freeTree frees all pages in a B+ tree (bucket) given its root page ID
-func (db *DB) freeTree(rootID base.PageID) error {
-	// Start new read transaction to safely traverse tree
-	tx, err := db.Begin(false)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Collect all page IDs to free
-	pageIDs := make([]base.PageID, 0)
-	if err := collectTreePages(tx, rootID, &pageIDs); err != nil {
-		return err
-	}
-
-	// Now free them all at once
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	for _, pageID := range pageIDs {
-		db.pager.FreePage(pageID) // Add to freelist
-	}
+	// Mark this page freed in transaction
+	tx.freed[pageID] = struct{}{}
 
 	return nil
 }

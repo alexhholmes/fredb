@@ -46,7 +46,7 @@ func (b *Bucket) Get(key []byte) []byte {
 		value, deleted, found := b.tx.writeBuf.Get(compositeKey)
 		if found {
 			if deleted {
-				return nil  // Tombstone - key was deleted
+				return nil // Tombstone - key was deleted
 			}
 			return value // Already a defensive copy
 		}
@@ -141,6 +141,60 @@ func (b *Bucket) Delete(key []byte) error {
 	}
 
 	return b.tx.deleteBuffered(key)
+}
+
+// BulkLoad efficiently loads a large number of sorted key-value pairs.
+// The function fn is called with a BulkLoader that provides a Set method.
+// Keys must be provided in sorted order or an error will be returned.
+// This is much faster than individual Put calls as it builds the tree bottom-up
+// without COW overhead or tree rebalancing.
+func (b *Bucket) BulkLoad(fn func(*BulkLoader) error) error {
+	if !b.writable {
+		return ErrTxNotWritable
+	}
+
+	loader := &BulkLoader{
+		tx:        b.tx,
+		bucket:    b,
+		nodeCache: make(map[base.PageID]*base.Node),
+	}
+
+	// Allocate initial leaf (use real page ID since we write to disk immediately)
+	leafID := b.tx.db.pager.AssignPage()
+	loader.currentLeaf = &base.Node{
+		PageID:  leafID,
+		Dirty:   true,
+		NumKeys: 0,
+		Keys:    make([][]byte, 0),
+		Values:  make([][]byte, 0),
+	}
+
+	// Execute user's load function
+	if err := fn(loader); err != nil {
+		return err
+	}
+
+	// Build internal nodes bottom-up (writes leaves and branches to disk)
+	if err := loader.finalize(); err != nil {
+		return err
+	}
+
+	// Add shadowRoot to tx.pages so it gets committed with metadata
+	if loader.shadowRoot != nil {
+		b.tx.pages[loader.shadowRoot.PageID] = loader.shadowRoot
+	}
+
+	// Free old tree pages
+	if b.root != nil {
+		if err := b.tx.db.freeTree(b.root.PageID); err != nil {
+			return err
+		}
+	}
+
+	// Atomic swap (tx-local)
+	b.root = loader.shadowRoot
+
+	return nil
 }
 
 // Cursor returns a cursor for iterating over this bucket's keys

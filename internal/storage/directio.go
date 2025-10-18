@@ -87,6 +87,37 @@ func (d *DirectIO) WritePage(id base.PageID, page *base.Page) error {
 	return nil
 }
 
+// WritePageRange writes a contiguous range of pages in a single syscall
+func (d *DirectIO) WritePageRange(startID base.PageID, buffer []byte) error {
+	if len(buffer)%base.PageSize != 0 {
+		return fmt.Errorf("buffer size %d not multiple of page size %d", len(buffer), base.PageSize)
+	}
+
+	// Ensure buffer is aligned for direct I/O (only required on platforms with alignment requirements)
+	alignedBuf := buffer
+	if !directio.IsAligned(buffer) {
+		// Buffer not aligned - copy to aligned buffer
+		alignedBuf = directio.AlignedBlock(len(buffer))
+		copy(alignedBuf, buffer)
+	}
+
+	offset := int64(startID) * base.PageSize
+	pageCount := len(buffer) / base.PageSize
+
+	d.writes.Add(uint64(pageCount))
+	n, err := d.file.WriteAt(alignedBuf, offset)
+	if err != nil {
+		return err
+	}
+	d.written.Add(uint64(n))
+
+	if n != len(buffer) {
+		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, len(buffer))
+	}
+
+	return nil
+}
+
 // Sync flushes buffered writes to disk
 func (d *DirectIO) Sync() error {
 	return d.file.Sync()
