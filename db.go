@@ -9,6 +9,7 @@ import (
 	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/pager"
+	"fredb/internal/readslots"
 	"fredb/internal/storage"
 	"fredb/internal/writebuf"
 )
@@ -34,9 +35,10 @@ type DB struct {
 	store storage.Storage // Underlying storage
 
 	// Transaction state
-	writer   atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readers  sync.Map           // Active read transactions (map[*Tx]struct{})
-	nextTxID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
+	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
+	readers     sync.Map               // Fallback for unbounded readers (used when readerSlots == nil)
+	readerSlots *readslots.ReaderSlots // Fixed-size slots (nil if maxReaders == 0)
+	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
 }
@@ -248,6 +250,12 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
 
+	// Initialize reader tracking based on maxReaders option
+	if opts.maxReaders > 0 {
+		db.readerSlots = readslots.NewReaderSlots(opts.maxReaders)
+	}
+	// else: readerSlots stays nil, use sync.Map fallback
+
 	return db, nil
 }
 
@@ -340,8 +348,17 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		done:     false,
 	}
 
-	// Register reader (lock-free via sync.Map)
-	db.readers.Store(tx, struct{}{})
+	// Register reader using hybrid approach
+	if db.readerSlots != nil {
+		slot, err := db.readerSlots.Register(tx.txID)
+		if err != nil {
+			return nil, err
+		}
+		tx.readerSlot = slot
+		tx.usedSlot = true
+	} else {
+		db.readers.Store(tx, struct{}{})
+	}
 
 	return tx, nil
 }
@@ -418,7 +435,7 @@ func (db *DB) Stats() pager.Stats {
 }
 
 // tryReleasePages releases pages that are safe to reuse based on active transactions.
-// Called by writers on commit/rollback. Lazy calculation - only scans when needed.
+// Hybrid approach: uses slots if bounded, else scans sync.Map
 func (db *DB) tryReleasePages() {
 	// Start with NEXT transaction ID (last assigned + 1)
 	minTxID := db.nextTxID.Load() + 1
@@ -430,14 +447,23 @@ func (db *DB) tryReleasePages() {
 		}
 	}
 
-	// Scan all active readers (lazy - only when writer commits/rollbacks)
-	db.readers.Range(func(key, value interface{}) bool {
-		tx := key.(*Tx)
-		if tx.txID < minTxID {
-			minTxID = tx.txID
+	// Get minimum reader txID using hybrid approach
+	if db.readerSlots != nil {
+		// Fixed slots: O(N) scan where N is bounded
+		readerMinTxID := db.readerSlots.GetMinTxID()
+		if readerMinTxID < minTxID {
+			minTxID = readerMinTxID
 		}
-		return true
-	})
+	} else {
+		// Unbounded: scan sync.Map
+		db.readers.Range(func(key, value interface{}) bool {
+			tx := key.(*Tx)
+			if tx.txID < minTxID {
+				minTxID = tx.txID
+			}
+			return true
+		})
+	}
 
 	db.pager.ReleasePages(minTxID)
 }

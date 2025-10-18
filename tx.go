@@ -36,6 +36,10 @@ type Tx struct {
 	// Write buffer for batching mutations
 	writeBuf *writebuf.Buffer
 
+	// Reader tracking (for slot-based mode)
+	readerSlot int  // Slot index in readerSlots array (only for read-only transactions)
+	usedSlot   bool // Whether this reader used a slot (vs sync.Map)
+
 	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
 	done          bool  // Has Commit() or Rollback() been called?
 }
@@ -527,8 +531,12 @@ func (tx *Tx) Rollback() error {
 
 		tx.db.tryReleasePages()
 	} else {
-		// Readers: completely lock-free, zero cache line contention
-		tx.db.readers.Delete(tx)
+		// Readers: hybrid unregistration
+		if tx.usedSlot {
+			tx.db.readerSlots.Unregister(tx.readerSlot)
+		} else {
+			tx.db.readers.Delete(tx)
+		}
 		// Page release is lazy - next writer will handle it
 	}
 

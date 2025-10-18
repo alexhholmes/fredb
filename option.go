@@ -23,6 +23,7 @@ type Options struct {
 	syncMode        SyncMode
 	maxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
 	writeBufferSize int // Write buffer size in bytes
+	maxReaders      int // Maximum number of concurrent readers
 }
 
 // DefaultDBOptions returns safe default configuration.
@@ -33,6 +34,7 @@ func DefaultDBOptions() Options {
 		syncMode:        SyncEveryCommit,
 		maxCacheSizeMB:  512,             // 512MB
 		writeBufferSize: 1 * 1024 * 1024, // 1MB
+		maxReaders:      256,
 	}
 }
 
@@ -60,11 +62,11 @@ func WithSyncOff() DBOption {
 	}
 }
 
-// WithMaxCacheSizeMB sets the maximum size of in-memory cache in MB.
+// WithCacheSizeMB sets the maximum size of in-memory cache in MB.
 // When the cache exceeds this size, the least recently used items are evicted.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithMaxCacheSizeMB(mb int) DBOption {
+func WithCacheSizeMB(mb int) DBOption {
 	return func(opts *Options) {
 		opts.maxCacheSizeMB = mb
 	}
@@ -75,8 +77,22 @@ func WithMaxCacheSizeMB(mb int) DBOption {
 // the in-memory btree with sorted writes (improving btree localization).
 // Larger sizes can improve write throughput at the cost of higher memory usage.
 // Defaults to 1MB.
+//
+//goland:noinspection GoUnusedExportedFunction
 func WithWriteBufferSize(size int) DBOption {
 	return func(opts *Options) {
 		opts.writeBufferSize = size
+	}
+}
+
+// WithMaxReaders sets the maximum number of concurrent readers.
+// Higher values allow more concurrent read transactions at the cost of
+// increased memory usage for tracking readers and slightly slower
+// writes due to reader management overhead. Defaults to 256.
+//
+//goland:noinspection GoUnusedExportedFunction
+func WithMaxReaders(n int) DBOption {
+	return func(opts *Options) {
+		opts.maxReaders = n
 	}
 }
