@@ -6,6 +6,7 @@ package storage
 import (
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -17,6 +18,7 @@ import (
 
 // MMap implements Storage using memory-mapped I/O
 type MMap struct {
+	mu       sync.RWMutex
 	file     *os.File
 	mmapData []byte
 	mmapSize int64
@@ -85,7 +87,10 @@ func (m *MMap) ReadPage(id base.PageID) (*base.Page, error) {
 
 	// Copy from mmap to avoid pointer invalidation on remap
 	buf := make([]byte, base.PageSize)
+
+	m.mu.RLock()
 	copy(buf, m.mmapData[offset:offset+base.PageSize])
+	m.mu.RUnlock()
 	page := (*base.Page)(unsafe.Pointer(&buf[0]))
 	return page, nil
 }
@@ -99,6 +104,8 @@ func (m *MMap) WritePage(id base.PageID, page *base.Page) error {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
 
 	offset := int64(id) * base.PageSize
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if offset+base.PageSize > m.mmapSize {
 		// Grow mmap region
 		minSize := offset + base.PageSize
