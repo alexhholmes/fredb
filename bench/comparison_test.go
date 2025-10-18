@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	badger "github.com/dgraph-io/badger/v4"
 	"github.com/cockroachdb/pebble"
+	badger "github.com/dgraph-io/badger/v4"
 	bolt "go.etcd.io/bbolt"
 	_ "modernc.org/sqlite"
 
@@ -546,7 +546,7 @@ func BenchmarkSequentialRead(b *testing.B) {
 		path := "/tmp/bench_seq_read_fredb.db"
 		defer os.Remove(path)
 
-		db, _ := fredb.Open(path, fredb.WithMaxCacheSizeMB(1024))
+		db, _ := fredb.Open(path, fredb.WithCacheSizeMB(1024))
 		defer db.Close()
 
 		value := make([]byte, benchValueSize)
@@ -709,7 +709,7 @@ func BenchmarkRandomRead(b *testing.B) {
 		path := "/tmp/bench_rand_read_fredb.db"
 		defer os.Remove(path)
 
-		db, _ := fredb.Open(path, fredb.WithMaxCacheSizeMB(1024))
+		db, _ := fredb.Open(path, fredb.WithCacheSizeMB(1024))
 		defer db.Close()
 
 		value := make([]byte, benchValueSize)
@@ -887,7 +887,7 @@ func BenchmarkConcurrentRead(b *testing.B) {
 		path := "/tmp/bench_conc_read_fredb.db"
 		defer os.Remove(path)
 
-		db, _ := fredb.Open(path, fredb.WithMaxCacheSizeMB(1024))
+		db, _ := fredb.Open(path, fredb.WithCacheSizeMB(1024))
 		defer db.Close()
 
 		value := make([]byte, benchValueSize)
@@ -1069,7 +1069,7 @@ func BenchmarkReadWriteMix(b *testing.B) {
 		path := "/tmp/bench_rw_mix_fredb.db"
 		defer os.Remove(path)
 
-		db, _ := fredb.Open(path, fredb.WithMaxCacheSizeMB(1024), fredb.WithSyncEveryCommit())
+		db, _ := fredb.Open(path, fredb.WithCacheSizeMB(1024), fredb.WithSyncEveryCommit())
 		defer db.Close()
 
 		value := make([]byte, benchValueSize)

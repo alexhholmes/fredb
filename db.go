@@ -25,6 +25,85 @@ const (
 	MaxValueSize = (1 << 31) - 2
 )
 
+// ReaderSlots provides fixed-size slot-based reader tracking for bounded concurrency
+// Each slot is an atomic pointer, giving O(1) register/unregister with no allocation
+type ReaderSlots struct {
+	slots       []atomic.Pointer[Tx] // Fixed-size array of reader slots
+	maxSize     int                  // Maximum number of concurrent readers
+	activeCount atomic.Int32         // Count of active readers
+	minTxID     atomic.Uint64        // Cached minimum txID (MaxUint64 when no readers)
+}
+
+// NewReaderSlots creates a fixed-size slot array for reader tracking
+func NewReaderSlots(maxReaders int) *ReaderSlots {
+	rs := &ReaderSlots{
+		slots:   make([]atomic.Pointer[Tx], maxReaders),
+		maxSize: maxReaders,
+	}
+	rs.minTxID.Store(math.MaxUint64) // Initialize to max (no readers)
+	return rs
+}
+
+// Register finds an empty slot and atomically assigns it to the reader
+// Returns the slot index on success, error if all slots are full
+func (rs *ReaderSlots) Register(tx *Tx) (int, error) {
+	for i := 0; i < rs.maxSize; i++ {
+		// Try to claim this slot atomically
+		if rs.slots[i].CompareAndSwap(nil, tx) {
+			rs.activeCount.Add(1)
+
+			// Update cached min if this is smaller
+			for {
+				current := rs.minTxID.Load()
+				if tx.txID >= current {
+					break // Current min is smaller or equal
+				}
+				if rs.minTxID.CompareAndSwap(current, tx.txID) {
+					break // Updated min
+				}
+			}
+
+			return i, nil
+		}
+	}
+	return -1, ErrTooManyReaders
+}
+
+// Unregister atomically clears the slot and handles cache invalidation
+func (rs *ReaderSlots) Unregister(slot int) {
+	tx := rs.slots[slot].Load()
+	rs.slots[slot].Store(nil)
+
+	if rs.activeCount.Add(-1) == 0 {
+		// Last reader out, reset min
+		rs.minTxID.Store(math.MaxUint64)
+	} else if tx != nil && tx.txID == rs.minTxID.Load() {
+		// We removed the min reader, need rescan
+		rs.rescanMin()
+	}
+}
+
+// rescanMin rescans all slots to find the new minimum txID
+func (rs *ReaderSlots) rescanMin() {
+	minTxID := uint64(math.MaxUint64)
+	for i := 0; i < rs.maxSize; i++ {
+		if tx := rs.slots[i].Load(); tx != nil {
+			if tx.txID < minTxID {
+				minTxID = tx.txID
+			}
+		}
+	}
+	rs.minTxID.Store(minTxID)
+}
+
+// GetMinTxID returns the cached minimum transaction ID (O(1) lookup)
+func (rs *ReaderSlots) GetMinTxID() uint64 {
+	if rs.activeCount.Load() == 0 {
+		return math.MaxUint64 // Fast path: no readers
+	}
+	return rs.minTxID.Load() // O(1) cached value
+}
+
 type DB struct {
 	mu     sync.Mutex // Lock only for writers
 	pager  *pager.Pager
@@ -34,9 +113,10 @@ type DB struct {
 	store storage.Storage // Underlying storage
 
 	// Transaction state
-	writer   atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readers  sync.Map           // Active read transactions (map[*Tx]struct{})
-	nextTxID atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
+	writer      atomic.Pointer[Tx] // Current write transaction (nil if none)
+	readerSlots *ReaderSlots       // Fixed-size slots (nil if maxReaders == 0)
+	readers     sync.Map           // Fallback for unbounded readers (used when readerSlots == nil)
+	nextTxID    atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
 }
@@ -248,6 +328,12 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
 
+	// Initialize reader tracking based on maxReaders option
+	if opts.maxReaders > 0 {
+		db.readerSlots = NewReaderSlots(opts.maxReaders)
+	}
+	// else: readerSlots stays nil, use sync.Map fallback
+
 	return db, nil
 }
 
@@ -340,8 +426,17 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		done:     false,
 	}
 
-	// Register reader (lock-free via sync.Map)
-	db.readers.Store(tx, struct{}{})
+	// Register reader using hybrid approach
+	if db.readerSlots != nil {
+		slot, err := db.readerSlots.Register(tx)
+		if err != nil {
+			return nil, err
+		}
+		tx.readerSlot = slot
+		tx.usedSlot = true
+	} else {
+		db.readers.Store(tx, struct{}{})
+	}
 
 	return tx, nil
 }
@@ -418,7 +513,7 @@ func (db *DB) Stats() pager.Stats {
 }
 
 // tryReleasePages releases pages that are safe to reuse based on active transactions.
-// Called by writers on commit/rollback. Lazy calculation - only scans when needed.
+// Hybrid approach: uses slots if bounded, else scans sync.Map
 func (db *DB) tryReleasePages() {
 	// Start with NEXT transaction ID (last assigned + 1)
 	minTxID := db.nextTxID.Load() + 1
@@ -430,14 +525,23 @@ func (db *DB) tryReleasePages() {
 		}
 	}
 
-	// Scan all active readers (lazy - only when writer commits/rollbacks)
-	db.readers.Range(func(key, value interface{}) bool {
-		tx := key.(*Tx)
-		if tx.txID < minTxID {
-			minTxID = tx.txID
+	// Get minimum reader txID using hybrid approach
+	if db.readerSlots != nil {
+		// Fixed slots: O(N) scan where N is bounded
+		readerMinTxID := db.readerSlots.GetMinTxID()
+		if readerMinTxID < minTxID {
+			minTxID = readerMinTxID
 		}
-		return true
-	})
+	} else {
+		// Unbounded: scan sync.Map
+		db.readers.Range(func(key, value interface{}) bool {
+			tx := key.(*Tx)
+			if tx.txID < minTxID {
+				minTxID = tx.txID
+			}
+			return true
+		})
+	}
 
 	db.pager.ReleasePages(minTxID)
 }
