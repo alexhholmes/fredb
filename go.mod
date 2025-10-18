@@ -1,4 +1,4 @@
-module fredb
+module github.com/alexhholmes/fredb
 
 go 1.24.0
 
