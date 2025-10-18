@@ -77,12 +77,20 @@ func WithCacheSizeMB(mb int) DBOption {
 // the in-memory btree with sorted writes (improving btree localization).
 // Larger sizes can improve write throughput at the cost of higher memory usage.
 // Defaults to 1MB.
+//
+//goland:noinspection GoUnusedExportedFunction
 func WithWriteBufferSize(size int) DBOption {
 	return func(opts *Options) {
 		opts.writeBufferSize = size
 	}
 }
 
+// WithMaxReaders sets the maximum number of concurrent readers.
+// Higher values allow more concurrent read transactions at the cost of
+// increased memory usage for tracking readers and slightly slower
+// writes due to reader management overhead. Defaults to 256.
+//
+//goland:noinspection GoUnusedExportedFunction
 func WithMaxReaders(n int) DBOption {
 	return func(opts *Options) {
 		opts.maxReaders = n
