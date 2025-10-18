@@ -9,6 +9,7 @@ import (
 	"fredb/internal/base"
 	"fredb/internal/cache"
 	"fredb/internal/pager"
+	"fredb/internal/readslots"
 	"fredb/internal/storage"
 	"fredb/internal/writebuf"
 )
@@ -34,10 +35,10 @@ type DB struct {
 	store storage.Storage // Underlying storage
 
 	// Transaction state
-	writer      atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readers     sync.Map           // Fallback for unbounded readers (used when readerSlots == nil)
-	readerSlots *ReaderSlots       // Fixed-size slots (nil if maxReaders == 0)
-	nextTxID    atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
+	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
+	readers     sync.Map               // Fallback for unbounded readers (used when readerSlots == nil)
+	readerSlots *readslots.ReaderSlots // Fixed-size slots (nil if maxReaders == 0)
+	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
 }
@@ -251,7 +252,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	// Initialize reader tracking based on maxReaders option
 	if opts.maxReaders > 0 {
-		db.readerSlots = NewReaderSlots(opts.maxReaders)
+		db.readerSlots = readslots.NewReaderSlots(opts.maxReaders)
 	}
 	// else: readerSlots stays nil, use sync.Map fallback
 
@@ -349,7 +350,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 
 	// Register reader using hybrid approach
 	if db.readerSlots != nil {
-		slot, err := db.readerSlots.Register(tx)
+		slot, err := db.readerSlots.Register(tx.txID)
 		if err != nil {
 			return nil, err
 		}
