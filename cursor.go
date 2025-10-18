@@ -269,12 +269,7 @@ func (c *Cursor) Prev() ([]byte, []byte) {
 			return c.Prev()
 		}
 
-		resultK := make([]byte, len(c.key))
-		copy(resultK, c.key)
-		resultV := make([]byte, len(c.value))
-		copy(resultV, c.value)
-
-		return resultK, resultV
+		return c.key, c.value
 	}
 
 	// Exhausted current leaf, move to previous
@@ -288,12 +283,7 @@ func (c *Cursor) Prev() ([]byte, []byte) {
 		return c.Prev()
 	}
 
-	resultK := make([]byte, len(c.key))
-	copy(resultK, c.key)
-	resultV := make([]byte, len(c.value))
-	copy(resultV, c.value)
-
-	return resultK, resultV
+	return c.key, c.value
 }
 
 // Key returns current key (only valid when Valid() == true)
