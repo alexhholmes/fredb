@@ -199,7 +199,9 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 		return c.key, c.value
 	}
 
-	return nil, nil
+	// Landed after last key in this leaf - advance to next leaf (bbolt semantics)
+	c.valid = true // Mark valid so Next() can advance
+	return c.Next()
 }
 
 // Next advances cursor to next key
