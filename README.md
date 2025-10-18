@@ -142,12 +142,6 @@ SyncEveryCommit Mode
 - ✅ tx.Commit() returns only after durable
 - ❌ Slow throughput (~200-500 TPS, 4ms/op fsync latency)
 
-SyncBytes Mode
-
-- ✅ High throughput
-- ⚠️ Data loss window: last bytesPerSync bytes
-- ⚠️ tx.Commit() returns before durable
-
 SyncOff Mode
 
 - ✅ Maximum throughput
@@ -155,11 +149,8 @@ SyncOff Mode
 - Use case: Testing, bulk loads with external backup
 
 ```go
-// Maximum durability (default) - BoltDB-style
+// Maximum durability (default)
 db, _ := Open("data.db")
-
-// High throughput - RocksDB-style with 1MB sync threshold
-db, _ := Open("data.db", WithSyncBytes(1024*1024))
 
 // Testing/bulk loads only - no fsync
 db, _ := Open("data.db", WithSyncOff())
