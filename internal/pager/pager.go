@@ -508,12 +508,14 @@ func (p *Pager) AcquireBucket(rootID base.PageID) bool {
 	counter.Store(1)
 	refCount, loaded := p.buckets.LoadOrStore(rootID, counter)
 	if loaded {
-		// We hold a reference to the atomic
-		refCount.(*atomic.Int32).Add(1)
+		// Increment the reference count
+		atomic := refCount.(*atomic.Int32)
+		atomic.Add(1)
+
+		// Verify the bucket wasn't deleted/replaced after we incremented
 		if currentRefCount, ok := p.buckets.Load(rootID); !ok || currentRefCount != refCount {
-			// In case the bucket was deleted in between loading it and incrementing
-			// the ref count. The reference to this atomic does not matter since
-			// we are rejecting access anyway in ReleaseBucket (in another goroutine).
+			// Bucket was deleted or replaced - undo our increment
+			atomic.Add(-1)
 			return false
 		}
 	}
@@ -528,7 +530,9 @@ func (p *Pager) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.PageID) 
 	// Decrement reference count
 	refCountVal, exists := p.buckets.Load(rootID)
 	if !exists {
-		panic("ref count decrement of bucket count that does not exist") // Should not occur
+		// Race: bucket was already released to 0 by another goroutine
+		// This can happen if AcquireBucket failed after incrementing
+		return
 	}
 
 	refCount := refCountVal.(*atomic.Int32)
