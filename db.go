@@ -35,8 +35,8 @@ type DB struct {
 
 	// Transaction state
 	writer      atomic.Pointer[Tx] // Current write transaction (nil if none)
-	readerSlots *ReaderSlots       // Fixed-size slots (nil if maxReaders == 0)
 	readers     sync.Map           // Fallback for unbounded readers (used when readerSlots == nil)
+	readerSlots *ReaderSlots       // Fixed-size slots (nil if maxReaders == 0)
 	nextTxID    atomic.Uint64      // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
