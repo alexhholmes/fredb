@@ -2,6 +2,7 @@ package freelist
 
 import (
 	"sort"
+	"sync"
 	"unsafe"
 
 	"github.com/alexhholmes/fredb/internal/base"
@@ -17,6 +18,7 @@ const (
 // 1. Pending: Pages freed at txnID cannot be reused until all readers < txnID complete
 // 2. Free: Pages released from pending are available for immediate reuse
 type Freelist struct {
+	mu             sync.RWMutex
 	freed          map[base.PageID]struct{} // Pages available for reuse
 	pending        map[uint64][]base.PageID // txnID -> pages freed at that transaction
 	pendingReverse map[base.PageID]uint64   // pageID -> txnID for O(1) lookup
@@ -34,6 +36,9 @@ func New() *Freelist {
 // Allocate returns a Free Page ID, or 0 if none available.
 // Uses reverse index for O(1) pending lookup instead of O(n*m) scan.
 func (f *Freelist) Allocate() base.PageID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	if len(f.freed) == 0 {
 		// No Free pages available
 		return 0
@@ -65,8 +70,10 @@ func (f *Freelist) Allocate() base.PageID {
 	return id
 }
 
-// Free adds a Page ID to the Free list (internal, caller must hold lock)
+// Free adds a Page ID to the Free list
 func (f *Freelist) Free(id base.PageID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	// Map automatically prevents duplicates
 	f.freed[id] = struct{}{}
 }
@@ -78,6 +85,9 @@ func (f *Freelist) Pending(txnID uint64, pageIDs []base.PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
 	f.pending[txnID] = append(f.pending[txnID], pageIDs...)
 
@@ -91,11 +101,15 @@ func (f *Freelist) Pending(txnID uint64, pageIDs []base.PageID) {
 // Returns number of pages released.
 // Cleans up reverse index entries.
 func (f *Freelist) Release(minTxnID uint64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	released := 0
 	for txnID, pages := range f.pending {
 		if txnID < minTxnID {
 			for _, pageID := range pages {
-				f.Free(pageID)
+				// Direct map write - already holding lock
+				f.freed[pageID] = struct{}{}
 				delete(f.pendingReverse, pageID)
 				released++
 			}
@@ -107,6 +121,9 @@ func (f *Freelist) Release(minTxnID uint64) int {
 
 // PagesNeeded returns number of pages needed to serialize this freelist
 func (f *Freelist) PagesNeeded() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
 	freeBytes := 8 + len(f.freed)*8
 
 	pendingBytes := 0
@@ -138,6 +155,9 @@ func (f *Freelist) PagesNeeded() int {
 
 // Serialize writes freelist to pages starting at given slice
 func (f *Freelist) Serialize(pages []*base.Page) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
 	buf := make([]byte, 0, base.PageSize*len(pages))
 
 	// Write Free count
@@ -215,6 +235,9 @@ func (f *Freelist) Serialize(pages []*base.Page) {
 
 // Deserialize reads freelist from pages and rebuilds reverse index
 func (f *Freelist) Deserialize(pages []*base.Page) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.freed = make(map[base.PageID]struct{})
 	f.pending = make(map[uint64][]base.PageID)
 	f.pendingReverse = make(map[base.PageID]uint64)
@@ -300,5 +323,7 @@ func (f *Freelist) Deserialize(pages []*base.Page) {
 
 // Stats returns freelist statistics for observability
 func (f *Freelist) Stats() (freedCount int) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return len(f.freed)
 }
