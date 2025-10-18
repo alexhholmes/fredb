@@ -11,7 +11,6 @@ import (
 	"github.com/alexhholmes/fredb/internal/pager"
 	"github.com/alexhholmes/fredb/internal/readslots"
 	"github.com/alexhholmes/fredb/internal/storage"
-	"github.com/alexhholmes/fredb/internal/writebuf"
 )
 
 const (
@@ -75,8 +74,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 	c := cache.NewCache(opts.maxCacheSizeMB*256, onEvict)
 
-	// Create pager with dependencies
-	pager, err := pager.NewPager(store, c)
+	// Create pg with dependencies
+	pg, err := pager.NewPager(store, c)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -84,13 +83,13 @@ func Open(path string, options ...DBOption) (*DB, error) {
 
 	// Initialize root (was newTree logic)
 	var root *base.Node
-	meta := pager.GetMeta()
+	meta := pg.GetMeta()
 
 	if meta.RootPageID != 0 {
 		// Load existing root
 		rootPage, err := store.ReadPage(meta.RootPageID)
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
@@ -100,29 +99,29 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		if err := root.Deserialize(rootPage); err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
 		// Bundle root with metadata and make visible atomically
-		if err := pager.PutSnapshot(meta, root); err != nil {
-			_ = pager.Close()
+		if err := pg.PutSnapshot(meta, root); err != nil {
+			_ = pg.Close()
 			return nil, err
 		}
-		pager.CommitSnapshot()
+		pg.CommitSnapshot()
 	} else {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID, err := pager.AssignPageID()
+		rootPageID, err := pg.AssignPageID()
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
-		rootLeafID, err := pager.AssignPageID()
+		rootLeafID, err := pg.AssignPageID()
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
@@ -145,15 +144,15 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID, err := pager.AssignPageID()
+		rootBucketRootID, err := pg.AssignPageID()
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
-		rootBucketLeafID, err := pager.AssignPageID()
+		rootBucketLeafID, err := pg.AssignPageID()
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
@@ -192,68 +191,68 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		leafPage := &base.Page{}
 		err = rootLeaf.Serialize(0, leafPage)
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootLeafID, leafPage); err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
 		rootPage := &base.Page{}
 		err = root.Serialize(0, rootPage)
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootPageID, rootPage); err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
 		bucketLeafPage := &base.Page{}
 		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
 		bucketRootPage := &base.Page{}
 		err = rootBucketRoot.Serialize(0, bucketRootPage)
 		if err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 		if err = store.WritePage(rootBucketRootID, bucketRootPage); err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
 		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
 
-		if err = pager.PutSnapshot(meta, root); err != nil {
-			_ = pager.Close()
+		if err = pg.PutSnapshot(meta, root); err != nil {
+			_ = pg.Close()
 			return nil, err
 		}
 
-		// 7. CRITICAL: Sync pager to persist the initial allocations
+		// 7. CRITICAL: Sync pg to persist the initial allocations
 		// This ensures root and leaf are not returned by future AssignPageID() calls
 		if err = store.Sync(); err != nil {
-			_ = pager.Close()
+			_ = pg.Close()
 			return nil, err
 		}
 
 		// 8. Make metapage AND root visible to readers atomically
-		pager.CommitSnapshot()
+		pg.CommitSnapshot()
 	}
 
 	db := &DB{
-		pager:   pager,
+		pager:   pg,
 		options: opts,
 		cache:   c,
 		store:   store,
@@ -334,7 +333,6 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			done:          false,
 			nextVirtualID: -1, // Start virtual page IDs at -1
 			buckets:       make(map[string]*Bucket),
-			writeBuf:      writebuf.NewBuffer(db.options.writeBufferSize),
 		}
 
 		// Register writer (atomic store)

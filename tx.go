@@ -3,13 +3,10 @@ package fredb
 import (
 	"bytes"
 	"errors"
-	"sort"
-	"strings"
 
 	"github.com/alexhholmes/fredb/internal/algo"
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/pager"
-	"github.com/alexhholmes/fredb/internal/writebuf"
 )
 
 // Tx represents a transaction on the database.
@@ -32,9 +29,6 @@ type Tx struct {
 	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
 	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
 	deletes  map[string]base.PageID     // Root pages of buckets deleted in this transaction, for background cleanup upon commit
-
-	// Write buffer for batching mutations
-	writeBuf *writebuf.Buffer
 
 	// Reader tracking (for slot-based mode)
 	readerSlot int  // Slot index in readerSlots array (only for read-only transactions)
@@ -94,8 +88,11 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	return tx.search(child, key)
 }
 
-// Set buffers a write operation, flushing when threshold is reached.
+// Set writes a key-value pair to the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
+// Returns ErrKeyTooLarge if key exceeds MaxKeySize (32KB).
+// Returns ErrValueTooLarge if value exceeds MaxValueSize (16MB).
+// Returns ErrPageOverflow if key+value is too large to fit in a single page.
 func (tx *Tx) Set(key, value []byte) error {
 	if err := tx.check(); err != nil {
 		return err
@@ -104,7 +101,7 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Validate key/value size (same as Put)
+	// Validate key/value size
 	if len(key) > MaxKeySize {
 		return ErrKeyTooLarge
 	}
@@ -112,183 +109,16 @@ func (tx *Tx) Set(key, value []byte) error {
 		return ErrValueTooLarge
 	}
 
-	// Check if buffer is empty - bypass buffering for single operations
-	if tx.writeBuf.Len() == 0 {
-		bucket := tx.Bucket([]byte("__root__"))
-		if bucket == nil {
-			return ErrBucketNotFound
-		}
-		return bucket.putDirect(key, value)
-	}
-
-	// Create composite key: bucket + key
-	compositeKey := "__root__" + "\x00" + string(key)
-
-	_, shouldFlush := tx.writeBuf.Set(compositeKey, value)
-
-	if shouldFlush {
-		return tx.flushBuffer("__root__")
-	}
-
-	return nil
-}
-
-// deleteBuffered buffers a delete operation (tombstone), flushing when threshold is reached.
-// Returns ErrTxNotWritable if called on a read-only transaction.
-// Idempotent: returns nil if key doesn't exist.
-func (tx *Tx) deleteBuffered(key []byte) error {
-	if !tx.writable {
-		return ErrTxNotWritable
-	}
-
-	// Check if buffer is empty - bypass buffering for single operations
-	if tx.writeBuf.Len() == 0 {
-		bucket := tx.Bucket([]byte("__root__"))
-		if bucket == nil {
-			return ErrBucketNotFound
-		}
-		// Direct tree delete (idempotent - ignore ErrKeyNotFound)
-		newRoot, err := tx.deleteFromNode(bucket.root, key)
-		if err != nil && !errors.Is(err, ErrKeyNotFound) {
-			return err
-		}
-		if newRoot != nil {
-			bucket.root = newRoot
-		}
-		return nil
-	}
-
-	compositeKey := "__root__" + "\x00" + string(key)
-
-	_, shouldFlush := tx.writeBuf.Delete(compositeKey)
-
-	if shouldFlush {
-		return tx.flushBuffer("__root__")
-	}
-
-	return nil
-}
-
-// flushBuffer applies all buffered writes to the tree in sorted order
-func (tx *Tx) flushBuffer(bucketName string) error {
-	if tx.writeBuf.Len() == 0 {
-		return nil
-	}
-
-	// Get the bucket
-	bucket := tx.Bucket([]byte(bucketName))
+	bucket := tx.Bucket([]byte("__root__"))
 	if bucket == nil {
 		return ErrBucketNotFound
 	}
-
-	// Sort keys for sequential insertion (reduces split cascades)
-	keys := tx.writeBuf.SortedKeys()
-	sort.Strings(keys)
-
-	// Build prefix for this bucket
-	bucketPrefix := bucketName + "\x00"
-
-	// Batch apply operations in sorted order (only for this bucket)
-	keysToRemove := make([]string, 0)
-	for _, compositeKey := range keys {
-		// Skip keys that don't belong to this bucket
-		if !strings.HasPrefix(compositeKey, bucketPrefix) {
-			continue
-		}
-
-		entry, _ := tx.writeBuf.GetEntry(compositeKey)
-
-		// Extract real key (strip bucket prefix)
-		parts := strings.SplitN(compositeKey, "\x00", 2)
-		if len(parts) != 2 {
-			continue // Skip malformed keys
-		}
-		key := []byte(parts[1])
-		keysToRemove = append(keysToRemove, compositeKey)
-
-		// Validate key/value size (same as Bucket.Put)
-		if !entry.Deleted {
-			if len(key) > MaxKeySize {
-				return ErrKeyTooLarge
-			}
-			if len(entry.Value) > MaxValueSize {
-				return ErrValueTooLarge
-			}
-			// Check practical limit based on page size
-			maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
-			if len(key)+len(entry.Value) > maxSize {
-				return ErrPageOverflow
-			}
-		}
-
-		if entry.Deleted {
-			// Apply delete to tree
-			newRoot, err := tx.deleteFromNode(bucket.root, key)
-			if err != nil && !errors.Is(err, ErrKeyNotFound) {
-				return err
-			}
-			if newRoot != nil {
-				bucket.root = newRoot
-			}
-		} else {
-			// Apply insert to tree
-			// Handle root split if needed
-			if bucket.root.IsFull(key, entry.Value) {
-				leftChild, rightChild, midKey, _, err := tx.splitChild(bucket.root, key)
-				if err != nil {
-					return err
-				}
-
-				newRootID, _, err := tx.allocatePage()
-				if err != nil {
-					return err
-				}
-
-				bucket.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-				tx.pages[newRootID] = bucket.root
-			}
-
-			// Insert with retry logic (same as Bucket.Put)
-			for {
-				newRoot, err := tx.insertNonFull(bucket.root, key, entry.Value)
-				if !errors.Is(err, ErrPageOverflow) {
-					if err == nil {
-						bucket.root = newRoot
-					}
-					if err != nil {
-						return err
-					}
-					break
-				}
-
-				// Root couldn't fit - split it
-				leftChild, rightChild, midKey, _, err := tx.splitChild(bucket.root, key)
-				if err != nil {
-					return err
-				}
-
-				newRootID, _, err := tx.allocatePage()
-				if err != nil {
-					return err
-				}
-
-				bucket.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-				tx.pages[newRootID] = bucket.root
-			}
-		}
-	}
-
-	// Remove only the keys we processed from the buffer
-	for _, key := range keysToRemove {
-		tx.writeBuf.Remove(key)
-	}
-
-	return nil
+	return bucket.putDirect(key, value)
 }
 
 // Delete removes a key from the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
-// Buffers delete as tombstone to maintain ordering with Set operations.
+// Idempotent: returns nil if key doesn't exist.
 func (tx *Tx) Delete(key []byte) error {
 	if err := tx.check(); err != nil {
 		return err
@@ -297,8 +127,20 @@ func (tx *Tx) Delete(key []byte) error {
 		return ErrTxNotWritable
 	}
 
-	// Buffer delete with tombstone (maintains ordering with Set)
-	return tx.deleteBuffered(key)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return ErrBucketNotFound
+	}
+
+	// Direct tree delete (idempotent - ignore ErrKeyNotFound)
+	newRoot, err := tx.deleteFromNode(bucket.root, key)
+	if err != nil && !errors.Is(err, ErrKeyNotFound) {
+		return err
+	}
+	if newRoot != nil {
+		bucket.root = newRoot
+	}
+	return nil
 }
 
 // Cursor creates a cursor for the default bucket.
@@ -329,23 +171,6 @@ func (tx *Tx) Commit() error {
 
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
-
-	// Flush any remaining buffered writes for all buckets before committing
-	// Collect unique bucket names from write buffer
-	buckets := make(map[string]struct{})
-	for _, key := range tx.writeBuf.SortedKeys() {
-		parts := strings.SplitN(key, "\x00", 2)
-		if len(parts) == 2 {
-			buckets[parts[0]] = struct{}{}
-		}
-	}
-
-	// Flush each bucket's buffer
-	for bucketName := range buckets {
-		if err := tx.flushBuffer(bucketName); err != nil {
-			return err
-		}
-	}
 
 	// Convert syncMode to storage package type
 	var syncMode pager.SyncMode
