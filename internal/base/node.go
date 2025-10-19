@@ -19,10 +19,6 @@ type Node struct {
 	Keys     [][]byte // Allocated copies
 	Values   [][]byte // If nil, this is a branch Node
 	Children []PageID
-
-	// Leaf pointer linked list (only for leaf nodes)
-	NextLeaf PageID // Points to next leaf in key order
-	PrevLeaf PageID // Points to previous leaf in key order
 }
 
 // Serialize encodes the Node data into a fresh Page
@@ -39,8 +35,6 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 	}
 	if n.IsLeaf() {
 		header.Flags = LeafPageFlag
-		header.NextLeaf = n.NextLeaf
-		header.PrevLeaf = n.PrevLeaf
 	} else {
 		header.Flags = BranchPageFlag
 	}
@@ -114,8 +108,6 @@ func (n *Node) Deserialize(p *Page) error {
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
-		n.NextLeaf = header.NextLeaf
-		n.PrevLeaf = header.PrevLeaf
 
 		elements := p.LeafElements()
 		for i := 0; i < int(n.NumKeys); i++ {
@@ -167,33 +159,23 @@ func (n *Node) FindKey(key []byte) int {
 	return -1
 }
 
-// Clone creates a deep copy of this Node for copy-on-write
+// Clone creates a shallow copy of this Node for copy-on-write
 // The Clone is marked Dirty and does not have a PageID allocated yet
 func (n *Node) Clone() *Node {
 	cloned := &Node{
-		PageID:   0,
-		Dirty:    true,
-		NumKeys:  n.NumKeys,
-		NextLeaf: n.NextLeaf,
-		PrevLeaf: n.PrevLeaf,
+		PageID:  0,
+		Dirty:   true,
+		NumKeys: n.NumKeys,
 	}
 
-	// Deep copy Keys - allocate new backing arrays
+	// Shallow copy Keys - share backing arrays
 	cloned.Keys = make([][]byte, len(n.Keys))
-	for i, key := range n.Keys {
-		newKey := make([]byte, len(key))
-		copy(newKey, key)
-		cloned.Keys[i] = newKey
-	}
+	copy(cloned.Keys, n.Keys)
 
-	// Deep copy Values (leaf nodes only)
+	// Shallow copy Values (leaf nodes only)
 	if n.IsLeaf() && len(n.Values) > 0 {
 		cloned.Values = make([][]byte, len(n.Values))
-		for i, value := range n.Values {
-			newValue := make([]byte, len(value))
-			copy(newValue, value)
-			cloned.Values[i] = newValue
-		}
+		copy(cloned.Values, n.Values)
 	}
 
 	// Shallow copy Children (branch nodes only) - PageIDs are copy-by-value

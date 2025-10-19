@@ -16,7 +16,7 @@ func TestPageHeaderAlignment(t *testing.T) {
 
 	// Verify struct sizes match expectations (no padding)
 	assert.Equal(t, uintptr(8), unsafe.Sizeof(PageID(0)), "PageID Size")
-	assert.Equal(t, uintptr(40), unsafe.Sizeof(PageHeader{}), "PageHeader Size")
+	assert.Equal(t, uintptr(24), unsafe.Sizeof(PageHeader{}), "PageHeader Size")
 
 	// Verify field offsets (no padding needed)
 	var h PageHeader

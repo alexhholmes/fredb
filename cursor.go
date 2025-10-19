@@ -325,38 +325,10 @@ func (c *Cursor) active() error {
 	return nil
 }
 
-// nextLeaf advances to next leaf via linked list (fast path) or tree navigation (fallback)
+// nextLeaf advances to next leaf via tree navigation
 // B+ tree: skip branch nodes, only visit leaves
 func (c *Cursor) nextLeaf() error {
-	// Fast path: use leaf pointer linked list
-	leaf := c.stack[len(c.stack)-1]
-
-	if leaf.node.NextLeaf != 0 {
-		nextLeaf, err := c.tx.loadNode(leaf.node.NextLeaf)
-		if err != nil {
-			c.valid = false
-			return err
-		}
-
-		// Validate leaf pointer: must point to actual leaf
-		if nextLeaf.IsLeaf() {
-			// Replace leaf in stack
-			c.stack[len(c.stack)-1] = path{node: nextLeaf, childIndex: 0}
-
-			if nextLeaf.NumKeys > 0 {
-				c.key = nextLeaf.Keys[0]
-				c.value = nextLeaf.Values[0]
-				c.valid = true
-			} else {
-				c.valid = false
-			}
-
-			return nil
-		}
-		// If not a leaf, fall through to tree navigation
-	}
-
-	// Fallback: tree navigation (for backward compat with old data)
+	// Tree navigation
 	// Pop up the stack to find a parent with more Children
 	for len(c.stack) > 1 {
 		// Pop current leaf
@@ -406,40 +378,10 @@ func (c *Cursor) nextLeaf() error {
 	return nil
 }
 
-// prevLeaf moves to previous leaf via linked list (fast path) or tree navigation (fallback)
+// prevLeaf moves to previous leaf via tree navigation
 // B+ tree: skip branch nodes, only visit leaves
 func (c *Cursor) prevLeaf() error {
-	// Fast path: use leaf pointer linked list
-	leaf := c.stack[len(c.stack)-1]
-	if leaf.node.PrevLeaf != 0 {
-		prevLeaf, err := c.tx.loadNode(leaf.node.PrevLeaf)
-		if err != nil {
-			c.valid = false
-			return err
-		}
-
-		// Validate leaf pointer: must point to actual leaf
-		if !prevLeaf.IsLeaf() {
-			// Corrupt pointer - fall back to tree navigation
-			// (Code falls through to tree navigation below)
-		} else {
-			// Replace leaf in stack
-			lastIndex := int(prevLeaf.NumKeys) - 1
-			c.stack[len(c.stack)-1] = path{node: prevLeaf, childIndex: lastIndex}
-
-			if lastIndex >= 0 {
-				c.key = prevLeaf.Keys[lastIndex]
-				c.value = prevLeaf.Values[lastIndex]
-				c.valid = true
-			} else {
-				c.valid = false
-			}
-
-			return nil
-		}
-	}
-
-	// Fallback: tree navigation (for backward compat with old data)
+	// Tree navigation
 	// Pop up the stack to find a parent with more Children to the left
 	for len(c.stack) > 1 {
 		// Pop current leaf
