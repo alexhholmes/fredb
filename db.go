@@ -365,13 +365,14 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is rolled back (read-only).
 func (db *DB) View(fn func(*Tx) error) error {
-	// Check if closing before tracking transaction
+	// Atomically check closed flag and register transaction
+	db.mu.Lock()
 	if db.closed.Load() {
+		db.mu.Unlock()
 		return ErrDatabaseClosed
 	}
-
-	// Track active transaction for graceful shutdown
 	db.txWg.Add(1)
+	db.mu.Unlock()
 	defer db.txWg.Done()
 
 	tx, err := db.Begin(false)
@@ -389,13 +390,14 @@ func (db *DB) View(fn func(*Tx) error) error {
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is committed.
 func (db *DB) Update(fn func(*Tx) error) error {
-	// Check if closing before tracking transaction
+	// Atomically check closed flag and register transaction
+	db.mu.Lock()
 	if db.closed.Load() {
+		db.mu.Unlock()
 		return ErrDatabaseClosed
 	}
-
-	// Track active transaction for graceful shutdown
 	db.txWg.Add(1)
+	db.mu.Unlock()
 	defer db.txWg.Done()
 
 	tx, err := db.Begin(true)
