@@ -489,32 +489,24 @@ func (p *Pager) CommitTransaction(
 // Returns false if the bucket is marked for deletion (new transactions cannot access it).
 // Returns true if successfully acquired.
 func (p *Pager) AcquireBucket(rootID base.PageID) bool {
-	// Optimistic: increment refcount first (fast path, no lock)
-	counter := &atomic.Int32{}
-	counter.Store(1)
-	refCountVal, loaded := p.buckets.LoadOrStore(rootID, counter)
-
-	var refCount *atomic.Int32
-	if loaded {
-		refCount = refCountVal.(*atomic.Int32)
-		refCount.Add(1)
-	} else {
-		refCount = counter
-	}
-
-	// Verify bucket not marked for deletion (RLock for concurrent acquires)
+	// CRITICAL: Check deletion status BEFORE incrementing to avoid refcount leak
+	// If we increment first, a concurrent delete can see non-zero refcount and skip cleanup
 	p.DeletedMu.RLock()
 	_, deleted := p.Deleted[rootID]
 	p.DeletedMu.RUnlock()
 
 	if deleted {
-		// Bucket is deleted - rollback our increment
-		newCount := refCount.Add(-1)
-		// Clean up sync.Map entry if we decremented to zero
-		if newCount == 0 {
-			p.buckets.Delete(rootID)
-		}
-		return false
+		return false // Bucket marked for deletion - reject acquisition
+	}
+
+	// Safe to increment - bucket not marked deleted at this point
+	counter := &atomic.Int32{}
+	counter.Store(1)
+	refCountVal, loaded := p.buckets.LoadOrStore(rootID, counter)
+
+	if loaded {
+		refCount := refCountVal.(*atomic.Int32)
+		refCount.Add(1)
 	}
 
 	return true
