@@ -131,16 +131,7 @@ func (tx *Tx) Delete(key []byte) error {
 	if bucket == nil {
 		return ErrBucketNotFound
 	}
-
-	// Direct tree delete (idempotent - ignore ErrKeyNotFound)
-	newRoot, err := tx.deleteFromNode(bucket.root, key)
-	if err != nil && !errors.Is(err, ErrKeyNotFound) {
-		return err
-	}
-	if newRoot != nil {
-		bucket.root = newRoot
-	}
-	return nil
+	return bucket.Delete(key)
 }
 
 // Cursor creates a cursor for the default bucket.
@@ -978,9 +969,9 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		// Parent separator
 		allKeys = append(allKeys, parent.Keys[parentKeyIdx])
 
-		// Right node keys and children (skip first child, already included)
+		// Right node keys and children (include ALL children from both nodes)
 		allKeys = append(allKeys, rightNode.Keys[:rightNode.NumKeys]...)
-		allChildren = append(allChildren, rightNode.Children[1:rightNode.NumKeys+1]...)
+		allChildren = append(allChildren, rightNode.Children[:rightNode.NumKeys+1]...)
 
 		// Find split point
 		splitIdx := leftCount
