@@ -925,13 +925,10 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 // redistributeNodes redistributes keys evenly between two siblings when merge would overflow
 // This is called when both nodes are underflow but merging them would exceed page size
 func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) error {
-	// Collect all keys/values from both siblings
-	totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
-
-	// Calculate target split point (aim for even distribution)
-	leftCount := totalKeys / 2
-
 	if leftNode.IsLeaf() {
+		// Leaf nodes: simple redistribution (no separator to account for)
+		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
+		leftCount := totalKeys / 2
 		// Combine all keys and values
 		allKeys := make([][]byte, 0, totalKeys)
 		allValues := make([][]byte, 0, totalKeys)
@@ -959,8 +956,11 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		parent.Keys[parentKeyIdx] = rightNode.Keys[0]
 	} else {
 		// Branch node: include parent separator key in redistribution
-		allKeys := make([][]byte, 0, totalKeys+1)
-		allChildren := make([]base.PageID, 0, totalKeys+2)
+		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys) + 1  // +1 for parent separator
+		leftCount := totalKeys / 2
+
+		allKeys := make([][]byte, 0, totalKeys)
+		allChildren := make([]base.PageID, 0, totalKeys+1)
 
 		// Left node keys and children
 		allKeys = append(allKeys, leftNode.Keys[:leftNode.NumKeys]...)
@@ -985,7 +985,7 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		copy(leftNode.Keys, allKeys[:splitIdx])
 		copy(leftNode.Children, allChildren[:splitIdx+1])
 
-		rightCount := totalKeys - splitIdx
+		rightCount := totalKeys - splitIdx - 1  // -1 because separator goes to parent
 		rightNode.NumKeys = uint16(rightCount)
 		rightNode.Keys = make([][]byte, rightCount)
 		rightNode.Children = make([]base.PageID, rightCount+1)
