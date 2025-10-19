@@ -18,7 +18,7 @@ import (
 // Transactions provide a consistent view of the database at the point they were created.
 // Read transactions can run concurrently, but only one write transaction can be active at a time.
 type Tx struct {
-	txID     uint64 // Unique transaction ID
+	txID     uint64 // Writers: unique ID, Readers: snapshot of last committed write
 	writable bool   // Is this a read-write transaction?
 
 	db   *DB        // Database this transaction belongs to (concrete type for internal access)

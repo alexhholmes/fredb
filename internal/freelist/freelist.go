@@ -15,26 +15,23 @@ const (
 
 // Freelist manages Free and pending pages for MVCC transaction isolation.
 // Pages are freed in two stages:
-// 1. Pending: Pages freed at txnID cannot be reused until all readers < txnID complete
+// 1. Pending: Pages freed at epoch cannot be reused until all readers < epoch complete
 // 2. Free: Pages released from pending are available for immediate reuse
 type Freelist struct {
-	mu             sync.RWMutex
-	freed          map[base.PageID]struct{} // Pages available for reuse
-	pending        map[uint64][]base.PageID // txnID -> pages freed at that transaction
-	pendingReverse map[base.PageID]uint64   // pageID -> txnID for O(1) lookup
+	mu      sync.RWMutex
+	freed   map[base.PageID]struct{}  // Pages available for reuse
+	pending map[uint64][]base.PageID  // epoch -> pages freed at that epoch
 }
 
 // New creates a new Freelist with empty state
 func New() *Freelist {
 	return &Freelist{
-		freed:          make(map[base.PageID]struct{}),
-		pending:        make(map[uint64][]base.PageID),
-		pendingReverse: make(map[base.PageID]uint64),
+		freed:   make(map[base.PageID]struct{}),
+		pending: make(map[uint64][]base.PageID),
 	}
 }
 
 // Allocate returns a Free Page ID, or 0 if none available.
-// Uses reverse index for O(1) pending lookup instead of O(n*m) scan.
 func (f *Freelist) Allocate() base.PageID {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -52,19 +49,17 @@ func (f *Freelist) Allocate() base.PageID {
 	delete(f.freed, id)
 
 	// CRITICAL: Remove from pending to prevent double-allocation
-	// Use reverse index for O(1) lookup instead of scanning all pending entries
-	if txnID, exists := f.pendingReverse[id]; exists {
-		pages := f.pending[txnID]
-		for i := len(pages) - 1; i >= 0; i-- {
-			if pages[i] == id {
-				f.pending[txnID] = append(pages[:i], pages[i+1:]...)
-				break
+	// Scan epochs to find and remove this page (rare edge case)
+	for epoch, pages := range f.pending {
+		for i, pageID := range pages {
+			if pageID == id {
+				f.pending[epoch] = append(pages[:i], pages[i+1:]...)
+				if len(f.pending[epoch]) == 0 {
+					delete(f.pending, epoch)
+				}
+				return id
 			}
 		}
-		if len(f.pending[txnID]) == 0 {
-			delete(f.pending, txnID)
-		}
-		delete(f.pendingReverse, id)
 	}
 
 	return id
@@ -78,10 +73,9 @@ func (f *Freelist) Free(id base.PageID) {
 	f.freed[id] = struct{}{}
 }
 
-// Pending adds pages to the pending map at the given transaction ID.
+// Pending adds pages to the pending map at the given epoch.
 // Pages remain pending until Release() moves them to Free list.
-// Maintains reverse index for O(1) lookup in Allocate().
-func (f *Freelist) Pending(txnID uint64, pageIDs []base.PageID) {
+func (f *Freelist) Pending(epoch uint64, pageIDs []base.PageID) {
 	if len(pageIDs) == 0 {
 		return
 	}
@@ -89,31 +83,23 @@ func (f *Freelist) Pending(txnID uint64, pageIDs []base.PageID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.pending[txnID] = append(f.pending[txnID], pageIDs...)
-
-	// Maintain reverse index
-	for _, pageID := range pageIDs {
-		f.pendingReverse[pageID] = txnID
-	}
+	f.pending[epoch] = append(f.pending[epoch], pageIDs...)
 }
 
-// Release moves pages from pending to Free for all transactions < minTxnID.
+// Release moves pages from pending to Free for all epochs < minEpoch.
 // Returns number of pages released.
-// Cleans up reverse index entries.
-func (f *Freelist) Release(minTxnID uint64) int {
+func (f *Freelist) Release(minEpoch uint64) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	released := 0
-	for txnID, pages := range f.pending {
-		if txnID < minTxnID {
+	for epoch, pages := range f.pending {
+		if epoch < minEpoch {
 			for _, pageID := range pages {
-				// Direct map write - already holding lock
 				f.freed[pageID] = struct{}{}
-				delete(f.pendingReverse, pageID)
 				released++
 			}
-			delete(f.pending, txnID)
+			delete(f.pending, epoch)
 		}
 	}
 	return released
@@ -130,7 +116,7 @@ func (f *Freelist) PagesNeeded() int {
 	if len(f.pending) > 0 {
 		pendingBytes = 8 + 8 // marker + count
 		for _, pages := range f.pending {
-			pendingBytes += 8 + 8 + len(pages)*8 // txnID + count + page IDs
+			pendingBytes += 8 + 8 + len(pages)*8 // epoch + count + pageIDs
 		}
 	}
 
@@ -193,30 +179,30 @@ func (f *Freelist) Serialize(pages []*base.Page) {
 		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(f.pending))
 		buf = append(buf, pendingCountBytes...)
 
-		// Sort txnIDs for deterministic serialization
-		txnIDs := make([]uint64, 0, len(f.pending))
-		for txnID := range f.pending {
-			txnIDs = append(txnIDs, txnID)
+		// Sort epochs for deterministic serialization
+		epochs := make([]uint64, 0, len(f.pending))
+		for epoch := range f.pending {
+			epochs = append(epochs, epoch)
 		}
-		sort.Slice(txnIDs, func(i, j int) bool {
-			return txnIDs[i] < txnIDs[j]
+		sort.Slice(epochs, func(i, j int) bool {
+			return epochs[i] < epochs[j]
 		})
 
-		// Write each pending entry
-		for _, txnID := range txnIDs {
-			pages := f.pending[txnID]
+		// Write each pending entry (epoch + page count + pageIDs)
+		for _, epoch := range epochs {
+			pages := f.pending[epoch]
 
-			// Write txnID
-			txnBytes := make([]byte, 8)
-			*(*uint64)(unsafe.Pointer(&txnBytes[0])) = txnID
-			buf = append(buf, txnBytes...)
+			// Write epoch
+			epochBytes := make([]byte, 8)
+			*(*uint64)(unsafe.Pointer(&epochBytes[0])) = epoch
+			buf = append(buf, epochBytes...)
 
-			// Write Page count
+			// Write page count
 			countBytes := make([]byte, 8)
 			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(pages))
 			buf = append(buf, countBytes...)
 
-			// Write page IDs
+			// Write pageIDs
 			for _, pageID := range pages {
 				pidBytes := make([]byte, 8)
 				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
@@ -233,14 +219,13 @@ func (f *Freelist) Serialize(pages []*base.Page) {
 	}
 }
 
-// Deserialize reads freelist from pages and rebuilds reverse index
+// Deserialize reads freelist from pages
 func (f *Freelist) Deserialize(pages []*base.Page) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.freed = make(map[base.PageID]struct{})
 	f.pending = make(map[uint64][]base.PageID)
-	f.pendingReverse = make(map[base.PageID]uint64)
 
 	// Build linear buffer from pages
 	buf := make([]byte, 0, base.PageSize*len(pages))
@@ -284,23 +269,23 @@ func (f *Freelist) Deserialize(pages []*base.Page) {
 	pendingCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
 	offset += 8
 
-	// Read pending entries
+	// Read pending entries (epoch + page count + pageIDs)
 	for i := uint64(0); i < pendingCount; i++ {
-		// Read txnID
+		// Read epoch
 		if offset+8 > len(buf) {
 			break
 		}
-		txnID := *(*uint64)(unsafe.Pointer(&buf[offset]))
+		epoch := *(*uint64)(unsafe.Pointer(&buf[offset]))
 		offset += 8
 
-		// Read Page count
+		// Read page count
 		if offset+8 > len(buf) {
 			break
 		}
 		pageCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
 		offset += 8
 
-		// Read Page IDs
+		// Read pageIDs
 		pageIDs := make([]base.PageID, 0, pageCount)
 		for j := uint64(0); j < pageCount; j++ {
 			if offset+8 > len(buf) {
@@ -312,11 +297,7 @@ func (f *Freelist) Deserialize(pages []*base.Page) {
 		}
 
 		if len(pageIDs) > 0 {
-			f.pending[txnID] = pageIDs
-			// Rebuild reverse index
-			for _, pageID := range pageIDs {
-				f.pendingReverse[pageID] = txnID
-			}
+			f.pending[epoch] = pageIDs
 		}
 	}
 }
