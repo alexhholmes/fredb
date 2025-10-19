@@ -199,10 +199,9 @@ func (tx *Tx) Commit() error {
 				return ErrValueTooLarge
 			}
 
-			// Also active practical limit based on Page size
-			// At minimum, a leaf Page must hold at least one key-value pair
-			maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
-			if len(key)+len(value) > maxSize {
+			// Check key size fits in page (values can overflow)
+			maxKeySize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+			if len(key) > maxKeySize {
 				return ErrPageOverflow
 			}
 
@@ -414,9 +413,19 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// Don't Serialize here - let the caller modify the Node first
 	// The caller will Serialize after modifications
 
-	// Track old Page as freed
+	// Track old Page and its overflow chains as freed
 	// These pages will be added to freelist's pending list on commit
 	// and reclaimed when all readers that might reference them have finished
+
+	// Free all overflow chains in the old node
+	chains := node.FreeAllOverflowChains()
+	for _, chain := range chains {
+		for _, pageID := range chain {
+			tx.addFreed(pageID)
+		}
+	}
+
+	// Free the node page itself
 	tx.addFreed(node.PageID)
 
 	// store in TX-LOCAL cache (NOT global cache yet)
@@ -916,7 +925,13 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	// Update parent's child pointer to merged node
 	parent.Children[parentKeyIdx] = leftNode.PageID
 
-	// Track right node as freed
+	// Track right node and its overflow chains as freed
+	chains := rightNode.FreeAllOverflowChains()
+	for _, chain := range chains {
+		for _, pageID := range chain {
+			tx.addFreed(pageID)
+		}
+	}
 	tx.addFreed(rightNode.PageID)
 
 	return parent, true, nil // true = actually merged
@@ -956,7 +971,7 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		parent.Keys[parentKeyIdx] = rightNode.Keys[0]
 	} else {
 		// Branch node: include parent separator key in redistribution
-		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys) + 1  // +1 for parent separator
+		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys) + 1 // +1 for parent separator
 		leftCount := totalKeys / 2
 
 		allKeys := make([][]byte, 0, totalKeys)
@@ -985,7 +1000,7 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		copy(leftNode.Keys, allKeys[:splitIdx])
 		copy(leftNode.Children, allChildren[:splitIdx+1])
 
-		rightCount := totalKeys - splitIdx - 1  // -1 because separator goes to parent
+		rightCount := totalKeys - splitIdx - 1 // -1 because separator goes to parent
 		rightNode.NumKeys = uint16(rightCount)
 		rightNode.Keys = make([][]byte, rightCount)
 		rightNode.Children = make([]base.PageID, rightCount+1)
@@ -1047,7 +1062,6 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 	if string(name) != "__root__" {
 		acquired := tx.db.pager.AcquireBucket(bucket.rootID)
 		if !acquired {
-			// Debug: bucket is marked for deletion
 			return nil
 		}
 		// Track that we acquired this bucket (for later release)

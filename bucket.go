@@ -66,9 +66,9 @@ func (b *Bucket) Put(key, value []byte) error {
 		return ErrValueTooLarge
 	}
 
-	// Check practical limit based on page size
-	maxSize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
-	if len(key)+len(value) > maxSize {
+	// Check key size fits in page (values can overflow)
+	maxKeySize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
+	if len(key) > maxKeySize {
 		return ErrPageOverflow
 	}
 

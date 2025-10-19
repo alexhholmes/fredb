@@ -18,11 +18,12 @@ var (
 const (
 	PageSize = 4096
 
-	LeafPageFlag   uint16 = 0x01
-	BranchPageFlag uint16 = 0x02
+	LeafPageFlag     uint16 = 0x01
+	BranchPageFlag   uint16 = 0x02
+	OverflowPageFlag uint16 = 0x04
 
 	PageHeaderSize    = 24 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxID(8)
-	LeafElementSize   = 12
+	LeafElementSize   = 16
 	BranchElementSize = 16
 
 	// MagicNumber for file format identification ("frdb" in hex)
@@ -37,7 +38,7 @@ type PageID uint64
 //
 // LEAF PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
-// │ Header (40 bytes)                                                   │
+// │ Header (24 bytes)                                                   │
 // │ PageID, Flags, NumKeys, Padding, TxID                               │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ LeafElement[0] (12 bytes)                                           │
@@ -56,7 +57,7 @@ type PageID uint64
 //
 // BRANCH PAGE LAYOUT:
 // ┌─────────────────────────────────────────────────────────────────────┐
-// │ Header (40 bytes)                                                   │
+// │ Header (24 bytes)                                                   │
 // │ PageID, Flags, NumKeys, Padding, TxID                               │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[0] (16 bytes)                                         │
@@ -72,30 +73,41 @@ type PageID uint64
 // │   ← key[0] | key[1] | ... | key[N-1]        Children[0] (8 bytes)→  │
 // │   Elements grow forward →   Data grows backward ← (reserve end 8)   │
 // │   BranchElement[0..N-1].ChildID stores Children[1..N]               │
-// │   Children[0] is at FIXED location: last 8 bytes (PageSize-8)       │
+// └─────────────────────────────────────────────────────────────────────┘
+//
+// OVERFLOW PAGE LAYOUT:
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ Header (24 bytes)                                                   │
+// │ PageID, Flags (Overflow Page Flag Set), NumKeys (Always 0),         │
+// │ Padding, TxID                                                       │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Raw Data Payload for Large Value                                    │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Fixed Size Next Overflow PageID (8 bytes)                           │
 // └─────────────────────────────────────────────────────────────────────┘
 type Page struct {
 	Data [PageSize]byte
 }
 
 // PageHeader represents the fixed-Size Header at the start of each Page
-// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8][NextLeaf: 8][PrevLeaf: 8]
+// Layout: [PageID: 8][Flags: 2][NumKeys: 2][OverflowSize: 2][Padding: 2][TxID: 8]
 type PageHeader struct {
-	PageID  PageID // 8 bytes
-	Flags   uint16 // 2 bytes (leaf/branch)
-	NumKeys uint16 // 2 bytes
-	Padding uint32 // 4 bytes (alignment)
-	TxnID   uint64 // 8 bytes - transaction that committed this Page version
+	PageID       PageID // 8 bytes
+	Flags        uint16 // 2 bytes: leaf/branch
+	NumKeys      uint16 // 2 bytes: number of key-value pairs or keys
+	OverflowSize uint16 // 2 bytes: number of overflow bytes for overflow pages; unused in leaf/branch pages
+	Padding      uint16 // 2 bytes: unused (for future use or alignment)
+	TxnID        uint64 // 8 bytes - transaction that committed this Page version
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf Page
-// Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][Reserved: 4]
+// Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][Overflow: 8]
 type LeafElement struct {
 	KeyOffset   uint16 // 2 bytes: offset from data area start
 	KeySize     uint16 // 2 bytes
-	ValueOffset uint16 // 2 bytes: offset from data area start
+	ValueOffset uint16 // 2 bytes: offset from data area start; for overflow, this is number of overflow pages used
 	ValueSize   uint16 // 2 bytes
-	Reserved    uint32 // 4 bytes
+	Overflow    PageID // 8 bytes
 }
 
 // BranchElement represents metadata for a routing key and child pointer in a branch Page
@@ -188,6 +200,23 @@ func (p *Page) WriteBranchFirstChild(childID PageID) {
 
 // ReadBranchFirstChild reads the first child PageID from a fixed location at the end of the Page
 func (p *Page) ReadBranchFirstChild() PageID {
+	offset := PageSize - 8
+	return *(*PageID)(unsafe.Pointer(&p.Data[offset]))
+}
+
+// WriteNextOverflow writes the next overflow PageID to a fixed location at the end of the Page
+func (p *Page) WriteNextOverflow(nextID PageID) {
+	offset := PageSize - 8
+	*(*PageID)(unsafe.Pointer(&p.Data[offset])) = nextID
+}
+
+// ReadNextOverflow reads the next overflow PageID from a fixed location at the end of the Page
+// Returns 0 if this is not an overflow page
+func (p *Page) ReadNextOverflow() PageID {
+	h := p.Header()
+	if h.Flags&OverflowPageFlag == 0 {
+		return 0
+	}
 	offset := PageSize - 8
 	return *(*PageID)(unsafe.Pointer(&p.Data[offset]))
 }

@@ -23,7 +23,8 @@ func TestPageHeaderAlignment(t *testing.T) {
 	assert.Equal(t, uintptr(0), unsafe.Offsetof(h.PageID), "PageID offset")
 	assert.Equal(t, uintptr(8), unsafe.Offsetof(h.Flags), "Flags offset")
 	assert.Equal(t, uintptr(10), unsafe.Offsetof(h.NumKeys), "NumKeys offset")
-	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.Padding), "Padding offset")
+	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.OverflowSize), "OverflowSize offset")
+	assert.Equal(t, uintptr(14), unsafe.Offsetof(h.Padding), "Padding offset")
 	assert.Equal(t, uintptr(16), unsafe.Offsetof(h.TxnID), "TxID offset")
 }
 
@@ -59,11 +60,12 @@ func TestPageHeaderByteLayout(t *testing.T) {
 
 	// Write Header with known Values
 	hdr := PageHeader{
-		PageID:  0x0123456789ABCDEF, // 8 bytes
-		Flags:   0x1234,             // 2 bytes
-		NumKeys: 0x5678,             // 2 bytes
-		Padding: 0x9ABCDEF0,         // 4 bytes
-		TxnID:   0x1122334455667788, // 8 bytes
+		PageID:       0x0123456789ABCDEF, // 8 bytes
+		Flags:        0x1234,             // 2 bytes
+		NumKeys:      0x5678,             // 2 bytes
+		OverflowSize: 0x9ABC,             // 2 bytes
+		Padding:      0xDEF0,             // 2 bytes
+		TxnID:        0x1122334455667788, // 8 bytes
 	}
 	page.WriteHeader(&hdr)
 
@@ -75,8 +77,10 @@ func TestPageHeaderByteLayout(t *testing.T) {
 		0x34, 0x12,
 		// NumKeys (2 bytes, little-endian)
 		0x78, 0x56,
-		// Padding (4 bytes, little-endian)
-		0xF0, 0xDE, 0xBC, 0x9A,
+		// OverflowBytes (2 bytes, little-endian)
+		0xBC, 0x9A,
+		// Padding (2 bytes, little-endian)
+		0xF0, 0xDE,
 		// TxID (8 bytes, little-endian)
 		0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
 	}
@@ -89,7 +93,7 @@ func TestPageHeaderByteLayout(t *testing.T) {
 func TestLeafElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, uintptr(12), unsafe.Sizeof(LeafElement{}), "LeafElement Size")
+	assert.Equal(t, uintptr(16), unsafe.Sizeof(LeafElement{}), "LeafElement Size")
 }
 
 func TestLeafElementByteLayout(t *testing.T) {
@@ -111,7 +115,7 @@ func TestLeafElementByteLayout(t *testing.T) {
 		KeySize:     0x5678,     // 2 bytes
 		ValueOffset: 0x9ABC,     // 2 bytes
 		ValueSize:   0xDEF0,     // 2 bytes
-		Reserved:    0x12345678, // 4 bytes
+		Overflow:    0x12345678, // 4 bytes
 	}
 	page.WriteLeafElement(0, &elem)
 
@@ -154,7 +158,7 @@ func TestLeafElementRoundTrip(t *testing.T) {
 		KeySize:     5,
 		ValueOffset: 5,
 		ValueSize:   10,
-		Reserved:    0,
+		Overflow:    0,
 	}
 	page.WriteLeafElement(0, &elem1)
 
@@ -163,7 +167,7 @@ func TestLeafElementRoundTrip(t *testing.T) {
 		KeySize:     3,
 		ValueOffset: 18,
 		ValueSize:   7,
-		Reserved:    0,
+		Overflow:    0,
 	}
 	page.WriteLeafElement(1, &elem2)
 
@@ -442,4 +446,94 @@ func TestGetKeyValueBoundsChecking(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOverflowPageRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	var page Page
+
+	// Write overflow page header
+	header := PageHeader{
+		PageID:       100,
+		Flags:        OverflowPageFlag,
+		NumKeys:      0,
+		OverflowSize: 1024,
+		TxnID:        42,
+	}
+	page.WriteHeader(&header)
+
+	// Write next overflow pointer
+	nextID := PageID(200)
+	page.WriteNextOverflow(nextID)
+
+	// Read back
+	readHeader := page.Header()
+	assert.Equal(t, header.PageID, readHeader.PageID, "PageID")
+	assert.Equal(t, header.Flags, readHeader.Flags, "Flags")
+	assert.Equal(t, header.OverflowSize, readHeader.OverflowSize, "OverflowSize")
+
+	readNextID := page.ReadNextOverflow()
+	assert.Equal(t, nextID, readNextID, "NextOverflow")
+}
+
+func TestOverflowPageChain(t *testing.T) {
+	t.Parallel()
+
+	// Create 3-page overflow chain: 100 -> 200 -> 300 -> 0
+	var page1, page2, page3 Page
+
+	// Page 1
+	page1.WriteHeader(&PageHeader{
+		PageID:       100,
+		Flags:        OverflowPageFlag,
+		OverflowSize: 512,
+		TxnID:        1,
+	})
+	page1.WriteNextOverflow(200)
+
+	// Page 2
+	page2.WriteHeader(&PageHeader{
+		PageID:       200,
+		Flags:        OverflowPageFlag,
+		OverflowSize: 512,
+		TxnID:        1,
+	})
+	page2.WriteNextOverflow(300)
+
+	// Page 3 (last in chain)
+	page3.WriteHeader(&PageHeader{
+		PageID:       300,
+		Flags:        OverflowPageFlag,
+		OverflowSize: 256,
+		TxnID:        1,
+	})
+	page3.WriteNextOverflow(0)
+
+	// Verify chain
+	assert.Equal(t, PageID(200), page1.ReadNextOverflow(), "page1.NextOverflow")
+	assert.Equal(t, PageID(300), page2.ReadNextOverflow(), "page2.NextOverflow")
+	assert.Equal(t, PageID(0), page3.ReadNextOverflow(), "page3.NextOverflow (end)")
+}
+
+func TestReadNextOverflowNonOverflowPage(t *testing.T) {
+	t.Parallel()
+
+	var page Page
+
+	// Write non-overflow page (leaf)
+	header := PageHeader{
+		PageID:  1,
+		Flags:   LeafPageFlag,
+		NumKeys: 0,
+		TxnID:   1,
+	}
+	page.WriteHeader(&header)
+
+	// Write data at end (where next overflow pointer would be)
+	page.WriteNextOverflow(999)
+
+	// ReadNextOverflow should return 0 for non-overflow pages
+	nextID := page.ReadNextOverflow()
+	assert.Equal(t, PageID(0), nextID, "ReadNextOverflow on non-overflow page should return 0")
 }

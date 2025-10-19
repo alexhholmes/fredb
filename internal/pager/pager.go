@@ -286,7 +286,7 @@ func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
 		Dirty:  false,
 	}
 
-	if err = node.Deserialize(page); err != nil {
+	if err = node.Deserialize(page, p.store.ReadPage); err != nil {
 		return nil, err
 	}
 
@@ -392,6 +392,26 @@ func (p *Pager) WriteTransaction(
 	txnID uint64,
 	syncMode SyncMode,
 ) error {
+	// Track overflow pages allocated during serialization
+	overflowPages := make(map[base.PageID]*base.Page)
+
+	// Callback for allocating overflow pages
+	allocPage := func() *base.Page {
+		pageID, err := p.AssignPageID()
+		if err != nil {
+			return nil
+		}
+
+		page := &base.Page{}
+		header := &base.PageHeader{
+			PageID: pageID,
+		}
+		page.WriteHeader(header)
+
+		overflowPages[pageID] = page
+		return page
+	}
+
 	// Write all pages to disk
 	var buf []byte
 	if store, ok := p.store.(*storage.DirectIO); ok {
@@ -403,7 +423,7 @@ func (p *Pager) WriteTransaction(
 	}
 	for _, node := range pages {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		if err := node.Serialize(txnID, page); err != nil {
+		if err := node.Serialize(txnID, page, allocPage); err != nil {
 			return err
 		}
 
@@ -418,7 +438,7 @@ func (p *Pager) WriteTransaction(
 	// Write root separately if dirty
 	if root != nil && root.Dirty {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		err := root.Serialize(txnID, page)
+		err := root.Serialize(txnID, page, allocPage)
 		if err != nil {
 			return err
 		}
@@ -429,6 +449,13 @@ func (p *Pager) WriteTransaction(
 
 		root.Dirty = false
 		p.cache.Put(root.PageID, root)
+	}
+
+	// Write overflow pages to disk
+	for pageID, overflowPage := range overflowPages {
+		if err := p.store.WritePage(pageID, overflowPage); err != nil {
+			return err
+		}
 	}
 
 	// Add freed pages to pending
