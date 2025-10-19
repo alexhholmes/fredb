@@ -43,6 +43,9 @@ type Pager struct {
 	buckets   sync.Map                 // Bucket root PageID -> atomic.Int32 ref count
 	DeletedMu sync.RWMutex             // Protects Deleted map
 	Deleted   map[base.PageID]struct{} // Buckets pending deletion, 0 ref count
+
+	// Track background cleanup goroutines to wait for them during close
+	cleanup sync.WaitGroup
 }
 
 // NewPager creates a pager with injected dependencies
@@ -564,7 +567,9 @@ func (p *Pager) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.PageID) 
 			p.DeletedMu.Unlock()
 
 			// Trigger background cleanup
+			p.cleanup.Add(1)
 			go func() {
+				defer p.cleanup.Done()
 				_ = cleanupFunc(rootID)
 			}()
 		} else {
@@ -578,6 +583,9 @@ func (p *Pager) ReleaseBucket(rootID base.PageID, cleanupFunc func(base.PageID) 
 
 // Close serializes freelist to disk and closes the file
 func (p *Pager) Close() error {
+	// Wait for all background cleanup goroutines to complete
+	p.cleanup.Wait()
+
 	// Get active meta for reading
 	meta := p.active.Load().Meta
 
