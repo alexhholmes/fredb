@@ -25,12 +25,10 @@ const (
 )
 
 type DB struct {
-	mu     sync.Mutex // Lock only for writers
-	pager  *pager.Pager
-	closed atomic.Bool // Database closed flag
-
-	cache *cache.Cache    // Page cache
-	store storage.Storage // Underlying storage
+	mu    sync.Mutex // Lock only for writers
+	pager *pager.Pager
+	cache *cache.Cache
+	store storage.Storage
 
 	// Transaction state
 	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
@@ -39,6 +37,9 @@ type DB struct {
 	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
+
+	closed atomic.Bool    // Database closed flag
+	txWg   sync.WaitGroup // Track active transactions for graceful shutdown
 }
 
 func Open(path string, options ...DBOption) (*DB, error) {
@@ -364,6 +365,15 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is rolled back (read-only).
 func (db *DB) View(fn func(*Tx) error) error {
+	// Check if closing before tracking transaction
+	if db.closed.Load() {
+		return ErrDatabaseClosed
+	}
+
+	// Track active transaction for graceful shutdown
+	db.txWg.Add(1)
+	defer db.txWg.Done()
+
 	tx, err := db.Begin(false)
 	if err != nil {
 		return err
@@ -379,6 +389,15 @@ func (db *DB) View(fn func(*Tx) error) error {
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is committed.
 func (db *DB) Update(fn func(*Tx) error) error {
+	// Check if closing before tracking transaction
+	if db.closed.Load() {
+		return ErrDatabaseClosed
+	}
+
+	// Track active transaction for graceful shutdown
+	db.txWg.Add(1)
+	defer db.txWg.Done()
+
 	tx, err := db.Begin(true)
 	if err != nil {
 		return err
@@ -398,8 +417,11 @@ func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Mark database as closed
+	// Mark database as closed - new transactions will fail
 	db.closed.Store(true)
+
+	// Wait for all active transactions to complete
+	db.txWg.Wait()
 
 	// Release all pending pages
 	db.pager.ReleasePages(math.MaxUint64)
