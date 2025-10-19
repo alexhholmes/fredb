@@ -113,7 +113,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	if bucket == nil {
 		return ErrBucketNotFound
 	}
-	return bucket.putDirect(key, value)
+	return bucket.Put(key, value)
 }
 
 // Delete removes a key from the default bucket.
@@ -797,12 +797,16 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 		if err != nil {
 			return nil, nil, err
 		}
-		parent, err = tx.mergeNodes(leftSibling, child, parent, childIdx-1)
+		parent, merged, err := tx.mergeNodes(leftSibling, child, parent, childIdx-1)
 		if err != nil {
 			return nil, nil, err
 		}
-		// After merge, child is absorbed into leftSibling, so return leftSibling as the "child"
-		return parent, leftSibling, nil
+		if merged {
+			// After merge, child is absorbed into leftSibling, so return leftSibling as the "child"
+			return parent, leftSibling, nil
+		}
+		// Redistributed - both nodes remain, child is still at childIdx
+		return parent, child, nil
 	}
 
 	// Merge with right sibling
@@ -810,11 +814,11 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	parent, err = tx.mergeNodes(child, rightSibling, parent, childIdx)
+	parent, _, err = tx.mergeNodes(child, rightSibling, parent, childIdx)
 	if err != nil {
 		return nil, nil, err
 	}
-	// After merge, rightSibling is absorbed into child, child remains
+	// After merge (or redistribution), child remains as the result node
 	return parent, child, nil
 }
 
@@ -873,17 +877,24 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 }
 
 // mergeNodes merges two nodes with COW semantics
-func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, error) {
+// Returns (parent, merged, error) where merged=true if nodes were actually merged, false if redistributed
+func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, bool, error) {
 	// COW left node (will receive merged content)
 	leftNode, err := tx.ensureWritable(leftNode)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	// COW parent (will have separator removed)
+	// COW right node (may need it for redistribution)
+	rightNode, err = tx.ensureWritable(rightNode)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// COW parent (will have separator removed or updated)
 	parent, err = tx.ensureWritable(parent)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Try merging - check if result would overflow
@@ -896,10 +907,17 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	}
 
 	if mergedSize > base.PageSize {
-		// Merge would overflow - skip merge and allow underflow
-		// This is acceptable for large key/value scenarios
-		// The nodes will remain separate even though they're below MinKeysPerNode
-		return parent, nil
+		// Merge would overflow - redistribute keys to balance nodes instead
+		// This keeps both nodes valid (above MinKeysPerNode if possible)
+		// without violating page size constraints
+		err := tx.redistributeNodes(leftNode, rightNode, parent, parentKeyIdx)
+		if err != nil {
+			return nil, false, err
+		}
+		// Update parent's child pointers (both nodes remain)
+		parent.Children[parentKeyIdx] = leftNode.PageID
+		parent.Children[parentKeyIdx+1] = rightNode.PageID
+		return parent, false, nil // false = redistributed, not merged
 	}
 
 	algo.MergeNodes(leftNode, rightNode, parent.Keys[parentKeyIdx])
@@ -910,7 +928,88 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	// Track right node as freed
 	tx.addFreed(rightNode.PageID)
 
-	return parent, nil
+	return parent, true, nil // true = actually merged
+}
+
+// redistributeNodes redistributes keys evenly between two siblings when merge would overflow
+// This is called when both nodes are underflow but merging them would exceed page size
+func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) error {
+	// Collect all keys/values from both siblings
+	totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
+
+	// Calculate target split point (aim for even distribution)
+	leftCount := totalKeys / 2
+
+	if leftNode.IsLeaf() {
+		// Combine all keys and values
+		allKeys := make([][]byte, 0, totalKeys)
+		allValues := make([][]byte, 0, totalKeys)
+
+		allKeys = append(allKeys, leftNode.Keys[:leftNode.NumKeys]...)
+		allKeys = append(allKeys, rightNode.Keys[:rightNode.NumKeys]...)
+		allValues = append(allValues, leftNode.Values[:leftNode.NumKeys]...)
+		allValues = append(allValues, rightNode.Values[:rightNode.NumKeys]...)
+
+		// Split evenly
+		leftNode.NumKeys = uint16(leftCount)
+		leftNode.Keys = make([][]byte, leftCount)
+		leftNode.Values = make([][]byte, leftCount)
+		copy(leftNode.Keys, allKeys[:leftCount])
+		copy(leftNode.Values, allValues[:leftCount])
+
+		rightCount := totalKeys - leftCount
+		rightNode.NumKeys = uint16(rightCount)
+		rightNode.Keys = make([][]byte, rightCount)
+		rightNode.Values = make([][]byte, rightCount)
+		copy(rightNode.Keys, allKeys[leftCount:])
+		copy(rightNode.Values, allValues[leftCount:])
+
+		// Update parent separator to first key of right node
+		parent.Keys[parentKeyIdx] = rightNode.Keys[0]
+	} else {
+		// Branch node: include parent separator key in redistribution
+		allKeys := make([][]byte, 0, totalKeys+1)
+		allChildren := make([]base.PageID, 0, totalKeys+2)
+
+		// Left node keys and children
+		allKeys = append(allKeys, leftNode.Keys[:leftNode.NumKeys]...)
+		allChildren = append(allChildren, leftNode.Children[:leftNode.NumKeys+1]...)
+
+		// Parent separator
+		allKeys = append(allKeys, parent.Keys[parentKeyIdx])
+
+		// Right node keys and children (skip first child, already included)
+		allKeys = append(allKeys, rightNode.Keys[:rightNode.NumKeys]...)
+		allChildren = append(allChildren, rightNode.Children[1:rightNode.NumKeys+1]...)
+
+		// Find split point
+		splitIdx := leftCount
+
+		// Split keys (separator goes to parent)
+		newSeparator := allKeys[splitIdx]
+
+		leftNode.NumKeys = uint16(splitIdx)
+		leftNode.Keys = make([][]byte, splitIdx)
+		leftNode.Children = make([]base.PageID, splitIdx+1)
+		copy(leftNode.Keys, allKeys[:splitIdx])
+		copy(leftNode.Children, allChildren[:splitIdx+1])
+
+		rightCount := totalKeys - splitIdx
+		rightNode.NumKeys = uint16(rightCount)
+		rightNode.Keys = make([][]byte, rightCount)
+		rightNode.Children = make([]base.PageID, rightCount+1)
+		copy(rightNode.Keys, allKeys[splitIdx+1:])
+		copy(rightNode.Children, allChildren[splitIdx+1:])
+
+		// Update parent separator
+		parent.Keys[parentKeyIdx] = newSeparator
+	}
+
+	leftNode.Dirty = true
+	rightNode.Dirty = true
+	parent.Dirty = true
+
+	return nil
 }
 
 // Bucket returns an existing bucket or nil

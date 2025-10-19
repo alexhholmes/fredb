@@ -58,11 +58,6 @@ func (b *Bucket) Put(key, value []byte) error {
 		return ErrTxNotWritable
 	}
 
-	return b.putDirect(key, value)
-}
-
-// putDirect writes directly to the tree (bypasses buffer)
-func (b *Bucket) putDirect(key, value []byte) error {
 	// Validate key/value size (same as Put)
 	if len(key) > MaxKeySize {
 		return ErrKeyTooLarge
