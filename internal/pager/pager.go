@@ -489,35 +489,32 @@ func (p *Pager) CommitTransaction(
 // Returns false if the bucket is marked for deletion (new transactions cannot access it).
 // Returns true if successfully acquired.
 func (p *Pager) AcquireBucket(rootID base.PageID) bool {
-	// Quick check before acquiring lock
-	if _, deleted := p.Deleted[rootID]; deleted {
-		return false // Bucket is pending deletion, reject new access
-	}
-
-	p.DeletedMu.RLock()
-	defer p.DeletedMu.RUnlock()
-
-	// Check if bucket is marked for deletion WHILE holding read lock
-	if _, deleted := p.Deleted[rootID]; deleted {
-		return false // Bucket is pending deletion, reject new access
-	}
-
-	// Increment reference count while still holding the lock
-	// This prevents the bucket from being marked deleted between check and increment
+	// Optimistic: increment refcount first (fast path, no lock)
 	counter := &atomic.Int32{}
 	counter.Store(1)
-	refCount, loaded := p.buckets.LoadOrStore(rootID, counter)
-	if loaded {
-		// Increment the reference count
-		atomic := refCount.(*atomic.Int32)
-		atomic.Add(1)
+	refCountVal, loaded := p.buckets.LoadOrStore(rootID, counter)
 
-		// Verify the bucket wasn't deleted/replaced after we incremented
-		if currentRefCount, ok := p.buckets.Load(rootID); !ok || currentRefCount != refCount {
-			// Bucket was deleted or replaced - undo our increment
-			atomic.Add(-1)
-			return false
+	var refCount *atomic.Int32
+	if loaded {
+		refCount = refCountVal.(*atomic.Int32)
+		refCount.Add(1)
+	} else {
+		refCount = counter
+	}
+
+	// Verify bucket not marked for deletion (RLock for concurrent acquires)
+	p.DeletedMu.RLock()
+	_, deleted := p.Deleted[rootID]
+	p.DeletedMu.RUnlock()
+
+	if deleted {
+		// Bucket is deleted - rollback our increment
+		newCount := refCount.Add(-1)
+		// Clean up sync.Map entry if we decremented to zero
+		if newCount == 0 {
+			p.buckets.Delete(rootID)
 		}
+		return false
 	}
 
 	return true
