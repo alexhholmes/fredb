@@ -14,14 +14,9 @@ type Node struct {
 	PageID PageID
 	Dirty  bool
 
-	// PageData references the original Page.Data for clean nodes (zero-copy)
-	// nil for dirty nodes that own their key/value allocations
-	// For DirectIO: this is the pooled buffer that must be returned on eviction
-	PageData []byte
-
 	// Decoded Node data
 	NumKeys  uint16
-	Keys     [][]byte // Slices into PageData (clean) or allocated (dirty)
+	Keys     [][]byte // Allocated copies
 	Values   [][]byte // If nil, this is a branch Node
 	Children []PageID
 
@@ -107,13 +102,12 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 	return nil
 }
 
-// Deserialize decodes the Page data into Node fields (zero-copy)
+// Deserialize decodes the Page data into Node fields
 func (n *Node) Deserialize(p *Page) error {
 	header := p.Header()
 	n.PageID = header.PageID
 	n.NumKeys = header.NumKeys
 	n.Dirty = false
-	n.PageData = p.Data[:] // Reference to page data for zero-copy
 
 	if (header.Flags & LeafPageFlag) != 0 {
 		// Deserialize leaf Node
@@ -127,9 +121,12 @@ func (n *Node) Deserialize(p *Page) error {
 		for i := 0; i < int(n.NumKeys); i++ {
 			elem := elements[i]
 
-			// Zero-copy: slice directly into PageData
-			n.Keys[i] = n.PageData[elem.KeyOffset : elem.KeyOffset+elem.KeySize]
-			n.Values[i] = n.PageData[elem.ValueOffset : elem.ValueOffset+elem.ValueSize]
+			// Copy keys and values to independent allocations
+			n.Keys[i] = make([]byte, elem.KeySize)
+			copy(n.Keys[i], p.Data[elem.KeyOffset:elem.KeyOffset+elem.KeySize])
+
+			n.Values[i] = make([]byte, elem.ValueSize)
+			copy(n.Values[i], p.Data[elem.ValueOffset:elem.ValueOffset+elem.ValueSize])
 		}
 	} else {
 		// Deserialize branch Node (B+ tree: only Keys, no Values)
@@ -144,8 +141,9 @@ func (n *Node) Deserialize(p *Page) error {
 		for i := 0; i < int(n.NumKeys); i++ {
 			elem := elements[i]
 
-			// Zero-copy: slice directly into PageData
-			n.Keys[i] = n.PageData[elem.KeyOffset : elem.KeyOffset+elem.KeySize]
+			// Copy keys to independent allocations
+			n.Keys[i] = make([]byte, elem.KeySize)
+			copy(n.Keys[i], p.Data[elem.KeyOffset:elem.KeyOffset+elem.KeySize])
 
 			// Copy child pointer
 			n.Children[i+1] = elem.ChildID
@@ -175,40 +173,26 @@ func (n *Node) Clone() *Node {
 	cloned := &Node{
 		PageID:   0,
 		Dirty:    true,
-		PageData: nil, // Dirty nodes never reference page
 		NumKeys:  n.NumKeys,
 		NextLeaf: n.NextLeaf,
 		PrevLeaf: n.PrevLeaf,
 	}
 
-	// If source is clean (PageData != nil), Keys/Values point into PageData
-	// Must allocate new []byte since dirty node will be mutated
-	if n.PageData != nil {
-		// Deep copy Keys - allocate new backing arrays
-		cloned.Keys = make([][]byte, len(n.Keys))
-		for i, key := range n.Keys {
-			newKey := make([]byte, len(key))
-			copy(newKey, key)
-			cloned.Keys[i] = newKey
-		}
+	// Deep copy Keys - allocate new backing arrays
+	cloned.Keys = make([][]byte, len(n.Keys))
+	for i, key := range n.Keys {
+		newKey := make([]byte, len(key))
+		copy(newKey, key)
+		cloned.Keys[i] = newKey
+	}
 
-		// Deep copy Values (leaf nodes only)
-		if n.IsLeaf() && len(n.Values) > 0 {
-			cloned.Values = make([][]byte, len(n.Values))
-			for i, value := range n.Values {
-				newValue := make([]byte, len(value))
-				copy(newValue, value)
-				cloned.Values[i] = newValue
-			}
-		}
-	} else {
-		// Source already dirty, shallow copy OK (slices already independent)
-		cloned.Keys = make([][]byte, len(n.Keys))
-		copy(cloned.Keys, n.Keys)
-
-		if n.IsLeaf() && len(n.Values) > 0 {
-			cloned.Values = make([][]byte, len(n.Values))
-			copy(cloned.Values, n.Values)
+	// Deep copy Values (leaf nodes only)
+	if n.IsLeaf() && len(n.Values) > 0 {
+		cloned.Values = make([][]byte, len(n.Values))
+		for i, value := range n.Values {
+			newValue := make([]byte, len(value))
+			copy(newValue, value)
+			cloned.Values[i] = newValue
 		}
 	}
 

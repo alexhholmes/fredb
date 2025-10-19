@@ -61,18 +61,8 @@ func Open(path string, options ...DBOption) (*DB, error) {
 		return nil, err
 	}
 
-	// Create cache with eviction callback for DirectIO buffer pooling
-	var onEvict func(base.PageID, *base.Node)
-	if directIO, ok := store.(*storage.DirectIO); ok {
-		onEvict = func(_ base.PageID, n *base.Node) {
-			// Return pooled buffer to DirectIO pool
-			// pageData is the pooled buffer for clean nodes
-			if n.PageData != nil && !n.Dirty {
-				directIO.PutBuffer(n.PageData)
-			}
-		}
-	}
-	c := cache.NewCache(opts.maxCacheSizeMB*256, onEvict)
+	// Create cache (no eviction callback needed - nodes own their allocations)
+	c := cache.NewCache(opts.maxCacheSizeMB*256, nil)
 
 	// Create pg with dependencies
 	pg, err := pager.NewPager(store, c)
