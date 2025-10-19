@@ -32,7 +32,6 @@ type DB struct {
 
 	// Transaction state
 	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
-	readers     sync.Map               // Fallback for unbounded readers (used when readerSlots == nil)
 	readerSlots *readslots.ReaderSlots // Fixed-size slots (nil if maxReaders == 0)
 	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
@@ -250,10 +249,10 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
 
 	// Initialize reader tracking based on maxReaders option
-	if opts.maxReaders > 0 {
-		db.readerSlots = readslots.NewReaderSlots(opts.maxReaders)
+	if opts.maxReaders < 1 {
+		return nil, ErrInvalidMaxReaders
 	}
-	// else: readerSlots stays nil, use sync.Map fallback
+	db.readerSlots = readslots.NewReaderSlots(opts.maxReaders)
 
 	return db, nil
 }
@@ -346,17 +345,13 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		done:     false,
 	}
 
-	// Register reader using hybrid approach
-	if db.readerSlots != nil {
-		slot, err := db.readerSlots.Register(tx.txID)
-		if err != nil {
-			return nil, err
-		}
-		tx.readerSlot = slot
-		tx.usedSlot = true
-	} else {
-		db.readers.Store(tx, struct{}{})
+	// Register reader in a slot
+	slot, err := db.readerSlots.Register(tx.txID)
+	if err != nil {
+		return nil, err
 	}
+	tx.readerSlot = slot
+	tx.usedSlot = true
 
 	return tx, nil
 }
@@ -468,22 +463,10 @@ func (db *DB) tryReleasePages() {
 		}
 	}
 
-	// Get minimum reader txID using hybrid approach
-	if db.readerSlots != nil {
-		// Fixed slots: O(N) scan where N is bounded
-		readerMinTxID := db.readerSlots.GetMinTxID()
-		if readerMinTxID < minTxID {
-			minTxID = readerMinTxID
-		}
-	} else {
-		// Unbounded: scan sync.Map
-		db.readers.Range(func(key, value interface{}) bool {
-			tx := key.(*Tx)
-			if tx.txID < minTxID {
-				minTxID = tx.txID
-			}
-			return true
-		})
+	// Fixed slots: O(N) scan where N is bounded
+	readerMinTxID := db.readerSlots.GetMinTxID()
+	if readerMinTxID < minTxID {
+		minTxID = readerMinTxID
 	}
 
 	db.pager.ReleasePages(minTxID)

@@ -358,12 +358,7 @@ func (tx *Tx) Rollback() error {
 
 		tx.db.tryReleasePages()
 	} else {
-		// Readers: hybrid unregistration
-		if tx.usedSlot {
-			tx.db.readerSlots.Unregister(tx.readerSlot)
-		} else {
-			tx.db.readers.Delete(tx)
-		}
+		tx.db.readerSlots.Unregister(tx.readerSlot)
 		// Page release is lazy - next writer will handle it
 	}
 
