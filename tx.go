@@ -402,20 +402,10 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 	if pageID == 0 {
 		return
 	}
-	// Skip virtual page IDs - they were never real pages, so don't free them
-	if int64(pageID) < 0 {
-		return
-	}
 
-	// Check if page was allocated in THIS transaction (from freelist OR fresh allocation)
-	// If so, don't free it - it was never committed, so doesn't belong in freelist
-	if _, inThisTx := tx.allocated[pageID]; inThisTx {
-		// Page allocated in this tx - don't free (avoid double-free or freeing uncommitted pages)
-		return
+	if freshPage := tx.allocated[pageID]; freshPage {
+		tx.freed[pageID] = struct{}{}
 	}
-
-	// Otherwise, page is from a previous transaction - safe to free
-	tx.freed[pageID] = struct{}{}
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
