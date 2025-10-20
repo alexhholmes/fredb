@@ -177,7 +177,6 @@ func (tx *Tx) Commit() error {
 		syncMode = pager.SyncOff
 	}
 
-	// Phase 2: Now insert bucket metadata with REAL page IDs into root tree
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
 			key := []byte(name)
@@ -222,11 +221,8 @@ func (tx *Tx) Commit() error {
 				root = newRoot
 			}
 
-			// Insert with recursive COW - retry until success or non-overflow error
-			// This handles cascading splits when parent nodes also overflow
-			maxRetries := 20 // Prevent infinite loops
-
-			for attempt := 0; attempt < maxRetries; attempt++ {
+			// Insert with recursive CoW - retry until success
+			for {
 				newRoot, err := tx.insertNonFull(root, key, value)
 				if !errors.Is(err, ErrPageOverflow) {
 					// Either success or non-recoverable error
