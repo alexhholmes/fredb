@@ -487,13 +487,17 @@ func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64, allocPage fu
 			if err := node.Serialize(txID, page, allocPage); err != nil {
 				return err
 			}
-
-			node.Dirty = false
-			p.cache.Put(node.PageID, node)
 		}
+
 		// Write all at once
 		if err := p.store.WriteAt(run[0].PageID, bigBuf); err != nil {
 			return err
+		}
+
+		// Mark clean and cache only after successful write
+		for _, node := range run {
+			node.Dirty = false
+			p.cache.Put(node.PageID, node)
 		}
 	}
 
