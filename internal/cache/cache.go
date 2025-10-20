@@ -26,7 +26,7 @@ const (
 )
 
 // NewCache creates a new Page cache with the specified maximum size
-func NewCache(size int, onEvict func(base.PageID, *base.Node)) *Cache {
+func NewCache(size int, _ func(base.PageID, *base.Node)) *Cache {
 	hash := func(s base.PageID) uint32 {
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:], uint64(s))
@@ -39,21 +39,20 @@ func NewCache(size int, onEvict func(base.PageID, *base.Node)) *Cache {
 		panic(err)
 	}
 
-	if onEvict != nil {
-		lru.SetOnEvict(onEvict)
-	}
-
-	return &Cache{
+	c := &Cache{
 		lru: *lru,
 	}
+
+	lru.SetOnEvict(func(id base.PageID, node *base.Node) {
+		c.evictions.Add(1)
+	})
+
+	return c
 }
 
 // Put adds a node to the cache, replacing any existing entry for the id.
 func (c *Cache) Put(pageID base.PageID, node *base.Node) {
-	evicted := c.lru.Add(pageID, node)
-	if evicted {
-		c.evictions.Add(1)
-	}
+	c.lru.Add(pageID, node)
 }
 
 // Get retrieves a node from the cache.
