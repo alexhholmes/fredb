@@ -2,7 +2,7 @@ package cache
 
 import (
 	"encoding/binary"
-	"sync/atomic"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/elastic/go-freelru"
@@ -14,11 +14,6 @@ import (
 // disk I/O.
 type Cache struct {
 	lru freelru.ShardedLRU[base.PageID, *base.Node] // LRU list of *entry
-
-	// Stats
-	hits      atomic.Uint64
-	misses    atomic.Uint64
-	evictions atomic.Uint64
 }
 
 const (
@@ -43,26 +38,20 @@ func NewCache(size int, _ func(base.PageID, *base.Node)) *Cache {
 		lru: *lru,
 	}
 
-	lru.SetOnEvict(func(id base.PageID, node *base.Node) {
-		c.evictions.Add(1)
-	})
-
 	return c
 }
 
 // Put adds a node to the cache, replacing any existing entry for the id.
 func (c *Cache) Put(pageID base.PageID, node *base.Node) {
-	c.lru.Add(pageID, node)
+	c.lru.AddWithLifetime(pageID, node, 10000*time.Millisecond)
 }
 
 // Get retrieves a node from the cache.
 // Returns (Node, true) on cache hit, (nil, false) on miss.
 func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
-	if val, ok := c.lru.Get(pageID); ok {
-		c.hits.Add(1)
+	if val, ok := c.lru.GetAndRefresh(pageID, 20000*time.Millisecond); ok {
 		return val, true
 	}
-	c.misses.Add(1)
 	return nil, false
 }
 
@@ -77,17 +66,9 @@ func (c *Cache) Size() int {
 	return c.lru.Len()
 }
 
-type Stats struct {
-	Hits      uint64
-	Misses    uint64
-	Evictions uint64
-}
+type Stats freelru.Metrics
 
 // Stats returns cache statistics
 func (c *Cache) Stats() Stats {
-	return Stats{
-		Hits:      c.hits.Load(),
-		Misses:    c.misses.Load(),
-		Evictions: c.evictions.Load(),
-	}
+	return Stats(c.lru.Metrics())
 }
