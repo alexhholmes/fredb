@@ -6,8 +6,11 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/google/btree"
+
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/cache"
+	"github.com/alexhholmes/fredb/internal/directio"
 	"github.com/alexhholmes/fredb/internal/storage"
 )
 
@@ -318,10 +321,10 @@ func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, bool) {
 // This is phase 2 of commit: writing pages with real IDs to disk.
 // Caller must hold db.mu.
 func (p *Pager) WriteTransaction(
-	pages map[base.PageID]*base.Node,
+	pages *btree.BTreeG[*base.Node],
 	root *base.Node,
 	freed map[base.PageID]struct{},
-	txnID uint64,
+	txID uint64,
 	syncMode SyncMode,
 ) error {
 	// Track overflow pages allocated during serialization
@@ -352,24 +355,57 @@ func (p *Pager) WriteTransaction(
 		// MMap can use normal buffers
 		buf = make([]byte, base.PageSize)
 	}
-	for _, node := range pages {
-		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		if err := node.Serialize(txnID, page, allocPage); err != nil {
+
+	if pages.Len() == 1 {
+		// Special case: single page - avoid run logic
+		single, _ := pages.Min()
+		if err := p.WriteRun([]*base.Node{single}, buf, txID, allocPage); err != nil {
 			return err
 		}
+	}
 
-		if err := p.store.WritePage(node.PageID, page); err != nil {
-			return err
+	// Ascend the btree, forming contiguous runs of nodes to write at once
+	var err error
+	run := make([]*base.Node, 0, pages.Len())
+	pages.Ascend(func(item *base.Node) bool {
+		if len(run) == 0 {
+			run = append(run, item)
+			return true
 		}
 
-		node.Dirty = false
-		p.cache.Put(node.PageID, node)
+		// Check if current item is contiguous with last in run
+		last := run[len(run)-1]
+		if item.PageID == last.PageID+1 {
+			run = append(run, item)
+			return true
+		}
+
+		// Write current run to disk
+		err = p.WriteRun(run, buf, txID, allocPage)
+		if err != nil {
+			return false
+		}
+
+		// Start new run with current item
+		run = run[:0]
+		run = append(run, item)
+		return true
+	})
+	if err != nil {
+		return err
+	}
+
+	// Write any remaining run
+	if len(run) > 0 {
+		if err = p.WriteRun(run, buf, txID, allocPage); err != nil {
+			return err
+		}
 	}
 
 	// Write root separately if dirty
 	if root != nil && root.Dirty {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		err := root.Serialize(txnID, page, allocPage)
+		err = root.Serialize(txID, page, allocPage)
 		if err != nil {
 			return err
 		}
@@ -395,7 +431,7 @@ func (p *Pager) WriteTransaction(
 		for pageID := range freed {
 			freedSlice = append(freedSlice, pageID)
 		}
-		p.freelist.Pending(txnID, freedSlice)
+		p.freelist.Pending(txID, freedSlice)
 	}
 
 	// Update meta
@@ -403,22 +439,63 @@ func (p *Pager) WriteTransaction(
 	if root != nil {
 		meta.RootPageID = root.PageID
 	}
-	meta.TxID = txnID
+	meta.TxID = txID
 	meta.Checksum = meta.CalculateChecksum()
 
-	if err := p.PutSnapshot(meta, root); err != nil {
+	if err = p.PutSnapshot(meta, root); err != nil {
 		return err
 	}
 
 	// Conditional sync (this is the commit point!)
 	if syncMode == SyncEveryCommit {
-		if err := p.store.Sync(); err != nil {
+		if err = p.store.Sync(); err != nil {
 			return err
 		}
 	}
 
 	// Make meta visible to readers atomically
 	p.CommitSnapshot()
+
+	return nil
+}
+
+func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64, allocPage func() *base.Page) error {
+	// Write current run to disk
+	if len(run) == 1 {
+		node := run[0]
+		page := (*base.Page)(unsafe.Pointer(&buf[0]))
+		if err := node.Serialize(txID, page, allocPage); err != nil {
+			return err
+		}
+		if err := p.store.WritePage(node.PageID, page); err != nil {
+			return err
+		}
+
+		node.Dirty = false
+		p.cache.Put(node.PageID, node)
+	} else {
+		var bigBuf []byte
+		if _, ok := p.store.(*storage.DirectIO); ok {
+			// Ensure bigBuf is aligned for DirectIO
+			bigBuf = directio.AlignedBlock(len(run) * base.PageSize)
+		} else {
+			bigBuf = make([]byte, len(run)*base.PageSize)
+		}
+
+		for i, node := range run {
+			page := (*base.Page)(unsafe.Pointer(&bigBuf[i*base.PageSize]))
+			if err := node.Serialize(txID, page, allocPage); err != nil {
+				return err
+			}
+
+			node.Dirty = false
+			p.cache.Put(node.PageID, node)
+		}
+		// Write all at once
+		if err := p.store.WriteAt(run[0].PageID, bigBuf); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }

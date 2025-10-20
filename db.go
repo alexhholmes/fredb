@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/google/btree"
+
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/cache"
 	"github.com/alexhholmes/fredb/internal/pager"
@@ -296,11 +298,13 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 
 		// Create write transaction
 		tx := &Tx{
-			db:        db,
-			txID:      txnID,
-			writable:  true,
-			root:      snapshot.Root, // Atomic snapshot of root
-			pages:     make(map[base.PageID]*base.Node),
+			db:       db,
+			txID:     txnID,
+			writable: true,
+			root:     snapshot.Root, // Atomic snapshot of root
+			pages: btree.NewG[*base.Node](2, func(a, b *base.Node) bool {
+				return a.PageID < b.PageID
+			}),
 			acquired:  make(map[base.PageID]struct{}),
 			freed:     make(map[base.PageID]struct{}),
 			allocated: make(map[base.PageID]bool),

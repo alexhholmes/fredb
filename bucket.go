@@ -86,7 +86,7 @@ func (b *Bucket) Put(key, value []byte) error {
 
 		b.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 		// Add new root to tx.pages so it gets committed with real PageID
-		b.tx.pages[newRootID] = b.root
+		b.tx.pages.ReplaceOrInsert(b.root)
 	}
 
 	// Insert with retry logic (handle cascading splits)
@@ -114,7 +114,7 @@ func (b *Bucket) Put(key, value []byte) error {
 
 		b.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 		// Add new root to tx.pages so it gets committed with real PageID
-		b.tx.pages[newRootID] = b.root
+		b.tx.pages.ReplaceOrInsert(b.root)
 	}
 }
 

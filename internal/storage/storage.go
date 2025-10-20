@@ -8,6 +8,7 @@ import (
 type Storage interface {
 	ReadPage(id base.PageID) (*base.Page, error)
 	WritePage(id base.PageID, page *base.Page) error
+	WriteAt(id base.PageID, data []byte) error
 	Sync() error
 	Empty() (bool, error)
 	Close() error

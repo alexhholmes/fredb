@@ -75,13 +75,35 @@ func (d *DirectIO) WritePage(id base.PageID, page *base.Page) error {
 
 	offset := int64(id) * base.PageSize
 	d.writes.Add(1)
+
 	n, err := d.file.WriteAt(buf, offset)
+	defer d.written.Add(uint64(n))
 	if err != nil {
 		return err
 	}
-	d.written.Add(uint64(n))
 	if n != base.PageSize {
 		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, base.PageSize)
+	}
+
+	return nil
+}
+
+func (d *DirectIO) WriteAt(id base.PageID, data []byte) error {
+	// Check that data is a multiple of PageSize
+	if len(data)%base.PageSize != 0 {
+		return fmt.Errorf("data size %d is not a multiple of page size %d", len(data), base.PageSize)
+	}
+
+	offset := int64(id) * base.PageSize
+	d.writes.Add(1)
+
+	n, err := d.file.WriteAt(data, int64(offset))
+	defer d.written.Add(uint64(n))
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, len(data))
 	}
 
 	return nil

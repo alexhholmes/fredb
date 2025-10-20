@@ -136,6 +136,27 @@ func (m *MMap) WritePage(id base.PageID, page *base.Page) error {
 	return nil
 }
 
+func (m *MMap) WriteAt(id base.PageID, data []byte) error {
+	// Check that data is a multiple of PageSize
+	if len(data)%base.PageSize != 0 {
+		return fmt.Errorf("data size %d is not a multiple of page size %d", len(data), base.PageSize)
+	}
+
+	offset := int64(id) * base.PageSize
+	m.writes.Add(1)
+
+	n, err := m.file.WriteAt(data, offset)
+	defer m.written.Add(uint64(n))
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return fmt.Errorf("short write: wrote %d bytes, expected %d", n, len(data))
+	}
+
+	return nil
+}
+
 // growSize calculates new file size using BBolt's strategy
 func (m *MMap) growSize(minSize int64) int64 {
 	// Powers of 2: 32KB → 1GB

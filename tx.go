@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/google/btree"
+
 	"github.com/alexhholmes/fredb/internal/algo"
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/pager"
@@ -31,9 +33,9 @@ type Tx struct {
 	deletes  map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	// Page tracking
-	pages     map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed     map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
-	allocated map[base.PageID]bool       // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
+	pages     *btree.BTreeG[*base.Node] // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed     map[base.PageID]struct{}  // Pages freed in this transaction (for freelist)
+	allocated map[base.PageID]bool      // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
 
 	// Reader tracking
 	readerSlot int  // Slot index in readerSlots array (only for read-only transactions)
@@ -215,7 +217,7 @@ func (tx *Tx) Commit() error {
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
 				// Otherwise it won't get a real page ID allocated during WriteTransaction
 				if int64(newRootID) < 0 {
-					tx.pages[newRootID] = newRoot
+					tx.pages.ReplaceOrInsert(newRoot)
 				}
 
 				root = newRoot
@@ -245,7 +247,7 @@ func (tx *Tx) Commit() error {
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
 				// Otherwise it won't get a real page ID allocated during WriteTransaction
 				if int64(newRootID) < 0 {
-					tx.pages[newRootID] = newRoot2
+					tx.pages.ReplaceOrInsert(newRoot2)
 				}
 
 				root = newRoot2
@@ -316,10 +318,6 @@ func (tx *Tx) Rollback() error {
 		tx.db.mu.Lock()
 		defer tx.db.mu.Unlock()
 
-		// Discard all transaction-local state
-		// Virtual pages were never allocated from Pager, so nothing to free
-		tx.pages = nil
-
 		tx.db.writer.Store(nil)
 
 		tx.db.tryReleasePages()
@@ -350,7 +348,7 @@ func (tx *Tx) check() error {
 // Returns a writable Node (either the original if already owned, or a Clone).
 func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// 1. Check TX-local cache first - if already COW'd in this transaction
-	if cloned, exists := tx.pages[node.PageID]; exists {
+	if cloned, exists := tx.pages.Get(node); exists {
 		return cloned, nil
 	}
 
@@ -359,7 +357,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	if int64(node.PageID) < 0 {
 		// Node already owned by this transaction, no COW needed
 		// But we still need to add it to tx.pages so it gets committed
-		tx.pages[node.PageID] = node
+		tx.pages.ReplaceOrInsert(node)
 		return node, nil
 	}
 
@@ -386,7 +384,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 
 	// Store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
-	tx.pages[pageID] = cloned
+	tx.pages.ReplaceOrInsert(cloned)
 
 	return cloned, nil
 }
@@ -447,7 +445,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	algo.TruncateLeft(child, sp)
 
 	// I/O: store right node in tx cache
-	tx.pages[nodeID] = node
+	tx.pages.ReplaceOrInsert(node)
 
 	return child, node, sp.SeparatorKey, []byte{}, nil
 }
@@ -456,7 +454,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
-		if node, exists := tx.pages[pageID]; exists {
+		if node, exists := tx.pages.Get(&base.Node{PageID: pageID}); exists {
 			return node, nil
 		}
 	}
@@ -1080,8 +1078,8 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	}
 
 	// Add nodes to transaction cache
-	tx.pages[bucketLeafID] = bucketLeaf
-	tx.pages[bucketRootID] = bucketRoot
+	tx.pages.ReplaceOrInsert(bucketLeaf)
+	tx.pages.ReplaceOrInsert(bucketRoot)
 
 	// Create and cache bucket
 	// NOTE: We don't persist metadata to root tree yet - that happens at Commit()
