@@ -283,6 +283,9 @@ func (db *DB) Delete(key []byte) error {
 }
 
 func (db *DB) Begin(writable bool) (*Tx, error) {
+	db.txWg.Add(1)
+	defer db.txWg.Done()
+
 	// Check if database is closed (lock-free atomic check)
 	if db.closed.Load() {
 		return nil, ErrDatabaseClosed
@@ -360,15 +363,13 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is rolled back (read-only).
 func (db *DB) View(fn func(*Tx) error) error {
+	db.txWg.Add(1)
+	defer db.txWg.Done()
+
 	// Atomically check closed flag and register transaction
-	db.mu.Lock()
 	if db.closed.Load() {
-		db.mu.Unlock()
 		return ErrDatabaseClosed
 	}
-	db.txWg.Add(1)
-	db.mu.Unlock()
-	defer db.txWg.Done()
 
 	tx, err := db.Begin(false)
 	if err != nil {
@@ -385,15 +386,13 @@ func (db *DB) View(fn func(*Tx) error) error {
 // If the function returns an error, the transaction is rolled back.
 // If the function returns nil, the transaction is committed.
 func (db *DB) Update(fn func(*Tx) error) error {
+	db.txWg.Add(1)
+	defer db.txWg.Done()
+
 	// Atomically check closed flag and register transaction
-	db.mu.Lock()
 	if db.closed.Load() {
-		db.mu.Unlock()
 		return ErrDatabaseClosed
 	}
-	db.txWg.Add(1)
-	db.mu.Unlock()
-	defer db.txWg.Done()
 
 	tx, err := db.Begin(true)
 	if err != nil {
