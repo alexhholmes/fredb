@@ -322,9 +322,11 @@ func (tx *Tx) Rollback() error {
 
 		tx.db.tryReleasePages()
 
-		// Release allocated pages - they were never committed
-		for pageID, _ := range tx.allocated {
-			tx.db.pager.FreePage(pageID)
+		// Return freelist pages back to freelist (fresh pages become holes)
+		for pageID, allocated := range tx.allocated {
+			if !allocated {
+				tx.db.pager.FreePage(pageID)
+			}
 		}
 	} else {
 		tx.db.readerSlots.Unregister(tx.readerSlot)
@@ -374,7 +376,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// Free all overflow chains in the old node
 	chains := node.FreeAllOverflowChains()
 	for _, chain := range chains {
-		for _, pageID := range chain {
+		for _, pageID = range chain {
 			tx.addFreed(pageID)
 		}
 	}
@@ -403,9 +405,8 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 		return
 	}
 
-	if freshPage := tx.allocated[pageID]; freshPage {
-		tx.freed[pageID] = struct{}{}
-	}
+	// Page is from a previous transaction - safe to free
+	tx.freed[pageID] = struct{}{}
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
@@ -746,13 +747,9 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 		if err != nil {
 			return nil, nil, err
 		}
-		parent, merged, err := tx.mergeNodes(leftSibling, child, parent, childIdx-1)
+		parent, _, err = tx.mergeNodes(leftSibling, child, parent, childIdx-1)
 		if err != nil {
 			return nil, nil, err
-		}
-		if merged {
-			// After merge, child is absorbed into leftSibling, so return leftSibling as the "child"
-			return parent, leftSibling, nil
 		}
 		// Redistributed - both nodes remain, child is still at childIdx
 		return parent, child, nil

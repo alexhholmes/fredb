@@ -430,7 +430,6 @@ func (db *DB) Stats() pager.Stats {
 }
 
 // tryReleasePages releases pages that are safe to reuse based on active transactions.
-// Hybrid approach: uses slots if bounded, else scans sync.Map
 func (db *DB) tryReleasePages() {
 	// Start with NEXT transaction ID (last assigned + 1)
 	minTxID := db.nextTxID.Load() + 1
@@ -442,9 +441,9 @@ func (db *DB) tryReleasePages() {
 		}
 	}
 
-	// Fixed slots: O(N) scan where N is bounded
+	// Check reader slots (returns 0 if no readers)
 	readerMinTxID := db.readerSlots.GetMinTxID()
-	if readerMinTxID < minTxID {
+	if readerMinTxID > 0 && readerMinTxID < minTxID {
 		minTxID = readerMinTxID
 	}
 
