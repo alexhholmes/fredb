@@ -185,24 +185,23 @@ func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
 }
 
 // AssignPageID allocates a new Page (from freelist or grows file)
-func (p *Pager) AssignPageID() (base.PageID, error) {
+func (p *Pager) AssignPageID() base.PageID {
 	// Try freelist first
 	id := p.freelist.Allocate()
 	if id != 0 {
-		return id, nil
+		return id
 	}
 
 	// Grow file - use atomic pages counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
 	id = base.PageID(p.pages.Add(1) - 1)
 
-	return id, nil
+	return id
 }
 
 // FreePage adds a Page to the freelist
-func (p *Pager) FreePage(id base.PageID) error {
+func (p *Pager) FreePage(id base.PageID) {
 	p.freelist.Free(id)
-	return nil
 }
 
 // ReleasePages moves pages from pending to free for all transactions < minTxnID
@@ -315,83 +314,6 @@ func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, bool) {
 	return node, true
 }
 
-// MapVirtualPageIDs allocates real page IDs for all virtual pages and updates node references.
-// This is phase 1 of commit: mapping virtual IDs to real IDs without writing to disk.
-// Returns a map of virtual->real page ID mappings.
-// Caller must hold db.mu.
-func (p *Pager) MapVirtualPageIDs(
-	pages map[base.PageID]*base.Node,
-	root *base.Node,
-) (map[base.PageID]base.PageID, error) {
-	// Pass 1: Allocate real page IDs for all virtual pages
-	virtualToReal := make(map[base.PageID]base.PageID)
-
-	for pageID := range pages {
-		if int64(pageID) < 0 { // Virtual page ID
-			realPageID, err := p.AssignPageID()
-			if err != nil {
-				// Rollback partial allocation
-				for _, allocated := range virtualToReal {
-					_ = p.FreePage(allocated)
-				}
-				return nil, err
-			}
-			virtualToReal[pageID] = realPageID
-		}
-	}
-
-	// Pass 2: Update nodes' PageID fields and remap child pointers
-	for pageID, node := range pages {
-		// Update this node's PageID if map key was virtual
-		if int64(pageID) < 0 {
-			if realID, exists := virtualToReal[pageID]; exists {
-				node.PageID = realID
-			}
-		}
-
-		// Defensive check for node.PageID itself
-		if int64(node.PageID) < 0 {
-			if realID, exists := virtualToReal[node.PageID]; exists {
-				node.PageID = realID
-			}
-		}
-
-		// Remap child pointers in branch nodes
-		if !node.IsLeaf() {
-			for i, childID := range node.Children {
-				if realID, isVirtual := virtualToReal[childID]; isVirtual {
-					node.Children[i] = realID
-				}
-			}
-		}
-	}
-
-	// Pass 3: Handle root separately
-	if root != nil && int64(root.PageID) < 0 {
-		realPageID, err := p.AssignPageID()
-		if err != nil {
-			// Rollback
-			for _, allocated := range virtualToReal {
-				_ = p.FreePage(allocated)
-			}
-			return nil, err
-		}
-		virtualToReal[root.PageID] = realPageID
-		root.PageID = realPageID
-	}
-
-	// Remap root's children pointers
-	if root != nil && !root.IsLeaf() {
-		for i, childID := range root.Children {
-			if realID, isVirtual := virtualToReal[childID]; isVirtual {
-				root.Children[i] = realID
-			}
-		}
-	}
-
-	return virtualToReal, nil
-}
-
 // WriteTransaction writes all pages to disk, handles freed pages, updates metadata, and syncs.
 // This is phase 2 of commit: writing pages with real IDs to disk.
 // Caller must hold db.mu.
@@ -407,10 +329,7 @@ func (p *Pager) WriteTransaction(
 
 	// Callback for allocating overflow pages
 	allocPage := func() *base.Page {
-		pageID, err := p.AssignPageID()
-		if err != nil {
-			return nil
-		}
+		pageID := p.AssignPageID()
 
 		page := &base.Page{}
 		header := &base.PageHeader{
@@ -500,26 +419,6 @@ func (p *Pager) WriteTransaction(
 	p.CommitSnapshot()
 
 	return nil
-}
-
-// CommitTransaction coordinates the full transaction commit (legacy compatibility).
-// This combines MapVirtualPageIDs and WriteTransaction into a single operation.
-// Preserved for backward compatibility.
-func (p *Pager) CommitTransaction(
-	pages map[base.PageID]*base.Node,
-	root *base.Node,
-	freed map[base.PageID]struct{},
-	txnID uint64,
-	syncMode SyncMode,
-) error {
-	// Phase 1: Map virtual to real page IDs
-	_, err := p.MapVirtualPageIDs(pages, root)
-	if err != nil {
-		return err
-	}
-
-	// Phase 2: Write everything to disk
-	return p.WriteTransaction(pages, root, freed, txnID, syncMode)
 }
 
 // AcquireBucket increments the reference count for a bucket's root page.

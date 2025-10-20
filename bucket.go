@@ -79,7 +79,7 @@ func (b *Bucket) Put(key, value []byte) error {
 			return err
 		}
 
-		newRootID, _, err := b.tx.allocatePage()
+		newRootID := b.tx.allocatePage()
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func (b *Bucket) Put(key, value []byte) error {
 			return err
 		}
 
-		newRootID, _, err := b.tx.allocatePage()
+		newRootID := b.tx.allocatePage()
 		if err != nil {
 			return err
 		}

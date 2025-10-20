@@ -20,22 +20,21 @@ import (
 type Tx struct {
 	txID     uint64 // Writers: unique ID, Readers: snapshot of last committed write
 	writable bool   // Is this a read-write transaction?
+	done     bool   // Has Commit() or Rollback() been called?
 
 	db   *DB        // Database this transaction belongs to (concrete type for internal access)
 	root *base.Node // Root Node at transaction start (stores bucket metadata)
 
-	buckets  map[string]*Bucket         // Cache of loaded buckets
-	acquired map[base.PageID]struct{}   // Buckets acquired from pager (need release)
-	pages    map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed    map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
-	deletes  map[string]base.PageID     // Root pages of buckets deleted in this transaction, for background cleanup upon commit
+	buckets   map[string]*Bucket         // Cache of loaded buckets
+	acquired  map[base.PageID]struct{}   // Buckets acquired from pager (need release)
+	pages     map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	allocated []base.PageID
+	freed     map[base.PageID]struct{} // Pages freed in this transaction (for freelist)
+	deletes   map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	// Reader tracking (for slot-based mode)
 	readerSlot int  // Slot index in readerSlots array (only for read-only transactions)
 	usedSlot   bool // Whether this reader used a slot (vs sync.Map)
-
-	nextVirtualID int64 // Starts at -1, decrements: -1, -2, -3, ...
-	done          bool  // Has Commit() or Rollback() been called?
 }
 
 // Get retrieves the value for a key from the default bucket.
@@ -175,20 +174,6 @@ func (tx *Tx) Commit() error {
 		syncMode = pager.SyncOff
 	}
 
-	// Phase 1: Map all virtual page IDs to real page IDs (no disk writes yet)
-	_, err := tx.db.pager.MapVirtualPageIDs(tx.pages, tx.root)
-	if err != nil {
-		return err
-	}
-
-	// CRITICAL: After MapVirtualPageIDs, nodes in tx.pages have been updated with real PageIDs,
-	// but the MAP is still keyed by the old virtual IDs. Rebuild the map with real PageIDs as keys.
-	remappedPages := make(map[base.PageID]*base.Node)
-	for _, node := range tx.pages {
-		remappedPages[node.PageID] = node
-	}
-	tx.pages = remappedPages
-
 	// Phase 2: Now insert bucket metadata with REAL page IDs into root tree
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
@@ -222,11 +207,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root using tx.allocatePage()
-				newRootID, _, err := tx.allocatePage()
-				if err != nil {
-					return err
-				}
-
+				newRootID := tx.allocatePage()
 				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -259,11 +240,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root
-				newRootID, _, err := tx.allocatePage()
-				if err != nil {
-					return err
-				}
-
+				newRootID := tx.allocatePage()
 				newRoot2 := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -281,23 +258,9 @@ func (tx *Tx) Commit() error {
 		}
 	}
 
-	// Phase 2b: Map any NEW virtual pages that were created during bucket metadata insertion
-	// These weren't present during Phase 1, so they need to be mapped now
-	_, err = tx.db.pager.MapVirtualPageIDs(tx.pages, tx.root)
-	if err != nil {
-		return err
-	}
-
-	// Rebuild the map again with the newly mapped real PageIDs
-	remappedPages = make(map[base.PageID]*base.Node)
-	for _, node := range tx.pages {
-		remappedPages[node.PageID] = node
-	}
-	tx.pages = remappedPages
-
 	// Phase 3: Write everything to disk in a single operation
 	// This handles: page writes, freed pages, meta update, sync (if needed), and CommitSnapshot
-	err = tx.db.pager.WriteTransaction(
+	err := tx.db.pager.WriteTransaction(
 		tx.pages,
 		tx.root,
 		tx.freed,
@@ -361,6 +324,11 @@ func (tx *Tx) Rollback() error {
 		tx.db.writer.Store(nil)
 
 		tx.db.tryReleasePages()
+
+		// Release allocated pages - they were never committed
+		for _, pageID := range tx.allocated {
+			tx.db.pager.FreePage(pageID)
+		}
 	} else {
 		tx.db.readerSlots.Unregister(tx.readerSlot)
 		// Page release is lazy - next writer will handle it
@@ -400,21 +368,11 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	cloned := node.Clone()
 
 	// Allocate new Page for cloned Node
-	pageID, _, err := tx.allocatePage()
-	if err != nil {
-		return nil, err
-	}
+	pageID := tx.allocatePage()
 
 	// Set up cloned Node with new Page
 	cloned.PageID = pageID
 	cloned.Dirty = true
-
-	// Don't Serialize here - let the caller modify the Node first
-	// The caller will Serialize after modifications
-
-	// Track old Page and its overflow chains as freed
-	// These pages will be added to freelist's pending list on commit
-	// and reclaimed when all readers that might reference them have finished
 
 	// Free all overflow chains in the old node
 	chains := node.FreeAllOverflowChains()
@@ -427,7 +385,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	// Free the node page itself
 	tx.addFreed(node.PageID)
 
-	// store in TX-LOCAL cache (NOT global cache yet)
+	// Store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
 	tx.pages[pageID] = cloned
 
@@ -435,15 +393,10 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 }
 
 // Allocates a new Page for this transaction.
-// Returns a virtual page ID (negative) that will be mapped to a real page at commit time.
-func (tx *Tx) allocatePage() (base.PageID, *base.Page, error) {
-	// Generate virtual page ID (negative number)
-	// These are transaction-local and never touch Pager until commit
-	virtualID := base.PageID(tx.nextVirtualID)
-	tx.nextVirtualID--
-
-	// Return empty page (will be written at commit time with real page ID)
-	return virtualID, &base.Page{}, nil
+func (tx *Tx) allocatePage() base.PageID {
+	id := tx.db.pager.AssignPageID()
+	tx.allocated = append(tx.allocated, id)
+	return id
 }
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.
@@ -475,10 +428,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
-	nodeID, _, err := tx.allocatePage()
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
+	nodeID := tx.allocatePage()
 
 	// State: construct right node
 	node := &base.Node{
@@ -1103,17 +1053,8 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, errors.New("bucket already exists")
 	}
 
-	// Allocate page for bucket's root (branch node)
-	bucketRootID, _, err := tx.allocatePage()
-	if err != nil {
-		return nil, err
-	}
-
-	// Allocate page for bucket's initial leaf
-	bucketLeafID, _, err := tx.allocatePage()
-	if err != nil {
-		return nil, err
-	}
+	bucketRootID := tx.allocatePage()
+	bucketLeafID := tx.allocatePage()
 
 	// Create bucket's leaf node (empty)
 	bucketLeaf := &base.Node{

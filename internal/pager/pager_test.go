@@ -57,9 +57,9 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		pm, cleanup := createTestPager(t, tmpFile)
 
 		// Add some free pages
-		require.NoError(t, pm.FreePage(10), "FreePage failed")
-		require.NoError(t, pm.FreePage(20), "FreePage failed")
-		require.NoError(t, pm.FreePage(30), "FreePage failed")
+		pm.FreePage(10)
+		pm.FreePage(20)
+		pm.FreePage(30)
 
 		cleanup()
 	}
@@ -72,8 +72,7 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		// Try to allocate - should get freed pages first
 		allocated := make(map[base.PageID]bool)
 		for i := 0; i < 3; i++ {
-			id, err := pm.AssignPageID()
-			require.NoError(t, err, "AssignPageID failed")
+			id := pm.AssignPageID()
 			allocated[id] = true
 		}
 
@@ -90,25 +89,19 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	defer cleanup()
 
 	// Allocate some pages
-	id1, err := pm.AssignPageID()
-	require.NoError(t, err, "AssignPageID failed")
-	id2, err := pm.AssignPageID()
-	require.NoError(t, err, "AssignPageID failed")
-	id3, err := pm.AssignPageID()
-	require.NoError(t, err, "AssignPageID failed")
+	id1 := pm.AssignPageID()
+	id2 := pm.AssignPageID()
+	id3 := pm.AssignPageID()
 
 	// Free them
-	require.NoError(t, pm.FreePage(id1), "FreePage failed")
-	require.NoError(t, pm.FreePage(id2), "FreePage failed")
-	require.NoError(t, pm.FreePage(id3), "FreePage failed")
+	pm.FreePage(id1)
+	pm.FreePage(id2)
+	pm.FreePage(id3)
 
 	// Allocate again - should reuse freed pages
-	reused1, err := pm.AssignPageID()
-	require.NoError(t, err, "AssignPageID failed")
-	reused2, err := pm.AssignPageID()
-	require.NoError(t, err, "AssignPageID failed")
-	reused3, err := pm.AssignPageID()
-	require.NoError(t, err, "AssignPageID failed")
+	reused1 := pm.AssignPageID()
+	reused2 := pm.AssignPageID()
+	reused3 := pm.AssignPageID()
 
 	// Verify reused pages match freed pages
 	reused := map[base.PageID]bool{reused1: true, reused2: true, reused3: true}
