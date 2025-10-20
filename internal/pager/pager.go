@@ -623,16 +623,16 @@ func (p *Pager) Close() error {
 }
 
 type Stats struct {
-	Cache      cache.Stats
-	Store      storage.Stats
-	FreedPages int
+	Cache     cache.Stats
+	Store     storage.Stats
+	FreePages int
 }
 
 // Stats returns disk I/O statistics
 func (p *Pager) Stats() Stats {
 	return Stats{
-		Cache:      p.cache.Stats(),
-		Store:      p.store.Stats(),
-		FreedPages: p.freelist.Stats(),
+		Cache:     p.cache.Stats(),
+		Store:     p.store.Stats(),
+		FreePages: p.freelist.Stats(),
 	}
 }

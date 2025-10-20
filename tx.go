@@ -3,7 +3,6 @@ package fredb
 import (
 	"bytes"
 	"errors"
-	"fmt"
 
 	"github.com/google/btree"
 
@@ -408,16 +407,14 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 		return
 	}
 
-	// Check if page was allocated from freelist in this transaction
-	// If so, don't free it to avoid double-free
-	if wasFromFreelist, inThisTx := tx.allocated[pageID]; inThisTx && wasFromFreelist {
-		// Page came from freelist in this tx - already in freelist, don't free again
-		fmt.Printf("[DEBUG addFreed] Skipping pageID=%d (from freelist in this tx)\n", pageID)
+	// Check if page was allocated in THIS transaction (from freelist OR fresh allocation)
+	// If so, don't free it - it was never committed, so doesn't belong in freelist
+	if _, inThisTx := tx.allocated[pageID]; inThisTx {
+		// Page allocated in this tx - don't free (avoid double-free or freeing uncommitted pages)
 		return
 	}
 
-	// Otherwise, free it (either from previous tx or newly allocated in this tx)
-	fmt.Printf("[DEBUG addFreed] Freeing pageID=%d (total freed: %d)\n", pageID, len(tx.freed)+1)
+	// Otherwise, page is from a previous transaction - safe to free
 	tx.freed[pageID] = struct{}{}
 }
 
