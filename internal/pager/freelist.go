@@ -40,20 +40,6 @@ func (f *Freelist) Allocate() base.PageID {
 	}
 	delete(f.freed, id)
 
-	// CRITICAL: Remove from pending to prevent double-allocation
-	// Scan epochs to find and remove this page (rare edge case)
-	for epoch, pages := range f.pending {
-		for i, pageID := range pages {
-			if pageID == id {
-				f.pending[epoch] = append(pages[:i], pages[i+1:]...)
-				if len(f.pending[epoch]) == 0 {
-					delete(f.pending, epoch)
-				}
-				return id
-			}
-		}
-	}
-
 	return id
 }
 
@@ -74,6 +60,11 @@ func (f *Freelist) Pending(epoch uint64, pageIDs []base.PageID) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	// Remove from freed before adding to pending
+	for _, id := range pageIDs {
+		delete(f.freed, id)
+	}
 
 	f.pending[epoch] = append(f.pending[epoch], pageIDs...)
 }

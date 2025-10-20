@@ -185,18 +185,18 @@ func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
 }
 
 // AssignPageID allocates a new Page (from freelist or grows file)
-func (p *Pager) AssignPageID() base.PageID {
+func (p *Pager) AssignPageID() (base.PageID, bool) {
 	// Try freelist first
 	id := p.freelist.Allocate()
 	if id != 0 {
-		return id
+		return id, false
 	}
 
 	// Grow file - use atomic pages counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
 	id = base.PageID(p.pages.Add(1) - 1)
 
-	return id
+	return id, true
 }
 
 // FreePage adds a Page to the freelist
@@ -329,7 +329,9 @@ func (p *Pager) WriteTransaction(
 
 	// Callback for allocating overflow pages
 	allocPage := func() *base.Page {
-		pageID := p.AssignPageID()
+		// Past point of rollback, no need to track if this was allocated from
+		// freelist. Won't cause a double-free.
+		pageID, _ := p.AssignPageID()
 
 		page := &base.Page{}
 		header := &base.PageHeader{

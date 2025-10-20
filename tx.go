@@ -25,14 +25,17 @@ type Tx struct {
 	db   *DB        // Database this transaction belongs to (concrete type for internal access)
 	root *base.Node // Root Node at transaction start (stores bucket metadata)
 
-	buckets   map[string]*Bucket         // Cache of loaded buckets
-	acquired  map[base.PageID]struct{}   // Buckets acquired from pager (need release)
-	pages     map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
-	allocated []base.PageID
-	freed     map[base.PageID]struct{} // Pages freed in this transaction (for freelist)
-	deletes   map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
+	// Bucket tracking
+	buckets  map[string]*Bucket       // Cache of loaded buckets
+	acquired map[base.PageID]struct{} // Buckets acquired from pager (need release)
+	deletes  map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
-	// Reader tracking (for slot-based mode)
+	// Page tracking
+	pages     map[base.PageID]*base.Node // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed     map[base.PageID]struct{}   // Pages freed in this transaction (for freelist)
+	allocated map[base.PageID]bool       // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
+
+	// Reader tracking
 	readerSlot int  // Slot index in readerSlots array (only for read-only transactions)
 	usedSlot   bool // Whether this reader used a slot (vs sync.Map)
 }
@@ -326,7 +329,7 @@ func (tx *Tx) Rollback() error {
 		tx.db.tryReleasePages()
 
 		// Release allocated pages - they were never committed
-		for _, pageID := range tx.allocated {
+		for pageID, _ := range tx.allocated {
 			tx.db.pager.FreePage(pageID)
 		}
 	} else {
@@ -394,8 +397,8 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 
 // Allocates a new Page for this transaction.
 func (tx *Tx) allocatePage() base.PageID {
-	id := tx.db.pager.AssignPageID()
-	tx.allocated = append(tx.allocated, id)
+	id, allocated := tx.db.pager.AssignPageID()
+	tx.allocated[id] = allocated
 	return id
 }
 
@@ -410,7 +413,11 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 		return
 	}
 	// Add to map (automatically handles duplicates)
-	tx.freed[pageID] = struct{}{}
+	// Check if page was allocated in this transaction - if so, don't free it if
+	// it was allocated from the freelist. Avoid double-free.
+	if tx.allocated[pageID] {
+		tx.freed[pageID] = struct{}{}
+	}
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
