@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -20,8 +21,8 @@ import (
 type MMap struct {
 	mu       sync.RWMutex
 	file     *os.File
-	mmapData []byte
-	mmapSize int64
+	mmapData []byte // PROT_READ only
+	fileSize int64  // actual file size
 	empty    bool
 
 	// Stats counters
@@ -47,8 +48,8 @@ func NewMMap(path string) (*MMap, error) {
 	var empty bool
 	size := info.Size()
 	if size == 0 {
-		// Initialize with 1GB (sparse file)
-		size = 1024 * 1024 * 1024
+		// Initialize with 4 pages (2 meta + freelist + root)
+		size = 4 * base.PageSize
 		if err := file.Truncate(size); err != nil {
 			file.Close()
 			return nil, err
@@ -56,17 +57,25 @@ func NewMMap(path string) (*MMap, error) {
 		empty = true
 	}
 
+	// Mmap read-only
 	data, err := syscall.Mmap(int(file.Fd()), 0, int(size),
-		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		file.Close()
 		return nil, err
 	}
 
+	// Advise the kernel that the mmap is accessed randomly.
+	err = unix.Madvise(data, syscall.MADV_RANDOM)
+	if err != nil && !errors.Is(err, syscall.ENOSYS) {
+		// Ignore not implemented error in kernel because it still works.
+		return nil, fmt.Errorf("madvise: %s", err)
+	}
+
 	return &MMap{
 		file:     file,
 		mmapData: data,
-		mmapSize: size,
+		fileSize: size,
 		empty:    empty,
 	}, nil
 }
@@ -78,7 +87,7 @@ func (m *MMap) ReadPage(id base.PageID) (*base.Page, error) {
 	}
 
 	offset := int64(id) * base.PageSize
-	if offset+base.PageSize > m.mmapSize {
+	if offset+base.PageSize > m.fileSize {
 		return nil, fmt.Errorf("page %d beyond mapped region", id)
 	}
 
@@ -95,60 +104,69 @@ func (m *MMap) ReadPage(id base.PageID) (*base.Page, error) {
 	return page, nil
 }
 
-// WritePage writes a page to the memory-mapped region
+// WritePage writes a page via WriteAt syscall
 func (m *MMap) WritePage(id base.PageID, page *base.Page) error {
-	if m.mmapData == nil {
-		return fmt.Errorf("storage closed")
-	}
-
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)
-
 	offset := int64(id) * base.PageSize
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if offset+base.PageSize > m.mmapSize {
-		// Grow mmap region
-		minSize := offset + base.PageSize
 
-		// Round up to 1GB chunks to reduce remap frequency
-		const growthSize = 1024 * 1024 * 1024 // 1GB
-		newSize := ((minSize + growthSize - 1) / growthSize) * growthSize
-
-		// Start async flush to reduce munmap blocking time
-		_ = unix.Msync(m.mmapData, unix.MS_ASYNC)
-
-		// Unmap old region
-		if err := syscall.Munmap(m.mmapData); err != nil {
-			return err
-		}
-
-		// Grow file (sparse allocation)
+	// Grow file if needed
+	if offset+base.PageSize > m.fileSize {
+		newSize := m.growSize(offset + base.PageSize)
 		if err := m.file.Truncate(newSize); err != nil {
 			return err
 		}
+		m.fileSize = newSize
 
-		// Remap with new size
-		data, err := syscall.Mmap(int(m.file.Fd()), 0, int(newSize),
-			syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-		if err != nil {
+		// Remap read-only with new size
+		if err := m.remapReadOnly(newSize); err != nil {
 			return err
 		}
-
-		m.mmapData = data
-		m.mmapSize = newSize
 	}
 
+	// Write via syscall, not mmap
 	m.writes.Add(1)
-	copy(m.mmapData[offset:], buf)
+	_, err := m.file.WriteAt(buf, offset)
+	if err != nil {
+		return err
+	}
 	m.written.Add(base.PageSize)
 	return nil
 }
 
-// Sync flushes the memory-mapped region to disk
-func (m *MMap) Sync() error {
-	if err := unix.Msync(m.mmapData, unix.MS_SYNC); err != nil {
+// growSize calculates new file size using BBolt's strategy
+func (m *MMap) growSize(minSize int64) int64 {
+	// Powers of 2: 32KB → 1GB
+	size := int64(32 * 1024)
+	for size < minSize && size < 1024*1024*1024 {
+		size *= 2
+	}
+	// Then 1GB chunks
+	if size < minSize {
+		const gb = 1024 * 1024 * 1024
+		size = ((minSize + gb - 1) / gb) * gb
+	}
+	return size
+}
+
+// remapReadOnly unmaps and remaps the region with new size
+func (m *MMap) remapReadOnly(newSize int64) error {
+	if err := syscall.Munmap(m.mmapData); err != nil {
 		return err
 	}
+	data, err := syscall.Mmap(int(m.file.Fd()), 0, int(newSize),
+		syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		return err
+	}
+	m.mmapData = data
+	return nil
+}
+
+// Sync flushes writes to disk
+func (m *MMap) Sync() error {
 	return m.file.Sync()
 }
 
