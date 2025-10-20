@@ -87,8 +87,8 @@ func (f *Freelist) Pending(epoch uint64, pageIDs []base.PageID) {
 }
 
 // Release moves pages from pending to Free for all epochs < minEpoch.
-// Returns number of pages released.
-func (f *Freelist) Release(minEpoch uint64) int {
+// Calls onRelease for each freed page (while holding lock) for atomic cache invalidation.
+func (f *Freelist) Release(minEpoch uint64, onRelease func(base.PageID)) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -97,6 +97,9 @@ func (f *Freelist) Release(minEpoch uint64) int {
 		if epoch < minEpoch {
 			for _, pageID := range pages {
 				f.freed[pageID] = struct{}{}
+				if onRelease != nil {
+					onRelease(pageID) // Cache invalidation happens atomically under lock
+				}
 				released++
 			}
 			delete(f.pending, epoch)

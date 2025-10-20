@@ -67,6 +67,12 @@ func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
 	return nil, false
 }
 
+// Remove invalidates a cache entry for the given page ID.
+// Called when a page is freed and may be reused with different data.
+func (c *Cache) Remove(pageID base.PageID) {
+	c.lru.Remove(pageID)
+}
+
 // Size returns current number of cached entries
 func (c *Cache) Size() int {
 	return c.lru.Len()

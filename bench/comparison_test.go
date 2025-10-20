@@ -1070,7 +1070,8 @@ func BenchmarkReadWriteMix(b *testing.B) {
 		path := "/tmp/bench_rw_mix_fredb.db"
 		defer os.Remove(path)
 
-		db, _ := fredb.Open(path, fredb.WithCacheSizeMB(1024), fredb.WithSyncEveryCommit())
+		db, _ := fredb.Open(path, fredb.WithCacheSizeMB(1024),
+			fredb.WithSyncEveryCommit())
 		defer db.Close()
 
 		value := make([]byte, benchValueSize)

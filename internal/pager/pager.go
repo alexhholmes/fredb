@@ -172,7 +172,8 @@ func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
 
 		// Release any pending pages that are safe to reclaim
 		// On startup, no readers exist, so all pending pages with txnID <= current can be released
-		c.freelist.Release(activeMeta.Meta.TxID)
+		// No cache invalidation needed on startup (cache is empty)
+		c.freelist.Release(activeMeta.Meta.TxID, nil)
 
 		// Initialize atomic pages counter from active meta
 		c.pages.Store(activeMeta.Meta.NumPages)
@@ -203,8 +204,12 @@ func (p *Pager) FreePage(id base.PageID) error {
 }
 
 // ReleasePages moves pages from pending to free for all transactions < minTxnID
+// Invalidates cache entries atomically (under freelist lock) to prevent races.
 func (p *Pager) ReleasePages(minTxnID uint64) int {
-	return p.freelist.Release(minTxnID)
+	// Pass cache invalidation callback - runs atomically under freelist lock
+	return p.freelist.Release(minTxnID, func(pageID base.PageID) {
+		p.cache.Remove(pageID)
+	})
 }
 
 // GetMeta returns the current metadata
