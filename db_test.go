@@ -714,7 +714,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	require.NoError(t, err, "Failed to stat DB file")
 	sizeMB := float64(info.Size()) / (1024 * 1024)
 	t.Logf("Database file size: %.2f MB", sizeMB)
-	assert.LessOrEqual(t, sizeMB, 12.0, "File size suspiciously large (%.2f MB), possible Page leak", sizeMB)
+	assert.LessOrEqual(t, sizeMB, 10.0, "File size suspiciously large (%.2f MB), possible Page leak", sizeMB)
 }
 
 // TestDBLargeKeysPerPage tests inserting large key-value pairs
