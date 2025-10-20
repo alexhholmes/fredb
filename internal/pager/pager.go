@@ -24,8 +24,8 @@ const (
 
 // Pager coordinates store, cache, meta, and freelist
 type Pager struct {
-	cache *cache.Cache    // Simple LRU cache
-	store storage.Storage // File I/O backend
+	cache *cache.Cache     // Simple LRU cache
+	store *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
 	active atomic.Pointer[base.Snapshot]
@@ -51,9 +51,9 @@ type Pager struct {
 }
 
 // NewPager creates a pager with injected dependencies
-func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
+func NewPager(store *storage.Storage, cache *cache.Cache) (*Pager, error) {
 	c := &Pager{
-		store: storage,
+		store: store,
 		cache: cache,
 		freelist: &Freelist{
 			freed:   make(map[base.PageID]struct{}),
@@ -63,7 +63,7 @@ func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
 	}
 
 	// Check if new file (empty)
-	empty, err := storage.Empty()
+	empty, err := store.Empty()
 	if err != nil {
 		return nil, err
 	}
@@ -240,15 +240,8 @@ func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	metaPageID := base.PageID(meta.TxID % 2)
 
 	// Write to disk
-	var buf []byte
-	if store, ok := p.store.(*storage.DirectIO); ok {
-		// DirectIO requires aligned buffers
-		buf = store.GetBuffer()
-		defer store.PutBuffer(buf)
-	} else {
-		// MMap can use normal buffers
-		buf = make([]byte, base.PageSize)
-	}
+	buf := p.store.GetBuffer()
+	defer p.store.PutBuffer(buf)
 	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
 	metaPage.WriteMeta(&meta)
 	if err := p.store.WritePage(metaPageID, metaPage); err != nil {
@@ -347,14 +340,8 @@ func (p *Pager) WriteTransaction(
 	}
 
 	// Write all pages to disk
-	var buf []byte
-	if store, ok := p.store.(*storage.DirectIO); ok {
-		buf = store.GetBuffer()
-		defer store.PutBuffer(buf)
-	} else {
-		// MMap can use normal buffers
-		buf = make([]byte, base.PageSize)
-	}
+	buf := p.store.GetBuffer()
+	defer p.store.PutBuffer(buf)
 
 	if pages.Len() == 1 {
 		// Special case: single page - avoid run logic
@@ -474,13 +461,8 @@ func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64, allocPage fu
 		node.Dirty = false
 		p.cache.Put(node.PageID, node)
 	} else {
-		var bigBuf []byte
-		if _, ok := p.store.(*storage.DirectIO); ok {
-			// Ensure bigBuf is aligned for DirectIO
-			bigBuf = directio.AlignedBlock(len(run) * base.PageSize)
-		} else {
-			bigBuf = make([]byte, len(run)*base.PageSize)
-		}
+		// Allocate aligned buffer for contiguous write
+		bigBuf := directio.AlignedBlock(len(run) * base.PageSize)
 
 		for i, node := range run {
 			page := (*base.Page)(unsafe.Pointer(&bigBuf[i*base.PageSize]))

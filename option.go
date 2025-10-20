@@ -10,8 +10,7 @@ const (
 	// - Use for: Financial transactions, critical data
 	SyncEveryCommit SyncMode = iota
 
-	// SyncOff disables fsync entirely (testing/bulk loads only). Uses mmap
-	// I/O.
+	// SyncOff disables fsync entirely (testing/bulk loads only).
 	// - Maximum throughput
 	// - All unflushed data lost on crash
 	// - Use for: Testing, bulk imports with external durability

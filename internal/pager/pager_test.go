@@ -16,7 +16,7 @@ var _ = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a pager with dependencies for testing
 func createTestPager(t *testing.T, tmpFile string) (*Pager, func()) {
-	stor, err := storage.NewDirectIO(tmpFile)
+	stor, err := storage.New(tmpFile)
 	require.NoError(t, err, "Failed to create store")
 
 	cacheInstance := cache.NewCache(1024, nil)

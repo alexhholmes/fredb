@@ -30,7 +30,7 @@ type DB struct {
 	mu    sync.Mutex // Lock only for writers
 	pager *pager.Pager
 	cache *cache.Cache
-	store storage.Storage
+	store *storage.Storage
 
 	// Transaction state
 	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
@@ -51,13 +51,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Create disk storage
-	var store storage.Storage
-	var err error
-	if opts.syncMode == SyncEveryCommit {
-		store, err = storage.NewDirectIO(path)
-	} else {
-		store, err = storage.NewMMap(path)
-	}
+	store, err := storage.New(path)
 	if err != nil {
 		return nil, err
 	}
