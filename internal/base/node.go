@@ -26,13 +26,16 @@ type Node struct {
 	// Decoded Node data
 	NumKeys  uint16
 	Keys     [][]byte // Allocated copies
-	Values   [][]byte // If nil, this is a branch Node
+	Values   [][]byte // If nil, this is a branch Node; individual entries may be nil for lazy-loaded overflow values
 	Children []PageID
 
 	// Overflow chain tracking for values that use overflow pages
 	// Map key is the index into Values slice, value is the chain of overflow PageIDs
 	// Only populated for values with overflow (sparse map)
 	OverflowChains map[int][]PageID
+
+	// readPageFunc is stored to enable lazy loading of overflow values
+	readPageFunc func(PageID) (*Page, error)
 }
 
 // Serialize encodes the Node data into a fresh Page
@@ -61,7 +64,12 @@ func (n *Node) Serialize(txID uint64, page *Page, allocPage func() *Page) error 
 		// Process in reverse order to pack from end
 		for i := int(n.NumKeys) - 1; i >= 0; i-- {
 			key := n.Keys[i]
-			value := n.Values[i]
+
+			// Load value if not already loaded (handles lazy-loaded overflow values)
+			value, err := n.GetValue(i)
+			if err != nil {
+				return err
+			}
 
 			var elem *LeafElement
 
@@ -144,6 +152,7 @@ func (n *Node) Deserialize(p *Page, readPage func(PageID) (*Page, error)) error 
 	n.PageID = header.PageID
 	n.NumKeys = header.NumKeys
 	n.Dirty = false
+	n.readPageFunc = readPage // Store for lazy loading
 
 	if (header.Flags & LeafPageFlag) != 0 {
 		// Deserialize leaf Node
@@ -174,12 +183,18 @@ func (n *Node) Deserialize(p *Page, readPage func(PageID) (*Page, error)) error 
 				}
 				n.OverflowChains[i] = chain
 
-				// Read value from overflow chain
-				value, err := n.readOverflowValue(&elem, readPage)
-				if err != nil {
-					return err
+				// Only lazy-load if chain is > 2 pages (performance optimization)
+				if len(chain) > 2 {
+					// Defer loading for large values
+					n.Values[i] = nil
+				} else {
+					// Eagerly load small overflow values
+					value, err := n.readOverflowValue(&elem, readPage)
+					if err != nil {
+						return err
+					}
+					n.Values[i] = value
 				}
-				n.Values[i] = value
 			} else {
 				// Value stored inline in leaf page
 				n.Values[i] = make([]byte, elem.ValueSize)
@@ -229,9 +244,10 @@ func (n *Node) FindKey(key []byte) int {
 // The Clone is marked Dirty and does not have a PageID allocated yet
 func (n *Node) Clone() *Node {
 	cloned := &Node{
-		PageID:  0,
-		Dirty:   true,
-		NumKeys: n.NumKeys,
+		PageID:       0,
+		Dirty:        true,
+		NumKeys:      n.NumKeys,
+		readPageFunc: n.readPageFunc, // Copy read function for lazy loading
 	}
 
 	// Shallow copy Keys - share backing arrays
@@ -469,4 +485,45 @@ func (n *Node) FreeAllOverflowChains() [][]PageID {
 	n.OverflowChains = nil
 
 	return chains
+}
+
+// GetValue returns the value at the given index, lazy-loading from overflow if needed
+func (n *Node) GetValue(index int) ([]byte, error) {
+	if !n.IsLeaf() || index < 0 || index >= int(n.NumKeys) {
+		return nil, nil
+	}
+
+	// If value is already loaded, return it
+	if n.Values[index] != nil {
+		return n.Values[index], nil
+	}
+
+	// Check if this value is in overflow pages
+	chain, hasOverflow := n.OverflowChains[index]
+	if !hasOverflow || len(chain) == 0 {
+		// No overflow chain, value should have been loaded already
+		return nil, nil
+	}
+
+	// Lazy load from overflow chain
+	if n.readPageFunc == nil {
+		return nil, ErrPageOverflow
+	}
+
+	// Read from overflow chain
+	var result []byte
+	for _, pageID := range chain {
+		page, err := n.readPageFunc(pageID)
+		if err != nil {
+			return nil, err
+		}
+
+		header := page.Header()
+		chunkSize := int(header.OverflowSize)
+		result = append(result, page.Data[PageHeaderSize:PageHeaderSize+chunkSize]...)
+	}
+
+	// Cache the loaded value
+	n.Values[index] = result
+	return result, nil
 }

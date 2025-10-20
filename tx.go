@@ -72,7 +72,11 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	if node.IsLeaf() {
 		// In leaf, we need to check the previous position (since loop went past equal keys)
 		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
-			return node.Values[i-1], nil
+			value, err := node.GetValue(i - 1)
+			if err != nil {
+				return nil, err
+			}
+			return value, nil
 		}
 		// Not found in leaf
 		return nil, ErrKeyNotFound
@@ -527,16 +531,21 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 		// Check for update
 		if pos < int(n.NumKeys) && bytes.Equal(n.Keys[pos], key) {
-			// Save old value for rollback
-			oldValue := make([]byte, len(n.Values[pos]))
-			copy(oldValue, n.Values[pos])
+			// Load old value (handles lazy-loaded overflow values)
+			oldValue, err := n.GetValue(pos)
+			if err != nil {
+				return nil, err
+			}
+			// Make a copy for rollback
+			oldValueCopy := make([]byte, len(oldValue))
+			copy(oldValueCopy, oldValue)
 
 			algo.ApplyLeafUpdate(n, pos, value)
 
 			// Check size after update
 			if err := n.CheckOverflow(); err != nil {
 				// Rollback: restore old value
-				n.Values[pos] = oldValue
+				n.Values[pos] = oldValueCopy
 				return nil, err
 			}
 			return n, nil
