@@ -8,7 +8,6 @@ import (
 
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/cache"
-	"github.com/alexhholmes/fredb/internal/freelist"
 	"github.com/alexhholmes/fredb/internal/storage"
 )
 
@@ -34,7 +33,7 @@ type Pager struct {
 	pages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
 
 	// Freelist management (owns its own mutex)
-	freelist *freelist.Freelist
+	freelist *Freelist
 
 	// Bucket reference count tracking
 	// This tracks number of references to root pages of buckets by transactions.
@@ -51,10 +50,13 @@ type Pager struct {
 // NewPager creates a pager with injected dependencies
 func NewPager(storage storage.Storage, cache *cache.Cache) (*Pager, error) {
 	c := &Pager{
-		store:    storage,
-		cache:    cache,
-		freelist: freelist.New(),
-		Deleted:  make(map[base.PageID]struct{}),
+		store: storage,
+		cache: cache,
+		freelist: &Freelist{
+			freed:   make(map[base.PageID]struct{}),
+			pending: make(map[uint64][]base.PageID),
+		},
+		Deleted: make(map[base.PageID]struct{}),
 	}
 
 	// Check if new file (empty)

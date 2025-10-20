@@ -1,4 +1,4 @@
-package freelist
+package pager
 
 import (
 	"sort"
@@ -19,16 +19,8 @@ const (
 // 2. Free: Pages released from pending are available for immediate reuse
 type Freelist struct {
 	mu      sync.RWMutex
-	freed   map[base.PageID]struct{}  // Pages available for reuse
-	pending map[uint64][]base.PageID  // epoch -> pages freed at that epoch
-}
-
-// New creates a new Freelist with empty state
-func New() *Freelist {
-	return &Freelist{
-		freed:   make(map[base.PageID]struct{}),
-		pending: make(map[uint64][]base.PageID),
-	}
+	freed   map[base.PageID]struct{} // Pages available for reuse
+	pending map[uint64][]base.PageID // epoch -> pages freed at that epoch
 }
 
 // Allocate returns a Free Page ID, or 0 if none available.
