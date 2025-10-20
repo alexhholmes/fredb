@@ -406,12 +406,16 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 	if int64(pageID) < 0 {
 		return
 	}
-	// Add to map (automatically handles duplicates)
-	// Check if page was allocated in this transaction - if so, don't free it if
-	// it was allocated from the freelist. Avoid double-free.
-	if tx.allocated[pageID] {
-		tx.freed[pageID] = struct{}{}
+
+	// Check if page was allocated from freelist in this transaction
+	// If so, don't free it to avoid double-free
+	if wasFromFreelist, inThisTx := tx.allocated[pageID]; inThisTx && !wasFromFreelist {
+		// Page came from freelist in this tx - already in freelist, don't free again
+		return
 	}
+
+	// Otherwise, free it (either from previous tx or newly allocated in this tx)
+	tx.freed[pageID] = struct{}{}
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
