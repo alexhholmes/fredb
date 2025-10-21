@@ -19,10 +19,10 @@ const (
 
 // Options configures database behavior.
 type Options struct {
-	syncMode        SyncMode
-	maxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
-	writeBufferSize int // Write buffer size in bytes
-	maxReaders      int // Maximum number of concurrent readers
+	SyncMode        SyncMode
+	MaxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
+	WriteBufferSize int // Write buffer size in bytes
+	MaxReaders      int // Maximum number of concurrent readers
 }
 
 // DefaultDBOptions returns safe default configuration.
@@ -30,23 +30,23 @@ type Options struct {
 // goland:noinspection GoUnusedExportedFunction
 func DefaultDBOptions() Options {
 	return Options{
-		syncMode:        SyncEveryCommit,
-		maxCacheSizeMB:  512,             // 512MB
-		writeBufferSize: 1 * 1024 * 1024, // 1MB
-		maxReaders:      256,
+		SyncMode:        SyncEveryCommit,
+		MaxCacheSizeMB:  512,             // 512MB
+		WriteBufferSize: 1 * 1024 * 1024, // 1MB
+		MaxReaders:      256,
 	}
 }
 
-// DBOption configures database options using the functional options pattern.
-type DBOption func(*Options)
+// Option configures database options using the functional options pattern.
+type Option func(*Options)
 
 // WithSyncEveryCommit configures the database to fsync on every commit.
 // This provides maximum durability (zero data loss) but lower throughput.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithSyncEveryCommit() DBOption {
+func WithSyncEveryCommit() Option {
 	return func(opts *Options) {
-		opts.syncMode = SyncEveryCommit
+		opts.SyncMode = SyncEveryCommit
 	}
 }
 
@@ -55,9 +55,9 @@ func WithSyncEveryCommit() DBOption {
 // Only use for testing or bulk loads where data can be reconstructed.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithSyncOff() DBOption {
+func WithSyncOff() Option {
 	return func(opts *Options) {
-		opts.syncMode = SyncOff
+		opts.SyncMode = SyncOff
 	}
 }
 
@@ -65,9 +65,9 @@ func WithSyncOff() DBOption {
 // When the cache exceeds this size, the least recently used items are evicted.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithCacheSizeMB(mb int) DBOption {
+func WithCacheSizeMB(mb int) Option {
 	return func(opts *Options) {
-		opts.maxCacheSizeMB = mb
+		opts.MaxCacheSizeMB = mb
 	}
 }
 
@@ -78,9 +78,9 @@ func WithCacheSizeMB(mb int) DBOption {
 // Defaults to 1MB.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithWriteBufferSize(size int) DBOption {
+func WithWriteBufferSize(size int) Option {
 	return func(opts *Options) {
-		opts.writeBufferSize = size
+		opts.WriteBufferSize = size
 	}
 }
 
@@ -90,8 +90,8 @@ func WithWriteBufferSize(size int) DBOption {
 // writes due to reader management overhead. Defaults to 256.
 //
 //goland:noinspection GoUnusedExportedFunction
-func WithMaxReaders(n int) DBOption {
+func WithMaxReaders(n int) Option {
 	return func(opts *Options) {
-		opts.maxReaders = n
+		opts.MaxReaders = n
 	}
 }

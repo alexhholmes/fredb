@@ -34,7 +34,7 @@ type DB struct {
 
 	// Transaction state
 	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
-	readerSlots *readslots.ReaderSlots // Fixed-size slots (nil if maxReaders == 0)
+	readerSlots *readslots.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
 	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
@@ -43,7 +43,7 @@ type DB struct {
 	txWg   sync.WaitGroup // Track active transactions for graceful shutdown
 }
 
-func Open(path string, options ...DBOption) (*DB, error) {
+func Open(path string, options ...Option) (*DB, error) {
 	// Apply options
 	opts := DefaultDBOptions()
 	for _, opt := range options {
@@ -57,7 +57,7 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 
 	// Create cache (no eviction callback needed - nodes own their allocations)
-	c := cache.NewCache(opts.maxCacheSizeMB*256, nil)
+	c := cache.NewCache(opts.MaxCacheSizeMB*256, nil)
 
 	// Create pg with dependencies
 	pg, err := pager.NewPager(store, c)
@@ -226,11 +226,11 @@ func Open(path string, options ...DBOption) (*DB, error) {
 	}
 	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
 
-	// Initialize reader tracking based on maxReaders option
-	if opts.maxReaders < 1 {
+	// Initialize reader tracking based on MaxReaders option
+	if opts.MaxReaders < 1 {
 		return nil, ErrInvalidMaxReaders
 	}
-	db.readerSlots = readslots.NewReaderSlots(opts.maxReaders)
+	db.readerSlots = readslots.NewReaderSlots(opts.MaxReaders)
 
 	return db, nil
 }

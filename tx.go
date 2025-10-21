@@ -171,9 +171,9 @@ func (tx *Tx) Commit() error {
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
 
-	// Convert syncMode to storage package type
+	// Convert SyncMode to storage package type
 	var syncMode pager.SyncMode
-	if tx.db.options.syncMode == SyncEveryCommit {
+	if tx.db.options.SyncMode == SyncEveryCommit {
 		syncMode = pager.SyncEveryCommit
 	} else {
 		syncMode = pager.SyncOff
