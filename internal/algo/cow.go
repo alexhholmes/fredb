@@ -8,8 +8,19 @@ import (
 // Assumes node is already writable (COW'd by caller)
 // Returns error if serialization would fail (for rollback)
 func ApplyLeafUpdate(node *base.Node, pos int, newValue []byte) {
+	// Check if this position has an overflow chain before updating
+	_, hasOverflow := node.OverflowChains[pos]
+
 	node.Values[pos] = newValue
 	node.Dirty = true
+
+	// Only mark as modified if it had an overflow chain (to track old chain for freeing)
+	if hasOverflow {
+		if node.ModifiedValues == nil {
+			node.ModifiedValues = make(map[int]struct{})
+		}
+		node.ModifiedValues[pos] = struct{}{}
+	}
 }
 
 // ApplyLeafInsert inserts new key-value at position
@@ -209,6 +220,15 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 		leftVals := make([][]byte, sp.LeftCount)
 		copy(leftVals, node.Values[:sp.LeftCount])
 		node.Values = leftVals
+
+		// Clean up OverflowChains map - remove entries for indices that were moved to right node
+		if node.OverflowChains != nil {
+			for i := range node.OverflowChains {
+				if i >= sp.LeftCount {
+					delete(node.OverflowChains, i)
+				}
+			}
+		}
 	} else {
 		node.Values = nil
 		leftChildren := make([]base.PageID, sp.Mid+1)

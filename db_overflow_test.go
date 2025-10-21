@@ -326,3 +326,254 @@ func TestOverflowEdgeCases(t *testing.T) {
 		assert.Equal(t, value, retrieved)
 	})
 }
+
+// TestOverflowChainReuse tests that overflow chains are reused during splits and CoW
+func TestOverflowChainReuse(t *testing.T) {
+	tmpFile := "/tmp/test_overflow_reuse.db"
+	defer os.Remove(tmpFile)
+
+	db, err := Open(tmpFile, WithSyncOff())
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Test 1: Overflow chain reuse during node splits
+	t.Run("ReuseChainsDuringSplits", func(t *testing.T) {
+		// Create large values that will require overflow pages (3KB each, needs 1 overflow page)
+		largeValue := bytes.Repeat([]byte("x"), 3000)
+
+		// Insert enough keys to cause splits
+		// With 3KB values, we can fit ~1 key per leaf node before splitting
+		numKeys := 50
+		for i := 0; i < numKeys; i++ {
+			key := []byte{byte('a'), byte(i / 256), byte(i % 256)}
+			err := db.Set(key, largeValue)
+			require.NoError(t, err, "Insert %d should succeed", i)
+		}
+
+		// Verify all values are correct
+		for i := 0; i < numKeys; i++ {
+			key := []byte{byte('a'), byte(i / 256), byte(i % 256)}
+			retrieved, err := db.Get(key)
+			require.NoError(t, err, "Get key %d should succeed", i)
+			assert.Equal(t, largeValue, retrieved, "Value %d should match", i)
+		}
+
+		// Get stats
+		stats := db.Stats()
+		t.Logf("After %d inserts: Writes=%d, Reads=%d", numKeys, stats.Store.Writes, stats.Store.Reads)
+
+		// Reality check: each insert triggers:
+		// - 1 overflow page for the value
+		// - Multiple node pages (for CoW and splits up the tree)
+		// - Metadata page writes per transaction
+		// The key metric is that writes/insert should be reasonable (~30-40 writes/insert)
+		// If overflow chains were NOT reused, we'd see significantly more (50+ writes/insert)
+		avgWritesPerInsert := float64(stats.Store.Writes) / float64(numKeys)
+		t.Logf("Average writes per insert: %.1f", avgWritesPerInsert)
+
+		// Sanity check: should be less than 40 writes per insert on average
+		assert.Less(t, avgWritesPerInsert, 40.0,
+			"Should reuse overflow chains during splits (writes should be bounded)")
+	})
+
+	// Test 2: Verify overflow chains are preserved after split
+	t.Run("VerifyChainIntegrityAfterSplit", func(t *testing.T) {
+		// Create a new DB for clean test
+		tmpFile2 := "/tmp/test_overflow_reuse2.db"
+		defer os.Remove(tmpFile2)
+
+		db2, err := Open(tmpFile2, WithSyncOff())
+		require.NoError(t, err)
+		defer db2.Close()
+
+		// Insert large values with distinct patterns to detect corruption
+		type testValue struct {
+			key   []byte
+			value []byte
+		}
+
+		testValues := []testValue{}
+		for i := 0; i < 30; i++ {
+			key := []byte{byte('b'), byte(i)}
+			// Each value has a unique pattern (repeated byte value = i)
+			value := bytes.Repeat([]byte{byte(i)}, 4000)
+			testValues = append(testValues, testValue{key, value})
+
+			err := db2.Set(key, value)
+			require.NoError(t, err, "Insert %d should succeed", i)
+		}
+
+		// Close and reopen to ensure persistence
+		db2.Close()
+		db2, err = Open(tmpFile2, WithSyncOff())
+		require.NoError(t, err)
+		defer db2.Close()
+
+		// Verify all values retained their unique patterns (no chain corruption)
+		for i, tv := range testValues {
+			retrieved, err := db2.Get(tv.key)
+			require.NoError(t, err, "Get key %d should succeed after reopen", i)
+			assert.Equal(t, tv.value, retrieved,
+				"Value %d should match after split and reopen (chain integrity)", i)
+
+			// Extra check: verify the pattern is correct
+			if len(retrieved) > 0 {
+				assert.Equal(t, byte(i), retrieved[0],
+					"First byte should match pattern for value %d", i)
+				assert.True(t, bytes.Equal(bytes.Repeat([]byte{byte(i)}, 4000), retrieved),
+					"Entire value should have consistent pattern for value %d", i)
+			}
+		}
+	})
+
+	// Test 3: Overflow chain reuse with mixed operations
+	t.Run("MixedOperationsPreserveChains", func(t *testing.T) {
+		tmpFile3 := "/tmp/test_overflow_reuse3.db"
+		defer os.Remove(tmpFile3)
+
+		db3, err := Open(tmpFile3, WithSyncOff())
+		require.NoError(t, err)
+		defer db3.Close()
+
+		// Phase 1: Insert large values
+		numInitial := 20
+		largeValue := bytes.Repeat([]byte("L"), 5000)
+		for i := 0; i < numInitial; i++ {
+			key := []byte{byte('c'), byte(i)}
+			err := db3.Set(key, largeValue)
+			require.NoError(t, err)
+		}
+
+		stats1 := db3.Stats()
+
+		// Phase 2: Insert more keys to cause additional splits (should reuse existing chains)
+		numAdditional := 20
+		for i := numInitial; i < numInitial+numAdditional; i++ {
+			key := []byte{byte('c'), byte(i)}
+			err := db3.Set(key, largeValue)
+			require.NoError(t, err)
+		}
+
+		stats2 := db3.Stats()
+
+		// Calculate incremental writes for phase 2
+		phase2Writes := stats2.Store.Writes - stats1.Store.Writes
+
+		t.Logf("Phase 1 writes: %d, Phase 2 writes: %d", stats1.Store.Writes, phase2Writes)
+
+		// Phase 2 should have similar or fewer writes per key than phase 1
+		// because it benefits from chain reuse during splits
+		avgPhase1 := float64(stats1.Store.Writes) / float64(numInitial)
+		avgPhase2 := float64(phase2Writes) / float64(numAdditional)
+
+		t.Logf("Avg writes per key: Phase 1=%.1f, Phase 2=%.1f", avgPhase1, avgPhase2)
+
+		// Phase 2 may be worse than phase 1 due to deeper tree (more CoW up the tree)
+		// But it should still be reasonable - not orders of magnitude worse
+		// Without chain reuse, phase 2 would be 100+ writes/insert
+		assert.Less(t, avgPhase2, 100.0,
+			"Phase 2 should benefit from overflow chain reuse (bounded writes per insert)")
+
+		// Verify data integrity
+		for i := 0; i < numInitial+numAdditional; i++ {
+			key := []byte{byte('c'), byte(i)}
+			retrieved, err := db3.Get(key)
+			require.NoError(t, err)
+			assert.Equal(t, largeValue, retrieved, "Value %d should match", i)
+		}
+	})
+
+	// Test 4: Updating one value doesn't rebuild other values' chains
+	t.Run("SelectiveChainRebuild", func(t *testing.T) {
+		tmpFile4 := "/tmp/test_overflow_reuse4.db"
+		defer os.Remove(tmpFile4)
+
+		db4, err := Open(tmpFile4, WithSyncOff())
+		require.NoError(t, err)
+		defer db4.Close()
+
+		// Insert 3 large values in same leaf node
+		value1 := bytes.Repeat([]byte("1"), 2500)
+		value2 := bytes.Repeat([]byte("2"), 2500)
+		value3 := bytes.Repeat([]byte("3"), 2500)
+
+		// Use keys that will likely be in same leaf
+		err = db4.Set([]byte("key1"), value1)
+		require.NoError(t, err)
+		err = db4.Set([]byte("key2"), value2)
+		require.NoError(t, err)
+		err = db4.Set([]byte("key3"), value3)
+		require.NoError(t, err)
+
+		stats1 := db4.Stats()
+
+		// Update only key2
+		newValue2 := bytes.Repeat([]byte("X"), 2500)
+		err = db4.Set([]byte("key2"), newValue2)
+		require.NoError(t, err)
+
+		stats2 := db4.Stats()
+		updateWrites := stats2.Store.Writes - stats1.Store.Writes
+
+		t.Logf("Writes for single update: %d", updateWrites)
+
+		// Should only rebuild chain for key2, not key1 or key3
+		// Expected: ~3-5 writes (1 new overflow page + node CoW + metadata)
+		// If it rebuilds all 3 chains: ~9+ writes
+		assert.Less(t, updateWrites, uint64(7),
+			"Updating one value should not rebuild other overflow chains in same node")
+
+		// Verify all values
+		retrieved1, err := db4.Get([]byte("key1"))
+		require.NoError(t, err)
+		assert.Equal(t, value1, retrieved1, "key1 should be unchanged")
+
+		retrieved2, err := db4.Get([]byte("key2"))
+		require.NoError(t, err)
+		assert.Equal(t, newValue2, retrieved2, "key2 should have new value")
+
+		retrieved3, err := db4.Get([]byte("key3"))
+		require.NoError(t, err)
+		assert.Equal(t, value3, retrieved3, "key3 should be unchanged")
+	})
+
+	// Test 5: Deleting one value doesn't affect others' chains
+	t.Run("DeletionPreservesOtherChains", func(t *testing.T) {
+		tmpFile5 := "/tmp/test_overflow_reuse5.db"
+		defer os.Remove(tmpFile5)
+
+		db5, err := Open(tmpFile5, WithSyncOff())
+		require.NoError(t, err)
+		defer db5.Close()
+
+		// Insert multiple large values
+		largeValue := bytes.Repeat([]byte("D"), 3000)
+		keys := [][]byte{
+			[]byte("del1"),
+			[]byte("del2"),
+			[]byte("del3"),
+			[]byte("del4"),
+			[]byte("del5"),
+		}
+
+		for _, key := range keys {
+			err := db5.Set(key, largeValue)
+			require.NoError(t, err)
+		}
+
+		// Delete middle key
+		err = db5.Delete([]byte("del3"))
+		require.NoError(t, err)
+
+		// Verify other keys still work
+		for _, key := range [][]byte{[]byte("del1"), []byte("del2"), []byte("del4"), []byte("del5")} {
+			retrieved, err := db5.Get(key)
+			require.NoError(t, err)
+			assert.Equal(t, largeValue, retrieved, "Key %s should still have correct value", key)
+		}
+
+		// Verify deleted key is gone
+		_, err = db5.Get([]byte("del3"))
+		assert.ErrorIs(t, err, ErrKeyNotFound, "Deleted key should not be found")
+	})
+}

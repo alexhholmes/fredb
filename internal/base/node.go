@@ -34,6 +34,10 @@ type Node struct {
 	// Only populated for values with overflow (sparse map)
 	OverflowChains map[int][]PageID
 
+	// Track which values were modified in this node (for CoW optimization)
+	// Only modified values need new overflow chains; unmodified ones can reuse old chains
+	ModifiedValues map[int]struct{}
+
 	// readPageFunc is stored to enable lazy loading of overflow values
 	readPageFunc func(PageID) (*Page, error)
 }
@@ -75,10 +79,24 @@ func (n *Node) Serialize(txID uint64, page *Page, allocPage func() *Page) error 
 
 			// Check if value needs overflow pages
 			if len(value) > MaxValueInLeaf && allocPage != nil {
-				// Build overflow chain for large value
-				firstPageID, numPages, err := n.buildOverflowChain(txID, value, allocPage)
-				if err != nil {
-					return err
+				var firstPageID PageID
+				var numPages uint16
+
+				// Check if this value was modified or if it's new/never had overflow
+				_, wasModified := n.ModifiedValues[i]
+				oldChain, hadOverflow := n.OverflowChains[i]
+
+				if hadOverflow && !wasModified {
+					// Value has overflow chain and wasn't modified - reuse old chain
+					firstPageID = oldChain[0]
+					numPages = uint16(len(oldChain))
+				} else {
+					// Value was modified or is new - build new overflow chain
+					var err error
+					firstPageID, numPages, err = n.buildOverflowChain(txID, value, allocPage)
+					if err != nil {
+						return err
+					}
 				}
 
 				// Write key only (value is in overflow pages)
@@ -267,7 +285,7 @@ func (n *Node) Clone() *Node {
 	}
 
 	// Copy overflow chain metadata - deep copy the map and slices
-	// This is critical for CoW: we need to track old overflow chains to free them later
+	// The cloned node keeps references to the old overflow chains (immutable data, can be shared)
 	if n.OverflowChains != nil {
 		cloned.OverflowChains = make(map[int][]PageID, len(n.OverflowChains))
 		for idx, chain := range n.OverflowChains {
@@ -277,6 +295,10 @@ func (n *Node) Clone() *Node {
 			cloned.OverflowChains[idx] = chainCopy
 		}
 	}
+
+	// ModifiedValues is NOT copied - cloned node starts with no modifications
+	// This allows us to track which values are modified AFTER the clone
+	cloned.ModifiedValues = nil
 
 	return cloned
 }

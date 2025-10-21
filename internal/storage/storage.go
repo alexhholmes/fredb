@@ -95,6 +95,13 @@ func (s *Storage) WriteAt(id base.PageID, data []byte) error {
 		return fmt.Errorf("data size %d is not a multiple of page size %d", len(data), base.PageSize)
 	}
 
+	if !directio.IsAligned(data) {
+		// Buffer not aligned - copy to aligned buffer
+		aligned := directio.AlignedBlock(base.PageSize)
+		copy(aligned, data)
+		data = aligned
+	}
+
 	offset := int64(id) * base.PageSize
 	s.writes.Add(1)
 

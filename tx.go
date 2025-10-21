@@ -354,20 +354,9 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 
 	cloned := node.Clone()
 
-	// Allocate new Page for cloned Node
-	pageID := tx.allocatePage()
-
 	// Set up cloned Node with new Page
-	cloned.PageID = pageID
+	cloned.PageID = tx.allocatePage()
 	cloned.Dirty = true
-
-	// Free all overflow chains in the old node
-	chains := node.FreeAllOverflowChains()
-	for _, chain := range chains {
-		for _, pageID = range chain {
-			tx.addFreed(pageID)
-		}
-	}
 
 	// Free the node page itself
 	tx.addFreed(node.PageID)
@@ -409,19 +398,20 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	sp := algo.CalculateSplitPointWithHint(child, insertKey, algo.SplitBalanced)
 
 	// Pure: extract right portion (read-only)
-	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
+	rightKeys, rightVals, rightChildren, rightOverflowChains := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
 	nodeID := tx.allocatePage()
 
 	// State: construct right node
 	node := &base.Node{
-		PageID:   nodeID,
-		Dirty:    true,
-		NumKeys:  uint16(sp.RightCount),
-		Keys:     rightKeys,
-		Values:   rightVals,
-		Children: rightChildren,
+		PageID:         nodeID,
+		Dirty:          true,
+		NumKeys:        uint16(sp.RightCount),
+		Keys:           rightKeys,
+		Values:         rightVals,
+		Children:       rightChildren,
+		OverflowChains: rightOverflowChains,
 	}
 
 	// State: truncate left (child already COW'd, safe to mutate)
