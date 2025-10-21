@@ -76,11 +76,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	if node.IsLeaf() {
 		// In leaf, we need to check the previous position (since loop went past equal keys)
 		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
-			value, err := node.GetValue(i - 1)
-			if err != nil {
-				return nil, err
-			}
-			return value, nil
+			return node.Values[i-1], nil
 		}
 		// Not found in leaf
 		return nil, ErrKeyNotFound
@@ -398,20 +394,19 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	sp := algo.CalculateSplitPointWithHint(child, insertKey, algo.SplitBalanced)
 
 	// Pure: extract right portion (read-only)
-	rightKeys, rightVals, rightChildren, rightOverflowChains := algo.ExtractRightPortion(child, sp)
+	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
 	nodeID := tx.allocatePage()
 
 	// State: construct right node
 	node := &base.Node{
-		PageID:         nodeID,
-		Dirty:          true,
-		NumKeys:        uint16(sp.RightCount),
-		Keys:           rightKeys,
-		Values:         rightVals,
-		Children:       rightChildren,
-		OverflowChains: rightOverflowChains,
+		PageID:   nodeID,
+		Dirty:    true,
+		NumKeys:  uint16(sp.RightCount),
+		Keys:     rightKeys,
+		Values:   rightVals,
+		Children: rightChildren,
 	}
 
 	// State: truncate left (child already COW'd, safe to mutate)
@@ -455,12 +450,8 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 		// Check for update
 		if pos < int(n.NumKeys) && bytes.Equal(n.Keys[pos], key) {
-			// Load old value (handles lazy-loaded overflow values)
-			oldValue, err := n.GetValue(pos)
-			if err != nil {
-				return nil, err
-			}
-			// Make a copy for rollback
+			// Make a copy of old value for rollback
+			oldValue := n.Values[pos]
 			oldValueCopy := make([]byte, len(oldValue))
 			copy(oldValueCopy, oldValue)
 
@@ -849,13 +840,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	// Update parent's child pointer to merged node
 	parent.Children[parentKeyIdx] = leftNode.PageID
 
-	// Track right node and its overflow chains as freed
-	chains := rightNode.FreeAllOverflowChains()
-	for _, chain := range chains {
-		for _, pageID := range chain {
-			tx.addFreed(pageID)
-		}
-	}
+	// Track right node as freed
 	tx.addFreed(rightNode.PageID)
 
 	return parent, true, nil // true = actually merged

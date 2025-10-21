@@ -172,7 +172,7 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 }
 
 // ExtractRightPortion copies right portion data (read-only on input)
-func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals [][]byte, children []base.PageID, overflowChains map[int][]base.PageID) {
+func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals [][]byte, children []base.PageID) {
 	keys = make([][]byte, 0, sp.RightCount)
 	for i := sp.Mid + 1; i < len(node.Keys); i++ {
 		keyCopy := make([]byte, len(node.Keys[i]))
@@ -187,17 +187,6 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 			copy(valCopy, node.Values[i])
 			vals = append(vals, valCopy)
 		}
-
-		// Copy overflow chains for right portion (reindex to start at 0)
-		if node.OverflowChains != nil {
-			overflowChains = make(map[int][]base.PageID)
-			for i := sp.Mid + 1; i < len(node.Values); i++ {
-				if chain, exists := node.OverflowChains[i]; exists {
-					newIdx := i - (sp.Mid + 1) // Reindex to match new values array
-					overflowChains[newIdx] = chain
-				}
-			}
-		}
 	}
 
 	if !node.IsLeaf() {
@@ -207,7 +196,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 		}
 	}
 
-	return keys, vals, children, overflowChains
+	return keys, vals, children
 }
 
 // CanBorrowFrom returns true if node has extra keys to lend

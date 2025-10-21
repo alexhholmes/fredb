@@ -291,7 +291,7 @@ func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
 		Dirty:  false,
 	}
 
-	if err = node.Deserialize(page, p.store.ReadPage); err != nil {
+	if err = node.Deserialize(page); err != nil {
 		return nil, err
 	}
 
@@ -320,25 +320,6 @@ func (p *Pager) WriteTransaction(
 	txID uint64,
 	syncMode SyncMode,
 ) error {
-	// Track overflow pages allocated during serialization
-	overflowPages := make(map[base.PageID]*base.Page)
-
-	// Callback for allocating overflow pages
-	allocPage := func() *base.Page {
-		// Past point of rollback, no need to track if this was allocated from
-		// freelist. Won't cause a double-free.
-		pageID, _ := p.AssignPageID()
-
-		page := &base.Page{}
-		header := &base.PageHeader{
-			PageID: pageID,
-		}
-		page.WriteHeader(header)
-
-		overflowPages[pageID] = page
-		return page
-	}
-
 	// Write all pages to disk
 	buf := p.store.GetBuffer()
 	defer p.store.PutBuffer(buf)
@@ -346,7 +327,7 @@ func (p *Pager) WriteTransaction(
 	if pages.Len() == 1 {
 		// Special case: single page - avoid run logic
 		single, _ := pages.Min()
-		if err := p.WriteRun([]*base.Node{single}, buf, txID, allocPage); err != nil {
+		if err := p.WriteRun([]*base.Node{single}, buf, txID); err != nil {
 			return err
 		}
 	}
@@ -368,7 +349,7 @@ func (p *Pager) WriteTransaction(
 		}
 
 		// Write current run to disk
-		err = p.WriteRun(run, buf, txID, allocPage)
+		err = p.WriteRun(run, buf, txID)
 		if err != nil {
 			return false
 		}
@@ -384,7 +365,7 @@ func (p *Pager) WriteTransaction(
 
 	// Write any remaining run
 	if len(run) > 0 {
-		if err = p.WriteRun(run, buf, txID, allocPage); err != nil {
+		if err = p.WriteRun(run, buf, txID); err != nil {
 			return err
 		}
 	}
@@ -392,7 +373,7 @@ func (p *Pager) WriteTransaction(
 	// Write root separately if dirty
 	if root != nil && root.Dirty {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		err = root.Serialize(txID, page, allocPage)
+		err = root.Serialize(txID, page)
 		if err != nil {
 			return err
 		}
@@ -403,13 +384,6 @@ func (p *Pager) WriteTransaction(
 
 		root.Dirty = false
 		p.cache.Put(root.PageID, root)
-	}
-
-	// Write overflow pages to disk
-	for pageID, overflowPage := range overflowPages {
-		if err := p.store.WritePage(pageID, overflowPage); err != nil {
-			return err
-		}
 	}
 
 	// Add freed pages to pending
@@ -446,12 +420,12 @@ func (p *Pager) WriteTransaction(
 	return nil
 }
 
-func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64, allocPage func() *base.Page) error {
+func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64) error {
 	// Write current run to disk
 	if len(run) == 1 {
 		node := run[0]
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		if err := node.Serialize(txID, page, allocPage); err != nil {
+		if err := node.Serialize(txID, page); err != nil {
 			return err
 		}
 		if err := p.store.WritePage(node.PageID, page); err != nil {
@@ -466,7 +440,7 @@ func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64, allocPage fu
 
 		for i, node := range run {
 			page := (*base.Page)(unsafe.Pointer(&bigBuf[i*base.PageSize]))
-			if err := node.Serialize(txID, page, allocPage); err != nil {
+			if err := node.Serialize(txID, page); err != nil {
 				return err
 			}
 		}

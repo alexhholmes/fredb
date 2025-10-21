@@ -2598,20 +2598,18 @@ func TestPageOverflowLargeValue(t *testing.T) {
 	db, _ := setup(t)
 
 	key := []byte("small_key")
-	// Value that's too large to fit inline in a page - will use overflow pages
+	// Value that's too large to fit inline in a page
+	// PageSize = 4096, PageHeaderSize = 32, LeafElementSize = 16
+	// Available = 4096 - 32 - 16 = 4048 for key+value
+	// small_key = 9 bytes, so max value = 4048 - 9 = 4039
 	largeValue := make([]byte, 4060)
 	for i := range largeValue {
 		largeValue[i] = byte(i % 256)
 	}
 
-	// Should succeed with overflow pages
+	// Should return ErrValueTooLarge (no overflow pages)
 	err := db.Set(key, largeValue)
-	assert.NoError(t, err)
-
-	// Verify we can read it back
-	retrieved, err := db.Get(key)
-	assert.NoError(t, err)
-	assert.Equal(t, largeValue, retrieved)
+	assert.ErrorIs(t, err, ErrValueTooLarge)
 }
 
 func TestPageOverflowCombinedSize(t *testing.T) {
@@ -2640,14 +2638,14 @@ func TestPageOverflowBoundary(t *testing.T) {
 
 	db, _ := setup(t)
 
-	// Test key+value that exactly fits (should succeed)
+	// Test key+value that exceeds available space
 	// PageSize = 4096
 	// PageHeaderSize = 32
 	// LeafElementSize = 16 (2 * uint64)
 	// Available = 4096 - 32 - 16 = 4048 bytes for key+value
 
 	keySize := 1000
-	valueSize := 3000 // Total 4000, should fit
+	valueSize := 3050 // Total 4050 > 4048, should overflow
 
 	key := make([]byte, keySize)
 	value := make([]byte, valueSize)
@@ -2659,12 +2657,7 @@ func TestPageOverflowBoundary(t *testing.T) {
 	}
 
 	err := db.Set(key, value)
-	assert.NoError(t, err)
-
-	// Verify we can retrieve it
-	retrieved, err := db.Get(key)
-	assert.NoError(t, err)
-	assert.Equal(t, valueSize, len(retrieved))
+	assert.ErrorIs(t, err, ErrValueTooLarge)
 }
 
 func TestPageOverflowMaxKeyValue(t *testing.T) {

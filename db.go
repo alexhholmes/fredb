@@ -22,8 +22,9 @@ const (
 	MaxKeySize = 1024
 
 	// MaxValueSize is the maximum length of a value, in bytes.
-	// Following bbolt's limit of (1 << 31) - 2.
-	MaxValueSize = (1 << 31) - 2
+	// Without overflow pages, values must fit inline in leaf pages.
+	// PageSize (4096) - PageHeaderSize (24) - LeafElementSize (16) - MaxKeySize (1024) = 3032 bytes
+	MaxValueSize = 3032
 )
 
 type DB struct {
@@ -84,7 +85,7 @@ func Open(path string, options ...Option) (*DB, error) {
 			Dirty:  false,
 		}
 
-		if err := root.Deserialize(rootPage, nil); err != nil {
+		if err := root.Deserialize(rootPage); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
@@ -157,7 +158,7 @@ func Open(path string, options ...Option) (*DB, error) {
 
 		// 5. Serialize and write all 4 pages
 		leafPage := &base.Page{}
-		err = rootLeaf.Serialize(0, leafPage, nil)
+		err = rootLeaf.Serialize(0, leafPage)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -168,7 +169,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		rootPage := &base.Page{}
-		err = root.Serialize(0, rootPage, nil)
+		err = root.Serialize(0, rootPage)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -179,7 +180,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		bucketLeafPage := &base.Page{}
-		err = rootBucketLeaf.Serialize(0, bucketLeafPage, nil)
+		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -190,7 +191,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		bucketRootPage := &base.Page{}
-		err = rootBucketRoot.Serialize(0, bucketRootPage, nil)
+		err = rootBucketRoot.Serialize(0, bucketRootPage)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -407,7 +408,7 @@ func (db *DB) Close() error {
 	snapshot := db.pager.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
 		page := &base.Page{}
-		err := snapshot.Root.Serialize(snapshot.Meta.TxID, page, nil)
+		err := snapshot.Root.Serialize(snapshot.Meta.TxID, page)
 		if err != nil {
 			return err
 		}
@@ -468,13 +469,7 @@ func collectTreePages(tx *Tx, pageID base.PageID, pageIDs *[]base.PageID) error 
 		}
 	}
 
-	// Collect overflow chain pages for all values in this node
-	chains := node.FreeAllOverflowChains()
-	for _, chain := range chains {
-		*pageIDs = append(*pageIDs, chain...)
-	}
-
-	// Add this node's page ID after processing children and overflow
+	// Add this node's page ID after processing children
 	*pageIDs = append(*pageIDs, pageID)
 
 	return nil
