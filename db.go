@@ -45,7 +45,7 @@ type DB struct {
 
 func Open(path string, options ...Option) (*DB, error) {
 	// Apply options
-	opts := DefaultDBOptions()
+	opts := DefaultOptions()
 	for _, opt := range options {
 		opt(&opts)
 	}

@@ -19,21 +19,19 @@ const (
 
 // Options configures database behavior.
 type Options struct {
-	SyncMode        SyncMode
-	MaxCacheSizeMB  int // Maximum size of in-memory cache in MB. 0 means no limit.
-	WriteBufferSize int // Write buffer size in bytes
-	MaxReaders      int // Maximum number of concurrent readers
+	SyncMode       SyncMode
+	MaxReaders     int // Maximum number of concurrent readers
+	MaxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
-// DefaultDBOptions returns safe default configuration.
+// DefaultOptions returns safe default configuration.
 //
 // goland:noinspection GoUnusedExportedFunction
-func DefaultDBOptions() Options {
-	return Options{
-		SyncMode:        SyncEveryCommit,
-		MaxCacheSizeMB:  512,             // 512MB
-		WriteBufferSize: 1 * 1024 * 1024, // 1MB
-		MaxReaders:      256,
+func DefaultOptions() Option {
+	return func(opts *Options) {
+		opts.SyncMode = SyncEveryCommit
+		opts.MaxReaders = 256
+		opts.MaxCacheSizeMB = 1024
 	}
 }
 
@@ -61,29 +59,6 @@ func WithSyncOff() Option {
 	}
 }
 
-// WithCacheSizeMB sets the maximum size of in-memory cache in MB.
-// When the cache exceeds this size, the least recently used items are evicted.
-//
-//goland:noinspection GoUnusedExportedFunction
-func WithCacheSizeMB(mb int) Option {
-	return func(opts *Options) {
-		opts.MaxCacheSizeMB = mb
-	}
-}
-
-// WithWriteBufferSize sets the write buffer size in bytes. This is used within
-// a write transaction to keep track of uncommitted changes before writing to
-// the in-memory btree with sorted writes (improving btree localization).
-// Larger sizes can improve write throughput at the cost of higher memory usage.
-// Defaults to 1MB.
-//
-//goland:noinspection GoUnusedExportedFunction
-func WithWriteBufferSize(size int) Option {
-	return func(opts *Options) {
-		opts.WriteBufferSize = size
-	}
-}
-
 // WithMaxReaders sets the maximum number of concurrent readers.
 // Higher values allow more concurrent read transactions at the cost of
 // increased memory usage for tracking readers and slightly slower
@@ -93,5 +68,15 @@ func WithWriteBufferSize(size int) Option {
 func WithMaxReaders(n int) Option {
 	return func(opts *Options) {
 		opts.MaxReaders = n
+	}
+}
+
+// WithCacheSizeMB sets the maximum size of in-memory cache in MB.
+// When the cache exceeds this size, the least recently used items are evicted.
+//
+//goland:noinspection GoUnusedExportedFunction
+func WithCacheSizeMB(mb int) Option {
+	return func(opts *Options) {
+		opts.MaxCacheSizeMB = mb
 	}
 }
