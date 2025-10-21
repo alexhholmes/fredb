@@ -2114,3 +2114,232 @@ func BenchmarkRangeScan(b *testing.B) {
 		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
 	})
 }
+
+// Overflow Page Benchmarks
+
+func BenchmarkOverflowWrite(b *testing.B) {
+	const overflowValueSize = 2048
+
+	b.Run("Fredb/SyncOn", func(b *testing.B) {
+		path := "/tmp/bench_overflow_write_fredb_sync.db"
+		defer os.Remove(path)
+
+		db, _ := fredb.Open(path, fredb.WithSyncEveryCommit())
+		defer db.Close()
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Update(func(tx *fredb.Tx) error {
+				return tx.Set(key, value)
+			})
+		}
+	})
+
+	b.Run("Fredb/SyncOff", func(b *testing.B) {
+		path := "/tmp/bench_overflow_write_fredb_nosync.db"
+		defer os.Remove(path)
+
+		db, _ := fredb.Open(path, fredb.WithSyncOff())
+		defer db.Close()
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Update(func(tx *fredb.Tx) error {
+				return tx.Set(key, value)
+			})
+		}
+	})
+
+	b.Run("Bbolt/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_bbolt_sync.db"
+		defer os.Remove(path)
+
+		db, _ := bolt.Open(path, 0600, &bolt.Options{NoSync: false})
+		defer db.Close()
+
+		db.Update(func(tx *bolt.Tx) error {
+			tx.CreateBucket([]byte("test"))
+			return nil
+		})
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte("test")).Put(key, value)
+			})
+		}
+	})
+
+	b.Run("Bbolt/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_bbolt_nosync.db"
+		defer os.Remove(path)
+
+		db, _ := bolt.Open(path, 0600, &bolt.Options{NoSync: true})
+		defer db.Close()
+
+		db.Update(func(tx *bolt.Tx) error {
+			tx.CreateBucket([]byte("test"))
+			return nil
+		})
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte("test")).Put(key, value)
+			})
+		}
+	})
+
+	b.Run("Badger/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_badger_sync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		opts := badger.DefaultOptions(path).WithSyncWrites(true).WithLogger(nil)
+		db, _ := badger.Open(opts)
+		defer db.Close()
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Update(func(txn *badger.Txn) error {
+				return txn.Set(key, value)
+			})
+		}
+	})
+
+	b.Run("Badger/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_badger_nosync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		opts := badger.DefaultOptions(path).WithSyncWrites(false).WithLogger(nil)
+		db, _ := badger.Open(opts)
+		defer db.Close()
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Update(func(txn *badger.Txn) error {
+				return txn.Set(key, value)
+			})
+		}
+	})
+
+	b.Run("Pebble/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_pebble_sync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		db, _ := pebble.Open(path, &pebble.Options{Logger: nil})
+		defer db.Close()
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Set(key, value, pebble.Sync)
+		}
+	})
+
+	b.Run("Pebble/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_pebble_nosync.db"
+		os.RemoveAll(path)
+		defer os.RemoveAll(path)
+
+		db, _ := pebble.Open(path, &pebble.Options{Logger: nil})
+		defer db.Close()
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Set(key, value, pebble.NoSync)
+		}
+	})
+
+	b.Run("SQLite/SyncOn", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_sqlite_sync.db"
+		os.Remove(path)
+		defer os.Remove(path)
+
+		db, _ := sql.Open("sqlite", path)
+		defer db.Close()
+
+		db.Exec("PRAGMA synchronous=FULL")
+		db.Exec("PRAGMA journal_mode=WAL")
+		db.Exec("CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)")
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", key, value)
+		}
+	})
+
+	b.Run("SQLite/SyncOff", func(b *testing.B) {
+		if *benchFredb {
+			b.Skip()
+		}
+		path := "/tmp/bench_overflow_write_sqlite_nosync.db"
+		os.Remove(path)
+		defer os.Remove(path)
+
+		db, _ := sql.Open("sqlite", path)
+		defer db.Close()
+
+		db.Exec("PRAGMA synchronous=OFF")
+		db.Exec("PRAGMA journal_mode=WAL")
+		db.Exec("CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)")
+
+		value := make([]byte, overflowValueSize)
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			key := []byte(fmt.Sprintf("key-%020d", i))
+			db.Exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", key, value)
+		}
+	})
+}
+
