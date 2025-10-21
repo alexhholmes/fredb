@@ -100,7 +100,6 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 // Returns ErrTxNotWritable if called on a read-only transaction.
 // Returns ErrKeyTooLarge if key exceeds MaxKeySize (32KB).
 // Returns ErrValueTooLarge if value exceeds MaxValueSize (16MB).
-// Returns ErrPageOverflow if key+value is too large to fit in a single page.
 func (tx *Tx) Set(key, value []byte) error {
 	if err := tx.check(); err != nil {
 		return err
@@ -349,21 +348,10 @@ func (tx *Tx) check() error {
 // Performs COW only if the Node doesn't already belong to this transaction.
 // Returns a writable Node (either the original if already owned, or a Clone).
 func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
-	// 1. Check TX-local cache first - if already COW'd in this transaction
 	if cloned, exists := tx.pages.Get(node); exists {
 		return cloned, nil
 	}
 
-	// 2. Check if this Node was allocated in this transaction (virtual page ID)
-	// Virtual page IDs are negative numbers
-	if int64(node.PageID) < 0 {
-		// Node already owned by this transaction, no COW needed
-		// But we still need to add it to tx.pages so it gets committed
-		tx.pages.ReplaceOrInsert(node)
-		return node, nil
-	}
-
-	// 3. Node doesn't belong to this transaction, perform Copy-On-Write
 	cloned := node.Clone()
 
 	// Allocate new Page for cloned Node
