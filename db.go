@@ -167,6 +167,7 @@ func Open(path string, options ...Option) (*DB, error) {
 			_ = pg.Close()
 			return nil, err
 		}
+		pg.TrackWrite(rootLeafID)
 
 		rootPage := &base.Page{}
 		err = root.Serialize(0, rootPage)
@@ -178,6 +179,7 @@ func Open(path string, options ...Option) (*DB, error) {
 			_ = pg.Close()
 			return nil, err
 		}
+		pg.TrackWrite(rootPageID)
 
 		bucketLeafPage := &base.Page{}
 		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
@@ -189,6 +191,7 @@ func Open(path string, options ...Option) (*DB, error) {
 			_ = pg.Close()
 			return nil, err
 		}
+		pg.TrackWrite(rootBucketLeafID)
 
 		bucketRootPage := &base.Page{}
 		err = rootBucketRoot.Serialize(0, bucketRootPage)
@@ -200,6 +203,7 @@ func Open(path string, options ...Option) (*DB, error) {
 			_ = pg.Close()
 			return nil, err
 		}
+		pg.TrackWrite(rootBucketRootID)
 
 		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
@@ -415,6 +419,7 @@ func (db *DB) Close() error {
 		if err := db.store.WritePage(snapshot.Root.PageID, page); err != nil {
 			return err
 		}
+		db.pager.TrackWrite(snapshot.Root.PageID)
 		snapshot.Root.Dirty = false
 	}
 

@@ -9,6 +9,10 @@ import (
 
 // IsAligned checks whether passed byte slice is aligned
 func IsAligned(block []byte) bool {
+	// AlignSize == 0 means no alignment required (e.g., on Darwin)
+	if AlignSize == 0 {
+		return true
+	}
 	return alignment(block, AlignSize) == 0
 }
 

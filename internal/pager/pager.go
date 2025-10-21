@@ -33,7 +33,8 @@ type Pager struct {
 	meta1  base.Snapshot
 
 	// Page allocation tracking (separate from meta to avoid data races)
-	pages atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
+	pages          atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
+	maxWrittenPage atomic.Uint64 // Highest page ID actually written to disk
 
 	// Freelist management (owns its own mutex)
 	freelist *Freelist
@@ -83,15 +84,16 @@ func NewPager(store *storage.Storage, cache *cache.Cache) (*Pager, error) {
 		}
 		meta.Checksum = meta.CalculateChecksum()
 
-		// Set both in-memory copies with Meta and Root (Root is nil initially)
+		// Set both in-memory copies with Meta and RootiReiot is nil initially)
 		c.meta0.Meta = meta
 		c.meta0.Root = nil
 		c.meta1.Meta = meta
 		c.meta1.Root = nil
 		c.active.Store(&c.meta0)
 
-		// Initialize atomic pages counter
+		// Initialize atomic pages counter and max written page
 		c.pages.Store(meta.NumPages)
+		c.maxWrittenPage.Store(2) // Pages 0,1,2 written (meta x2, freelist)
 
 		// Write meta to both disk pages 0 and 1
 		metaPage := &base.Page{}
@@ -180,8 +182,12 @@ func NewPager(store *storage.Storage, cache *cache.Cache) (*Pager, error) {
 		// No cache invalidation needed on startup (cache is empty)
 		c.freelist.Release(activeMeta.Meta.TxID, nil)
 
-		// Initialize atomic pages counter from active meta
+		// Initialize atomic pages counter and max written page from active meta
 		c.pages.Store(activeMeta.Meta.NumPages)
+		// NumPages is count (e.g., 8 pages = IDs 0-7), so max ID is NumPages-1
+		if activeMeta.Meta.NumPages > 0 {
+			c.maxWrittenPage.Store(activeMeta.Meta.NumPages - 1)
+		}
 	}
 
 	return c, nil
@@ -207,6 +213,19 @@ func (p *Pager) FreePage(id base.PageID) {
 	p.freelist.Free(id)
 }
 
+// TrackWrite updates maxWrittenPage after writing a page externally (not via WriteRun)
+func (p *Pager) TrackWrite(pageID base.PageID) {
+	for {
+		old := p.maxWrittenPage.Load()
+		if uint64(pageID) <= old {
+			break
+		}
+		if p.maxWrittenPage.CompareAndSwap(old, uint64(pageID)) {
+			break
+		}
+	}
+}
+
 // ReleasePages moves pages from pending to free for all transactions < minTxnID
 // Invalidates cache entries atomically (under freelist lock) to prevent races.
 func (p *Pager) ReleasePages(minTxnID uint64) int {
@@ -230,8 +249,8 @@ func (p *Pager) GetSnapshot() base.Snapshot {
 // PutSnapshot updates the metadata and root pointer, persists metadata to disk
 // Does NOT make it visible to readers - call CommitSnapshot after fsync
 func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
-	// Sync NumPages from atomic counter (may have uncommitted allocations)
-	meta.NumPages = p.pages.Load()
+	// Set NumPages from max written page + 1 (NumPages is count, not max ID)
+	meta.NumPages = p.maxWrittenPage.Load() + 1
 
 	// Update checksum (after NumPages sync)
 	meta.Checksum = meta.CalculateChecksum()
@@ -384,6 +403,7 @@ func (p *Pager) WriteTransaction(
 
 		root.Dirty = false
 		p.cache.Put(root.PageID, root)
+		p.TrackWrite(root.PageID)
 	}
 
 	// Add freed pages to pending
@@ -434,6 +454,7 @@ func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64) error {
 
 		node.Dirty = false
 		p.cache.Put(node.PageID, node)
+		p.TrackWrite(node.PageID)
 	} else {
 		// Allocate aligned buffer for contiguous write
 		bigBuf := directio.AlignedBlock(len(run) * base.PageSize)
@@ -455,6 +476,10 @@ func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64) error {
 			node.Dirty = false
 			p.cache.Put(node.PageID, node)
 		}
+
+		// Track max written page (last in run since run is sorted)
+		maxNode := run[len(run)-1]
+		p.TrackWrite(maxNode.PageID)
 	}
 
 	return nil
@@ -564,14 +589,24 @@ func (p *Pager) Close() error {
 	p.freelist.Serialize(freelistPages)
 
 	for i := 0; i < pagesNeeded; i++ {
-		if err := p.store.WritePage(meta.FreelistID+base.PageID(i),
-			freelistPages[i]); err != nil {
+		pageID := meta.FreelistID + base.PageID(i)
+		if err := p.store.WritePage(pageID, freelistPages[i]); err != nil {
 			return err
 		}
+		p.TrackWrite(pageID)
 	}
 
-	// Update meta (increment TxID, recalculate checksum)
+	// Update meta (increment TxID, sync NumPages from maxWrittenPage, recalculate checksum)
 	meta.TxID++
+
+	// Sync NumPages from maxWrittenPage, but account for freelist relocation
+	// If freelist was relocated, meta.NumPages was already updated to include those pages
+	numPages := p.maxWrittenPage.Load() + 1
+	if numPages > meta.NumPages {
+		meta.NumPages = numPages
+	}
+	// Otherwise keep meta.NumPages which includes relocated freelist pages
+
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Determine which metapage to write to

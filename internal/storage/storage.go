@@ -97,7 +97,7 @@ func (s *Storage) WriteAt(id base.PageID, data []byte) error {
 
 	if !directio.IsAligned(data) {
 		// Buffer not aligned - copy to aligned buffer
-		aligned := directio.AlignedBlock(base.PageSize)
+		aligned := directio.AlignedBlock(len(data))
 		copy(aligned, data)
 		data = aligned
 	}

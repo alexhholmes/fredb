@@ -921,7 +921,8 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	db1.Close()
 
 	// Reopen and do a second commit (Set without close to avoid extra TxID)
-	db2, _ := Open(tmpfile)
+	db2, err := Open(tmpfile)
+	require.NoError(t, err, "Failed to reopen DB")
 	db2.Set([]byte("key2"), []byte("value2"))
 
 	// Check TxnIDs after second Set (before close)
