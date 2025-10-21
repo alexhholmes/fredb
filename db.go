@@ -45,9 +45,10 @@ type DB struct {
 
 func Open(path string, options ...Option) (*DB, error) {
 	// Apply options
-	opts := DefaultOptions()
+	opts := &Options{}
+	DefaultOptions()(opts)
 	for _, opt := range options {
-		opt(&opts)
+		opt(opts)
 	}
 
 	// Create disk storage
@@ -220,7 +221,7 @@ func Open(path string, options ...Option) (*DB, error) {
 
 	db := &DB{
 		pager:   pg,
-		options: opts,
+		options: *opts,
 		cache:   c,
 		store:   store,
 	}
