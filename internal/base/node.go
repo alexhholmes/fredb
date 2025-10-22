@@ -197,7 +197,6 @@ func (n *Node) IsUnderflow() bool {
 func (n *Node) CheckOverflow() error {
 	size := n.Size()
 	if size > PageSize {
-		println("DEBUG CheckOverflow: size=", size, "PageSize=", PageSize, "NumKeys=", n.NumKeys)
 		return ErrPageOverflow
 	}
 	return nil
