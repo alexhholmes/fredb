@@ -33,9 +33,9 @@ type Tx struct {
 	deletes  map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	// Page tracking
-	pages     *btree.BTreeG[*base.Node] // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed     map[base.PageID]struct{}  // Pages freed in this transaction (for freelist)
-	allocated map[base.PageID]bool      // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
+	pages     *btree.BTreeG[*base.Node]        // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed     map[base.PageID]struct{}         // Pages freed in this transaction (for freelist)
+	allocated map[base.PageID]pager.Allocation // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
 
 	// Reader tracking
 	unregister func() // Slot unregister function in readerSlots array (only for read-only transactions)
@@ -315,7 +315,7 @@ func (tx *Tx) Rollback() error {
 
 		// Return freelist pages back to freelist (fresh pages become holes)
 		for pageID, allocated := range tx.allocated {
-			if !allocated {
+			if allocated == pager.FromIncrement {
 				tx.db.pager.FreePage(pageID)
 			}
 		}

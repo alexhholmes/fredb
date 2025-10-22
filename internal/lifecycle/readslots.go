@@ -1,4 +1,4 @@
-package readslots
+package lifecycle
 
 import (
 	"errors"

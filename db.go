@@ -10,8 +10,8 @@ import (
 
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/cache"
+	"github.com/alexhholmes/fredb/internal/lifecycle"
 	"github.com/alexhholmes/fredb/internal/pager"
-	"github.com/alexhholmes/fredb/internal/readslots"
 	"github.com/alexhholmes/fredb/internal/storage"
 )
 
@@ -35,7 +35,7 @@ type DB struct {
 
 	// Transaction state
 	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
-	readerSlots *readslots.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
+	readerSlots *lifecycle.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
 	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options // Store options for reference
@@ -236,7 +236,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	if opts.MaxReaders < 1 {
 		return nil, ErrInvalidMaxReaders
 	}
-	db.readerSlots = readslots.NewReaderSlots(opts.MaxReaders)
+	db.readerSlots = lifecycle.NewReaderSlots(opts.MaxReaders)
 
 	return db, nil
 }

@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/alexhholmes/fredb/internal/base"
-	"github.com/alexhholmes/fredb/internal/readslots"
+	"github.com/alexhholmes/fredb/internal/lifecycle"
 )
 
 //goland:noinspection GoUnusedGlobalVariable
@@ -23,7 +23,7 @@ var (
 	ErrBucketExists   = errors.New("bucket already exists")
 	ErrBucketNotFound = errors.New("bucket not found")
 
-	ErrTooManyReaders = readslots.ErrTooManyReaders
+	ErrTooManyReaders = lifecycle.ErrTooManyReaders
 
 	ErrPageOverflow       = base.ErrPageOverflow
 	ErrInvalidOffset      = base.ErrInvalidOffset
