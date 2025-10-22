@@ -140,11 +140,11 @@ SyncEveryCommit Mode
 
 - ✅ Zero data loss on power failure
 - ✅ tx.Commit() returns only after durable
-- ❌ Slow throughput (~400-900 TPS, 4ms/op fsync latency)
+- ❌ Slow throughput (~200-300 **Write** TPS, 4ms/op fsync latency)
 
 SyncOff Mode
 
-- ✅ Maximum throughput (~40,000+ TPS, no fsync latency)
+- ✅ Maximum throughput (~3,000+ **Write** TPS, no fsync latency)
 - ❌ All unfsynced data lost on crash
 - Use case: Testing, bulk loads with external backup
 
