@@ -283,9 +283,9 @@ func (tx *Tx) Commit() error {
 	// Phase 5: Release acquired buckets after marking deleted ones
 	// This must happen AFTER releasing DeletedMu to avoid deadlock in ReleaseBucket()
 	// Only release buckets that were actually acquired (not newly created ones)
-	tx.db.tryReleasePages()
+	tx.tryReleasePages()
 	for pageID := range tx.acquired {
-		tx.db.pager.ReleaseBucket(pageID, tx.db.freeTree)
+		tx.db.pager.ReleaseBucket(pageID, tx.freeTree)
 	}
 
 	return nil
@@ -303,7 +303,7 @@ func (tx *Tx) Rollback() error {
 	// Release all acquired buckets (both read and write transactions)
 	// Only release buckets that were actually acquired (not newly created ones)
 	for pageID := range tx.acquired {
-		tx.db.pager.ReleaseBucket(pageID, tx.db.freeTree)
+		tx.db.pager.ReleaseBucket(pageID, tx.freeTree)
 	}
 
 	// Remove from DB tracking
@@ -314,7 +314,7 @@ func (tx *Tx) Rollback() error {
 
 		tx.db.writer.Store(nil)
 
-		tx.db.tryReleasePages()
+		tx.tryReleasePages()
 
 		// Return freelist pages back to freelist (fresh pages become holes)
 		for pageID, allocated := range tx.allocated {
@@ -1207,6 +1207,82 @@ func (tx *Tx) ForEachPrefix(prefix []byte, fn func(key, value []byte) error) err
 
 		// Move to next key
 		k, v = c.Next()
+	}
+
+	return nil
+}
+
+// tryReleasePages releases pages that are safe to reuse based on active transactions.
+func (tx *Tx) tryReleasePages() {
+	// Start with NEXT transaction ID (last assigned + 1)
+	minTxID := tx.db.nextTxID.Load() + 1
+
+	// Consider active write transaction
+	if writerTx := tx.db.writer.Load(); writerTx != nil {
+		if writerTx.txID < minTxID {
+			minTxID = writerTx.txID
+		}
+	}
+
+	// Check reader slots (returns 0 if no readers)
+	readerMinTxID := tx.db.readerSlots.MinTxID()
+	if readerMinTxID > 0 && readerMinTxID < minTxID {
+		minTxID = readerMinTxID
+	}
+
+	tx.db.pager.ReleasePages(minTxID)
+}
+
+// freeTree frees all pages in a B+ tree (bucket) given its root page ID
+func (tx *Tx) freeTree(rootID base.PageID) error {
+	tx, err := tx.db.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	pageIDs := make([]base.PageID, 0)
+
+	// Stack-based post-order traversal
+	type stackItem struct {
+		pageID            base.PageID
+		childrenProcessed bool
+	}
+	stack := []stackItem{{pageID: rootID, childrenProcessed: false}}
+
+	for len(stack) > 0 {
+		item := stack[len(stack)-1]
+
+		if item.childrenProcessed {
+			// Children done, add this page and pop
+			pageIDs = append(pageIDs, item.pageID)
+			stack = stack[:len(stack)-1]
+		} else {
+			node, ok := tx.db.pager.LoadNode(item.pageID)
+			if !ok {
+				return ErrCorruption
+			}
+
+			// Mark as processed
+			stack[len(stack)-1].childrenProcessed = true
+
+			// Push children in reverse for correct post-order
+			if !node.IsLeaf() {
+				for i := len(node.Children) - 1; i >= 0; i-- {
+					stack = append(stack, stackItem{
+						pageID:            node.Children[i],
+						childrenProcessed: false,
+					})
+				}
+			}
+		}
+	}
+
+	tx.db.mu.Lock()
+	defer tx.db.mu.Unlock()
+
+	for _, pageID := range pageIDs {
+		tx.db.pager.FreePage(pageID)
 	}
 
 	return nil
