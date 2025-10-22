@@ -23,15 +23,21 @@ const (
 	SyncOff
 )
 
+// Snapshot bundles metadata and root pointer for atomic visibility with reference counting
+type Snapshot struct {
+	Meta base.MetaPage
+	Root *base.Node
+}
+
 // Pager coordinates store, cache, meta, and freelist
 type Pager struct {
 	cache *cache.Cache     // Simple LRU cache
 	store *storage.Storage // File I/O backend
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
-	active atomic.Pointer[base.Snapshot]
-	meta0  base.Snapshot
-	meta1  base.Snapshot
+	active atomic.Pointer[Snapshot]
+	meta0  Snapshot
+	meta1  Snapshot
 
 	// Page allocation tracking (separate from meta to avoid data races)
 	pages       atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
@@ -243,7 +249,7 @@ func (p *Pager) GetMeta() base.MetaPage {
 
 // GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
 // Returns by value to prevent data races with concurrent PutSnapshot updates
-func (p *Pager) GetSnapshot() base.Snapshot {
+func (p *Pager) GetSnapshot() Snapshot {
 	return *p.active.Load()
 }
 
