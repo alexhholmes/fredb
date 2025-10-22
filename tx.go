@@ -14,7 +14,7 @@ import (
 // Tx represents a transaction on the database.
 //
 // CONCURRENCY: Transactions are NOT thread-safe and must only be used by a single
-// goroutine at a time. Calling Set/Get/Delete/Commit/Rollback concurrently from
+// goroutine at a time. Calling Put/Get/Delete/Commit/Rollback concurrently from
 // multiple goroutines will cause panics and data corruption.
 //
 // Transactions provide a consistent view of the database at the point they were created.
@@ -88,11 +88,11 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	return tx.search(child, key)
 }
 
-// Set writes a key-value pair to the default bucket.
+// Put writes a key-value pair to the default bucket.
 // Returns ErrTxNotWritable if called on a read-only transaction.
 // Returns ErrKeyTooLarge if key exceeds MaxKeySize (32KB).
 // Returns ErrValueTooLarge if value exceeds MaxValueSize (16MB).
-func (tx *Tx) Set(key, value []byte) error {
+func (tx *Tx) Put(key, value []byte) error {
 	if err := tx.check(); err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	if bucket == nil {
 		return ErrBucketNotFound
 	}
-	return bucket.Set(key, value)
+	return bucket.Put(key, value)
 }
 
 // Delete removes a key from the default bucket.
@@ -346,7 +346,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 
 	cloned := node.Clone()
 
-	// Set up cloned Node with new Page
+	// Put up cloned Node with new Page
 	cloned.PageID = tx.allocatePage()
 	cloned.Dirty = true
 

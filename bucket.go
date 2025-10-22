@@ -52,13 +52,13 @@ func (b *Bucket) Get(key []byte) []byte {
 	return val
 }
 
-// Set stores a key-value pair in this bucket
-func (b *Bucket) Set(key, value []byte) error {
+// Put stores a key-value pair in this bucket
+func (b *Bucket) Put(key, value []byte) error {
 	if !b.writable {
 		return ErrTxNotWritable
 	}
 
-	// Validate key/value size (same as Set)
+	// Validate key/value size (same as Put)
 	if len(key) > MaxKeySize {
 		return ErrKeyTooLarge
 	}

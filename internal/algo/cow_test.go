@@ -925,7 +925,7 @@ func TestMergeNodes_BranchNodes_ValuesNilCheck(t *testing.T) {
 		[][]byte{[]byte("k1")},
 		[]base.PageID{1, 2},
 	)
-	// Set Values to non-nil initially (junk data)
+	// Put Values to non-nil initially (junk data)
 	left.Values = [][]byte{[]byte("junk")}
 
 	right := newBranchNode(

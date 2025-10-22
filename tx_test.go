@@ -19,11 +19,11 @@ func TestTxBasicOperations(t *testing.T) {
 
 	// Test Update (write transaction)
 	err := db.Update(func(tx *Tx) error {
-		err := tx.Set([]byte("key1"), []byte("value1"))
+		err := tx.Put([]byte("key1"), []byte("value1"))
 		if err != nil {
 			return err
 		}
-		err = tx.Set([]byte("key2"), []byte("value2"))
+		err = tx.Put([]byte("key2"), []byte("value2"))
 		if err != nil {
 			return err
 		}
@@ -57,7 +57,7 @@ func TestTxCommitRollback(t *testing.T) {
 	// Test commit
 	tx, err := db.Begin(true)
 	require.NoError(t, err)
-	err = tx.Set([]byte("committed"), []byte("value"))
+	err = tx.Put([]byte("committed"), []byte("value"))
 	require.NoError(t, err)
 	err = tx.Commit()
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestTxCommitRollback(t *testing.T) {
 	// Test rollback
 	tx, err = db.Begin(true)
 	require.NoError(t, err)
-	err = tx.Set([]byte("rolled-back"), []byte("should not exist"))
+	err = tx.Put([]byte("rolled-back"), []byte("should not exist"))
 	require.NoError(t, err)
 	err = tx.Rollback()
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestTxMultipleReaders(t *testing.T) {
 
 	// Insert test data
 	err := db.Update(func(tx *Tx) error {
-		return tx.Set([]byte("key"), []byte("value"))
+		return tx.Put([]byte("key"), []byte("value"))
 	})
 	require.NoError(t, err)
 
@@ -165,7 +165,7 @@ func TestTxWriteOnReadOnly(t *testing.T) {
 
 	// Try to write in read-only transaction
 	err = db.View(func(tx *Tx) error {
-		return tx.Set([]byte("key"), []byte("value"))
+		return tx.Put([]byte("key"), []byte("value"))
 	})
 	assert.ErrorIs(t, err, ErrTxNotWritable)
 
@@ -188,7 +188,7 @@ func TestTxDoneCheck(t *testing.T) {
 	require.NoError(t, err)
 
 	// Operations after commit should fail
-	err = tx.Set([]byte("key"), []byte("value"))
+	err = tx.Put([]byte("key"), []byte("value"))
 	assert.ErrorIs(t, err, ErrTxDone)
 
 	_, err = tx.Get([]byte("key"))
@@ -211,7 +211,7 @@ func TestTxAutoRollback(t *testing.T) {
 
 	// Update with error should auto-rollback
 	err := db.Update(func(tx *Tx) error {
-		err := tx.Set([]byte("key"), []byte("value"))
+		err := tx.Put([]byte("key"), []byte("value"))
 		if err != nil {
 			return err
 		}
@@ -247,7 +247,7 @@ func TestTxMultipleBeginWithoutCommit(t *testing.T) {
 	// First transaction should still be valid
 	testKey := []byte("test_key")
 	testValue := []byte("test_value")
-	err = tx1.Set(testKey, testValue)
+	err = tx1.Put(testKey, testValue)
 	assert.NoError(t, err)
 
 	// Commit first transaction
@@ -380,7 +380,7 @@ func TestTxWriteThenReadMultiple(t *testing.T) {
 	require.NoError(t, err)
 
 	// Write in write transaction
-	err = writeTx.Set([]byte("write_key"), []byte("write_value"))
+	err = writeTx.Put([]byte("write_key"), []byte("write_value"))
 	assert.NoError(t, err)
 
 	// Multiple read transactions should be allowed concurrently
@@ -462,7 +462,7 @@ func TestCursorAfterTxCommit(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, tx.Set(key, value))
+		require.NoError(t, tx.Put(key, value))
 	}
 
 	require.NoError(t, tx.Commit())
@@ -516,7 +516,7 @@ func TestCursorAfterWriteTxCommit(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, tx.Set(key, value))
+		require.NoError(t, tx.Put(key, value))
 	}
 
 	// Create cursor in same write transaction
@@ -555,7 +555,7 @@ func TestCursorSnapshotIsolation(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, tx.Set(key, value))
+		require.NoError(t, tx.Put(key, value))
 	}
 
 	require.NoError(t, tx.Commit())
@@ -580,7 +580,7 @@ func TestCursorSnapshotIsolation(t *testing.T) {
 	writeTx, err := db.Begin(true)
 	require.NoError(t, err)
 
-	require.NoError(t, writeTx.Set([]byte("key05"), []byte("modified5")))
+	require.NoError(t, writeTx.Put([]byte("key05"), []byte("modified5")))
 
 	require.NoError(t, writeTx.Commit())
 
@@ -615,7 +615,7 @@ func TestCursorConcurrentModifications(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := []byte(fmt.Sprintf("key%04d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, tx.Set(key, value))
+		require.NoError(t, tx.Put(key, value))
 	}
 
 	require.NoError(t, tx.Commit())
@@ -690,7 +690,7 @@ func TestCursorConcurrentModifications(t *testing.T) {
 			for j := i * 10; j < (i+1)*10 && j < 100; j++ {
 				key := []byte(fmt.Sprintf("key%04d", j))
 				value := []byte(fmt.Sprintf("modified%d", j))
-				tx.Set(key, value)
+				tx.Put(key, value)
 			}
 
 			tx.Commit()
@@ -717,7 +717,7 @@ func TestCursorWithDeletedKeys(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		key := []byte(fmt.Sprintf("key%02d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, tx.Set(key, value))
+		require.NoError(t, tx.Put(key, value))
 	}
 
 	require.NoError(t, tx.Commit())

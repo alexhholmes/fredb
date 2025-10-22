@@ -44,7 +44,7 @@ func BenchmarkSequentialWrite(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			key := []byte(fmt.Sprintf("key-%020d", i))
 			db.Update(func(tx *fredb.Tx) error {
-				return tx.Set(key, value)
+				return tx.Put(key, value)
 			})
 		}
 	})
@@ -62,7 +62,7 @@ func BenchmarkSequentialWrite(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			key := []byte(fmt.Sprintf("key-%020d", i))
 			db.Update(func(tx *fredb.Tx) error {
-				return tx.Set(key, value)
+				return tx.Put(key, value)
 			})
 		}
 	})
@@ -272,7 +272,7 @@ func BenchmarkBatchWrite(b *testing.B) {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < batchSize; j++ {
 					key := []byte(fmt.Sprintf("key-%020d", batchStart+j))
-					if err := tx.Set(key, value); err != nil {
+					if err := tx.Put(key, value); err != nil {
 						return err
 					}
 				}
@@ -296,7 +296,7 @@ func BenchmarkBatchWrite(b *testing.B) {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < batchSize; j++ {
 					key := []byte(fmt.Sprintf("key-%020d", batchStart+j))
-					if err := tx.Set(key, value); err != nil {
+					if err := tx.Put(key, value); err != nil {
 						return err
 					}
 				}
@@ -555,7 +555,7 @@ func BenchmarkSequentialRead(b *testing.B) {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < 100 && i+j < benchNumRecords; j++ {
 					key := []byte(fmt.Sprintf("key-%020d", i+j))
-					tx.Set(key, value)
+					tx.Put(key, value)
 				}
 				return nil
 			})
@@ -718,7 +718,7 @@ func BenchmarkRandomRead(b *testing.B) {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < 100 && i+j < benchNumRecords; j++ {
 					key := []byte(fmt.Sprintf("key-%020d", i+j))
-					tx.Set(key, value)
+					tx.Put(key, value)
 				}
 				return nil
 			})
@@ -896,7 +896,7 @@ func BenchmarkConcurrentRead(b *testing.B) {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < 100 && i+j < benchNumRecords; j++ {
 					key := []byte(fmt.Sprintf("key-%020d", i+j))
-					tx.Set(key, value)
+					tx.Put(key, value)
 				}
 				return nil
 			})
@@ -1079,7 +1079,7 @@ func BenchmarkReadWriteMix(b *testing.B) {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < 100 && i+j < benchNumRecords; j++ {
 					key := []byte(fmt.Sprintf("key-%020d", i+j))
-					tx.Set(key, value)
+					tx.Put(key, value)
 				}
 				return nil
 			})
@@ -1103,7 +1103,7 @@ func BenchmarkReadWriteMix(b *testing.B) {
 				if writeCounter%5 == 0 {
 					start := time.Now().UnixNano()
 					db.Update(func(tx *fredb.Tx) error {
-						return tx.Set(key, value)
+						return tx.Put(key, value)
 					})
 					localWriteNs += time.Now().UnixNano() - start
 					localWriteCount++
@@ -1400,7 +1400,7 @@ func BenchmarkWriteLatency(b *testing.B) {
 			key := []byte(fmt.Sprintf("key-%020d", i))
 			start := time.Now()
 			db.Update(func(tx *fredb.Tx) error {
-				return tx.Set(key, value)
+				return tx.Put(key, value)
 			})
 			latencies = append(latencies, time.Since(start))
 		}
@@ -1435,7 +1435,7 @@ func BenchmarkWriteLatency(b *testing.B) {
 			key := []byte(fmt.Sprintf("key-%020d", i))
 			start := time.Now()
 			db.Update(func(tx *fredb.Tx) error {
-				return tx.Set(key, value)
+				return tx.Put(key, value)
 			})
 			latencies = append(latencies, time.Since(start))
 		}
@@ -1804,7 +1804,7 @@ func BenchmarkRangeScan(b *testing.B) {
 		for i := 0; i < numKeys; i += 100 {
 			db.Update(func(tx *fredb.Tx) error {
 				for j := 0; j < 100 && i+j < numKeys; j++ {
-					tx.Set([]byte(keys[i+j]), value)
+					tx.Put([]byte(keys[i+j]), value)
 				}
 				return nil
 			})

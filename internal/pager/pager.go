@@ -84,7 +84,7 @@ func NewPager(store *storage.Storage, cache *cache.Cache) (*Pager, error) {
 		}
 		meta.Checksum = meta.CalculateChecksum()
 
-		// Set both in-memory copies with Meta and RootiReiot is nil initially)
+		// Put both in-memory copies with Meta and RootiReiot is nil initially)
 		c.meta0.Meta = meta
 		c.meta0.Root = nil
 		c.meta1.Meta = meta
@@ -141,7 +141,7 @@ func NewPager(store *storage.Storage, cache *cache.Cache) (*Pager, error) {
 			return nil, fmt.Errorf("both meta pages corrupted: %v, %v", err0, err1)
 		}
 
-		// Set both in-memory copies with .Meta and .Root (Root will be loaded by DB later)
+		// Put both in-memory copies with .Meta and .Root (Root will be loaded by DB later)
 		if err0 == nil {
 			c.meta0.Meta = *meta0
 			c.meta0.Root = nil // Will be set by DB.Open()
@@ -249,7 +249,7 @@ func (p *Pager) GetSnapshot() base.Snapshot {
 // PutSnapshot updates the metadata and root pointer, persists metadata to disk
 // Does NOT make it visible to readers - call CommitSnapshot after fsync
 func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
-	// Set NumPages from max written page + 1 (NumPages is count, not max ID)
+	// Put NumPages from max written page + 1 (NumPages is count, not max ID)
 	meta.NumPages = p.pagesOnDisk.Load() + 1
 
 	// Update checksum (after NumPages sync)

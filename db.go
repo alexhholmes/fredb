@@ -17,7 +17,7 @@ import (
 
 const (
 	// MaxKeySize is the maximum length of a key, in bytes.
-	// Set conservatively to ensure branch nodes can hold multiple Keys.
+	// Put conservatively to ensure branch nodes can hold multiple Keys.
 	// With 4KB pages, limiting Keys to 1KB allows ~3 Keys per branch Node.
 	MaxKeySize = 1024
 
@@ -256,7 +256,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 func (db *DB) Set(key, value []byte) error {
 	return db.Update(func(tx *Tx) error {
-		return tx.Set(key, value)
+		return tx.Put(key, value)
 	})
 }
 

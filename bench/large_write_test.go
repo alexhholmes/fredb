@@ -43,7 +43,7 @@ func TestLargeWrite(t *testing.T) {
 			for j := 0; j < *batchSize; j++ {
 				keyStr := fmt.Sprintf("%0*d", *keySize, i**batchSize+j)
 				copy(key, keyStr)
-				if err := tx.Set(key, value); err != nil {
+				if err := tx.Put(key, value); err != nil {
 					return err
 				}
 			}
@@ -135,7 +135,7 @@ func TestLargeWrite(t *testing.T) {
 			default:
 				keyStr := fmt.Sprintf("%0*d", *keySize, writeIdx)
 				err := db.Update(func(tx *fredb.Tx) error {
-					return tx.Set([]byte(keyStr), value)
+					return tx.Put([]byte(keyStr), value)
 				})
 				if err != nil {
 					writeErrors++

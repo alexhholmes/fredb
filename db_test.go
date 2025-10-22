@@ -44,7 +44,7 @@ func TestDBBasicOperations(t *testing.T) {
 
 	db, _ := setup(t)
 
-	// Test Set and get
+	// Test Put and get
 	key := []byte("test-key")
 	value := []byte("test-value")
 
@@ -101,7 +101,7 @@ func TestDBClose(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	// Set a key before closing
+	// Put a key before closing
 	err = db.Set([]byte("key"), []byte("value"))
 	assert.NoError(t, err, "Failed to set key")
 
@@ -125,7 +125,7 @@ func TestDBConcurrency(t *testing.T) {
 
 	// Test concurrent access through DB interface
 	// - Launch 100 goroutines
-	// - Mix of get/Set operations
+	// - Mix of get/Put operations
 	// - Verify no races or corruption
 	// - Check final state consistency
 
@@ -157,7 +157,7 @@ func TestDBConcurrency(t *testing.T) {
 						if err == ErrTxInProgress {
 							continue
 						}
-						assert.NoError(t, err, "Set failed")
+						assert.NoError(t, err, "Put failed")
 						if err != nil {
 							return
 						}
@@ -312,7 +312,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 						// Another writer holds the lock, retry
 						continue
 					}
-					if !assert.NoError(t, err, "Set failed for writer %d", id) {
+					if !assert.NoError(t, err, "Put failed for writer %d", id) {
 						return
 					}
 					break
@@ -397,7 +397,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 
 	// Start write transaction, modify value, commit
 	err = db.Update(func(writeTx *Tx) error {
-		return writeTx.Set([]byte("key-0"), []byte("value-0-v2"))
+		return writeTx.Put([]byte("key-0"), []byte("value-0-v2"))
 	})
 	require.NoError(t, err, "Failed to commit write transaction")
 
@@ -566,7 +566,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 							value := []byte(fmt.Sprintf("tx-%d-value-%d", opID, k))
 							result.keys[k] = string(key)
 							result.values[k] = string(value)
-							if err := tx.Set(key, value); err != nil {
+							if err := tx.Put(key, value); err != nil {
 								return err
 							}
 						}
@@ -575,7 +575,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 						updateKey := []byte(result.update)
 						updateValue := []byte(fmt.Sprintf("updated-by-tx-%d", opID))
 						result.values = append(result.values, string(updateValue))
-						if err := tx.Set(updateKey, updateValue); err != nil {
+						if err := tx.Put(updateKey, updateValue); err != nil {
 							return err
 						}
 
@@ -619,7 +619,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 						for k := 0; k < 5; k++ {
 							key := []byte(fmt.Sprintf("rollback-tx-%d-key-%d", opID, k))
 							value := []byte(fmt.Sprintf("rollback-tx-%d-value-%d", opID, k))
-							assert.NoError(t, tx.Set(key, value), "Set failed in rollback test")
+							assert.NoError(t, tx.Put(key, value), "Put failed in rollback test")
 						}
 
 						// Explicit rollback
@@ -637,7 +637,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 						for k := 0; k < 5; k++ {
 							key := []byte(fmt.Sprintf("error-tx-%d-key-%d", opID, k))
 							value := []byte(fmt.Sprintf("error-tx-%d-value-%d", opID, k))
-							if err := tx.Set(key, value); err != nil {
+							if err := tx.Put(key, value); err != nil {
 								return err
 							}
 						}
@@ -855,7 +855,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 							if err == ErrTxInProgress {
 								continue
 							}
-							if !assert.NoError(t, err, "Goroutine %d: Set failed", id) {
+							if !assert.NoError(t, err, "Goroutine %d: Put failed", id) {
 								return
 							}
 							break
@@ -925,12 +925,12 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	db1.Set([]byte("key1"), []byte("value1"))
 	db1.Close()
 
-	// Reopen and do a second commit (Set without close to avoid extra TxID)
+	// Reopen and do a second commit (Put without close to avoid extra TxID)
 	db2, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to reopen DB")
 	db2.Set([]byte("key2"), []byte("value2"))
 
-	// Check TxnIDs after second Set (before close)
+	// Check TxnIDs after second Put (before close)
 	file, err := os.Open(tmpfile)
 	require.NoError(t, err, "Failed to open file")
 	page0 := &base.Page{}
@@ -941,7 +941,7 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 
 	meta0 := page0.ReadMeta()
 	meta1 := page1.ReadMeta()
-	t.Logf("After second Set: Page 0 TxID=%d RootPageID=%d, Page 1 TxID=%d RootPageID=%d",
+	t.Logf("After second Put: Page 0 TxID=%d RootPageID=%d, Page 1 TxID=%d RootPageID=%d",
 		meta0.TxID, meta0.RootPageID, meta1.TxID, meta1.RootPageID)
 
 	// Record the older TxID (should only have key1)
@@ -1602,7 +1602,7 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 
 	// Parse and modify
 	meta := page.ReadMeta()
-	meta.RootPageID = 0 // Set to 0 (invalid state if TxID > 0)
+	meta.RootPageID = 0 // Put to 0 (invalid state if TxID > 0)
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Write back
@@ -1726,7 +1726,7 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 func TestBTreeBasicOps(t *testing.T) {
 	t.Parallel()
 
-	// Test basic get/Set operations
+	// Test basic get/Put operations
 	db, _ := setup(t)
 
 	// Insert key-value pair
@@ -1754,7 +1754,7 @@ func TestBTreeBasicOps(t *testing.T) {
 func TestBTreeUpdate(t *testing.T) {
 	t.Parallel()
 
-	// Test that Set updates existing Keys rather than duplicating
+	// Test that Put updates existing Keys rather than duplicating
 	db, _ := setup(t)
 
 	// Insert key with value1
@@ -2893,7 +2893,7 @@ func TestDBRestartPersistence(t *testing.T) {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%03d", i))
 		err := db.Update(func(tx *Tx) error {
-			return tx.Set(key, value)
+			return tx.Put(key, value)
 		})
 		require.NoError(t, err, "Failed to insert key%03d", i)
 	}

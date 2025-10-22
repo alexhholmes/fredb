@@ -51,13 +51,13 @@ func TestBucketLoad(t *testing.T) {
 func TestBucketCRUD(t *testing.T) {
 	db, _ := setup(t)
 
-	// Test Set/Get
+	// Test Put/Get
 	err := db.Update(func(tx *Tx) error {
 		bucket := tx.Bucket([]byte("__root__"))
 		require.NotNil(t, bucket, "root bucket should exist")
 
-		require.NoError(t, bucket.Set([]byte("key1"), []byte("value1")))
-		require.NoError(t, bucket.Set([]byte("key2"), []byte("value2")))
+		require.NoError(t, bucket.Put([]byte("key1"), []byte("value1")))
+		require.NoError(t, bucket.Put([]byte("key2"), []byte("value2")))
 
 		val1 := bucket.Get([]byte("key1"))
 		require.Equal(t, "value1", string(val1), "should get correct value for key1")
@@ -103,7 +103,7 @@ func TestBucketCRUD(t *testing.T) {
 		bucket := tx.Bucket([]byte("__root__"))
 		require.NotNil(t, bucket, "root bucket should exist")
 
-		err := bucket.Set([]byte("key3"), []byte("value3"))
+		err := bucket.Put([]byte("key3"), []byte("value3"))
 		require.ErrorIs(t, err, ErrTxNotWritable, "put should fail in read-only tx")
 
 		err = bucket.Delete([]byte("key2"))
@@ -117,9 +117,9 @@ func TestBucketCRUD(t *testing.T) {
 	err = db.Update(func(tx *Tx) error {
 		bucket := tx.Bucket([]byte("__root__"))
 
-		require.NoError(t, bucket.Set([]byte("a"), []byte("1")))
-		require.NoError(t, bucket.Set([]byte("b"), []byte("2")))
-		require.NoError(t, bucket.Set([]byte("c"), []byte("3")))
+		require.NoError(t, bucket.Put([]byte("a"), []byte("1")))
+		require.NoError(t, bucket.Put([]byte("b"), []byte("2")))
+		require.NoError(t, bucket.Put([]byte("c"), []byte("3")))
 
 		// Test Cursor
 		c := bucket.Cursor()
@@ -170,7 +170,7 @@ func TestBucketCreateDelete(t *testing.T) {
 		require.Equal(t, "test", string(bucket.name))
 
 		// Add data to bucket
-		require.NoError(t, bucket.Set([]byte("key1"), []byte("value1")))
+		require.NoError(t, bucket.Put([]byte("key1"), []byte("value1")))
 		return nil
 	})
 	require.NoError(t, err)
@@ -241,8 +241,8 @@ func TestBucketDeleteWithConcurrentReaders(t *testing.T) {
 	err := db.Update(func(tx *Tx) error {
 		bucket, err := tx.CreateBucket([]byte("test"))
 		require.NoError(t, err)
-		require.NoError(t, bucket.Set([]byte("key1"), []byte("value1")))
-		require.NoError(t, bucket.Set([]byte("key2"), []byte("value2")))
+		require.NoError(t, bucket.Put([]byte("key1"), []byte("value1")))
+		require.NoError(t, bucket.Put([]byte("key2"), []byte("value2")))
 		return nil
 	})
 	require.NoError(t, err)
@@ -287,7 +287,7 @@ func TestBucketDeleteRollback(t *testing.T) {
 	err := db.Update(func(tx *Tx) error {
 		bucket, err := tx.CreateBucket([]byte("test"))
 		require.NoError(t, err)
-		require.NoError(t, bucket.Set([]byte("key1"), []byte("value1")))
+		require.NoError(t, bucket.Put([]byte("key1"), []byte("value1")))
 		return nil
 	})
 	require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestBucketReferenceCountingMultipleReaders(t *testing.T) {
 	err := db.Update(func(tx *Tx) error {
 		bucket, err := tx.CreateBucket([]byte("test"))
 		require.NoError(t, err)
-		require.NoError(t, bucket.Set([]byte("key1"), []byte("value1")))
+		require.NoError(t, bucket.Put([]byte("key1"), []byte("value1")))
 		return nil
 	})
 	require.NoError(t, err)
