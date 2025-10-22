@@ -395,14 +395,12 @@ func (db *DB) Update(fn func(*Tx) error) error {
 }
 
 func (db *DB) Close() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
 	// Mark database as closed - new transactions will fail
 	db.closed.Store(true)
 
 	// Wait for all active transactions to complete
 	db.txWg.Wait()
+	db.mu.Lock()
 
 	// Release all pending pages
 	db.pager.ReleasePages(math.MaxUint64)
@@ -421,6 +419,11 @@ func (db *DB) Close() error {
 		db.pager.TrackWrite(snapshot.Root.PageID)
 		snapshot.Root.Dirty = false
 	}
+
+	// Safe to unlock, all pager operations finished.
+	// Need to unlock because pager.Close may try to acquire locks causing
+	// a deadlock if we hold db.mu here.
+	db.mu.Unlock()
 
 	// Final sync to ensure durability
 	if err := db.store.Sync(); err != nil {
