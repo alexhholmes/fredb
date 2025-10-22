@@ -156,7 +156,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		rootLeaf.Values = append(rootLeaf.Values, metadata)
 		rootLeaf.NumKeys = 1
 
-		// 5. Serialize and write all 4 pages
+		// 5. serialize and write all 4 pages
 		leafPage := &base.Page{}
 		err = rootLeaf.Serialize(0, leafPage)
 		if err != nil {

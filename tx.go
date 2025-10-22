@@ -173,7 +173,7 @@ func (tx *Tx) Commit() error {
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
 			key := []byte(name)
-			value := bucket.Serialize()
+			value := bucket.serialize()
 
 			// Validate key/value size before insertion
 			if len(key) > MaxKeySize {
@@ -1008,13 +1008,13 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 		return nil
 	}
 
-	// Deserialize bucket metadata
+	// deserialize bucket metadata
 	if len(meta) < 16 {
 		return nil
 	}
 
 	bucket := &Bucket{}
-	bucket.Deserialize(meta)
+	bucket.deserialize(meta)
 	bucket.tx = tx
 	bucket.writable = tx.writable
 	bucket.name = name
@@ -1153,9 +1153,9 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 		return ErrBucketNotFound
 	}
 
-	// Deserialize just to get the rootID
+	// deserialize just to get the rootID
 	var bucket Bucket
-	bucket.Deserialize(meta)
+	bucket.deserialize(meta)
 
 	// Delete bucket metadata from root tree
 	root, err := tx.deleteFromNode(tx.root, name)
@@ -1194,14 +1194,14 @@ func (tx *Tx) ForEachBucket(fn func(name []byte, b *Bucket) error) error {
 			continue
 		}
 
-		// Deserialize bucket metadata
+		// deserialize bucket metadata
 		if len(v) < 16 {
 			continue
 		}
 
 		var err error
 		var bucket Bucket
-		bucket.Deserialize(v)
+		bucket.deserialize(v)
 		bucket.tx = tx
 		bucket.writable = tx.writable
 		bucket.name = k

@@ -23,12 +23,6 @@ const (
 	SyncOff
 )
 
-// Snapshot bundles metadata and root pointer for atomic visibility with reference counting
-type Snapshot struct {
-	Meta base.MetaPage
-	Root *base.Node
-}
-
 // Pager coordinates store, cache, meta, and freelist
 type Pager struct {
 	cache *cache.Cache     // Simple LRU cache
@@ -569,7 +563,7 @@ func (p *Pager) Close() error {
 	// Release all pending pages (no readers at shutdown)
 	p.freelist.Release(math.MaxUint64, nil)
 
-	// Serialize freelist to disk
+	// serialize freelist to disk
 	pagesNeeded := p.freelist.PagesNeeded()
 
 	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data

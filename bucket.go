@@ -19,25 +19,6 @@ type Bucket struct {
 	writable bool
 }
 
-// Serialize encodes bucket metadata to bytes (16 bytes)
-// Format: RootPageID (8 bytes) + Sequence (8 bytes)
-func (b *Bucket) Serialize() []byte {
-	buf := make([]byte, 16)
-	binary.LittleEndian.PutUint64(buf[0:8], uint64(b.root.PageID))
-	binary.LittleEndian.PutUint64(buf[8:16], b.sequence)
-	return buf
-}
-
-// Deserialize decodes bucket metadata from bytes
-// Returns (rootPageID, sequence)
-func (b *Bucket) Deserialize(data []byte) {
-	if len(data) < 16 {
-		return
-	}
-	b.rootID = base.PageID(binary.LittleEndian.Uint64(data[0:8]))
-	b.sequence = binary.LittleEndian.Uint64(data[8:16])
-}
-
 // Get retrieves the value for a key from this bucket
 func (b *Bucket) Get(key []byte) []byte {
 	if b.root == nil {
@@ -64,12 +45,6 @@ func (b *Bucket) Put(key, value []byte) error {
 	}
 	if len(value) > MaxValueSize {
 		return ErrValueTooLarge
-	}
-
-	// Check key size fits in page (values can overflow)
-	maxKeySize := base.PageSize - base.PageHeaderSize - base.LeafElementSize
-	if len(key) > maxKeySize {
-		return ErrPageOverflow
 	}
 
 	// Copy key and value to prevent aliasing bugs
@@ -219,4 +194,23 @@ func (b *Bucket) SetSequence(v uint64) error {
 	}
 	b.sequence = v
 	return nil
+}
+
+// serialize encodes bucket metadata to bytes (16 bytes)
+// Format: RootPageID (8 bytes) + Sequence (8 bytes)
+func (b *Bucket) serialize() []byte {
+	buf := make([]byte, 16)
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(b.root.PageID))
+	binary.LittleEndian.PutUint64(buf[8:16], b.sequence)
+	return buf
+}
+
+// deserialize decodes bucket metadata from bytes
+// Returns (rootPageID, sequence)
+func (b *Bucket) deserialize(data []byte) {
+	if len(data) < 16 {
+		return
+	}
+	b.rootID = base.PageID(binary.LittleEndian.Uint64(data[0:8]))
+	b.sequence = binary.LittleEndian.Uint64(data[8:16])
 }

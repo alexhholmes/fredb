@@ -41,7 +41,7 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 	page.WriteHeader(header)
 
 	if n.IsLeaf() {
-		// Serialize leaf Node - pack from end backward
+		// serialize leaf Node - pack from end backward
 		dataOffset := uint16(PageSize)
 		// Process in reverse order to pack from end
 		for i := int(n.NumKeys) - 1; i >= 0; i-- {
@@ -68,7 +68,7 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 			page.WriteLeafElement(i, elem)
 		}
 	} else {
-		// Serialize branch Node (B+ tree: only Keys, no Values)
+		// serialize branch Node (B+ tree: only Keys, no Values)
 		// Write Children[0] at fixed location (last 8 bytes)
 		if len(n.Children) > 0 {
 			page.WriteBranchFirstChild(n.Children[0])
@@ -105,7 +105,7 @@ func (n *Node) Deserialize(p *Page) error {
 	n.Dirty = false
 
 	if (header.Flags & LeafPageFlag) != 0 {
-		// Deserialize leaf Node
+		// deserialize leaf Node
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
@@ -123,7 +123,7 @@ func (n *Node) Deserialize(p *Page) error {
 			copy(n.Values[i], p.Data[elem.ValueOffset:elem.ValueOffset+elem.ValueSize])
 		}
 	} else {
-		// Deserialize branch Node (B+ tree: only Keys, no Values)
+		// deserialize branch Node (B+ tree: only Keys, no Values)
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = nil // Branch nodes don't have Values
 		n.Children = make([]PageID, n.NumKeys+1)
