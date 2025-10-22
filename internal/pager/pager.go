@@ -349,50 +349,50 @@ func (p *Pager) WriteTransaction(
 		if err := p.WriteRun([]*base.Node{single}, buf, txID); err != nil {
 			return err
 		}
-	}
+	} else {
+		// Ascend the btree, forming contiguous runs of nodes to write at once
+		var err error
+		run := make([]*base.Node, 0, pages.Len())
+		pages.Ascend(func(item *base.Node) bool {
+			if len(run) == 0 {
+				run = append(run, item)
+				return true
+			}
 
-	// Ascend the btree, forming contiguous runs of nodes to write at once
-	var err error
-	run := make([]*base.Node, 0, pages.Len())
-	pages.Ascend(func(item *base.Node) bool {
-		if len(run) == 0 {
+			// Check if current item is contiguous with last in run
+			last := run[len(run)-1]
+			if item.PageID == last.PageID+1 {
+				run = append(run, item)
+				return true
+			}
+
+			// Write current run to disk
+			err = p.WriteRun(run, buf, txID)
+			if err != nil {
+				return false
+			}
+
+			// Start new run with current item
+			run = run[:0]
 			run = append(run, item)
 			return true
-		}
-
-		// Check if current item is contiguous with last in run
-		last := run[len(run)-1]
-		if item.PageID == last.PageID+1 {
-			run = append(run, item)
-			return true
-		}
-
-		// Write current run to disk
-		err = p.WriteRun(run, buf, txID)
+		})
 		if err != nil {
-			return false
+			return err
 		}
 
-		// Start new run with current item
-		run = run[:0]
-		run = append(run, item)
-		return true
-	})
-	if err != nil {
-		return err
-	}
-
-	// Write any remaining run
-	if len(run) > 0 {
-		if err = p.WriteRun(run, buf, txID); err != nil {
-			return err
+		// Write any remaining run
+		if len(run) > 0 {
+			if err = p.WriteRun(run, buf, txID); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Write root separately if dirty
 	if root != nil && root.Dirty {
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		err = root.Serialize(txID, page)
+		err := root.Serialize(txID, page)
 		if err != nil {
 			return err
 		}
@@ -423,13 +423,13 @@ func (p *Pager) WriteTransaction(
 	meta.TxID = txID
 	meta.Checksum = meta.CalculateChecksum()
 
-	if err = p.PutSnapshot(meta, root); err != nil {
+	if err := p.PutSnapshot(meta, root); err != nil {
 		return err
 	}
 
 	// Conditional sync (this is the commit point!)
 	if syncMode == SyncEveryCommit {
-		if err = p.store.Sync(); err != nil {
+		if err := p.store.Sync(); err != nil {
 			return err
 		}
 	}

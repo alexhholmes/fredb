@@ -1,4 +1,4 @@
-package fredb_test
+package bench
 
 import (
 	"database/sql"
@@ -2114,4 +2114,3 @@ func BenchmarkRangeScan(b *testing.B) {
 		b.ReportMetric(float64(p999.Nanoseconds()), "p999-ns")
 	})
 }
-

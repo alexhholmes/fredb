@@ -112,7 +112,7 @@ func (tx *Tx) Set(key, value []byte) error {
 	if bucket == nil {
 		return ErrBucketNotFound
 	}
-	return bucket.Put(key, value)
+	return bucket.Set(key, value)
 }
 
 // Delete removes a key from the default bucket.
@@ -846,10 +846,8 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 // This is called when both nodes are underflow but merging them would exceed page size
 func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) error {
 	if leftNode.IsLeaf() {
-		// Leaf nodes: simple redistribution (no separator to account for)
-		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
-		leftCount := totalKeys / 2
 		// Combine all keys and values
+		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
 		allKeys := make([][]byte, 0, totalKeys)
 		allValues := make([][]byte, 0, totalKeys)
 
@@ -858,7 +856,34 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		allValues = append(allValues, leftNode.Values[:leftNode.NumKeys]...)
 		allValues = append(allValues, rightNode.Values[:rightNode.NumKeys]...)
 
-		// Split evenly
+		// Find split point by size, not count
+		// Target: split when left node reaches ~half of combined size
+		totalSize := 0
+		for i := 0; i < totalKeys; i++ {
+			totalSize += base.LeafElementSize + len(allKeys[i]) + len(allValues[i])
+		}
+		targetSize := totalSize / 2
+
+		leftCount := 0
+		leftSize := base.PageHeaderSize
+		for i := 0; i < totalKeys-1; i++ { // -1 to ensure right has at least 1 key
+			entrySize := base.LeafElementSize + len(allKeys[i]) + len(allValues[i])
+			if leftSize+entrySize > targetSize && i > 0 {
+				break
+			}
+			leftSize += entrySize
+			leftCount++
+		}
+
+		// Ensure at least 1 key in each node
+		if leftCount == 0 {
+			leftCount = 1
+		}
+		if leftCount >= totalKeys {
+			leftCount = totalKeys - 1
+		}
+
+		// Split at calculated point
 		leftNode.NumKeys = uint16(leftCount)
 		leftNode.Keys = make([][]byte, leftCount)
 		leftNode.Values = make([][]byte, leftCount)
@@ -874,10 +899,17 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 
 		// Update parent separator to first key of right node
 		parent.Keys[parentKeyIdx] = rightNode.Keys[0]
+
+		// Check for overflow after redistribution
+		if err := leftNode.CheckOverflow(); err != nil {
+			return err
+		}
+		if err := rightNode.CheckOverflow(); err != nil {
+			return err
+		}
 	} else {
 		// Branch node: include parent separator key in redistribution
 		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys) + 1 // +1 for parent separator
-		leftCount := totalKeys / 2
 
 		allKeys := make([][]byte, 0, totalKeys)
 		allChildren := make([]base.PageID, 0, totalKeys+1)
@@ -889,12 +921,35 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		// Parent separator
 		allKeys = append(allKeys, parent.Keys[parentKeyIdx])
 
-		// Right node keys and children (include ALL children from both nodes)
+		// Right node keys and children
 		allKeys = append(allKeys, rightNode.Keys[:rightNode.NumKeys]...)
 		allChildren = append(allChildren, rightNode.Children[:rightNode.NumKeys+1]...)
 
-		// Find split point
-		splitIdx := leftCount
+		// Find split point by size
+		totalSize := 0
+		for i := 0; i < totalKeys; i++ {
+			totalSize += base.BranchElementSize + len(allKeys[i])
+		}
+		targetSize := totalSize / 2
+
+		splitIdx := 0
+		leftSize := base.PageHeaderSize + 8 // +8 for first child pointer
+		for i := 0; i < totalKeys-1; i++ { // -1 to ensure right has at least 1 key
+			entrySize := base.BranchElementSize + len(allKeys[i])
+			if leftSize+entrySize > targetSize && i > 0 {
+				break
+			}
+			leftSize += entrySize
+			splitIdx++
+		}
+
+		// Ensure at least 1 key in each side
+		if splitIdx == 0 {
+			splitIdx = 1
+		}
+		if splitIdx >= totalKeys-1 {
+			splitIdx = totalKeys - 2
+		}
 
 		// Split keys (separator goes to parent)
 		newSeparator := allKeys[splitIdx]
@@ -914,6 +969,14 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 
 		// Update parent separator
 		parent.Keys[parentKeyIdx] = newSeparator
+
+		// Check for overflow after redistribution
+		if err := leftNode.CheckOverflow(); err != nil {
+			return err
+		}
+		if err := rightNode.CheckOverflow(); err != nil {
+			return err
+		}
 	}
 
 	leftNode.Dirty = true

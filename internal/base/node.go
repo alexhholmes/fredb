@@ -197,6 +197,7 @@ func (n *Node) IsUnderflow() bool {
 func (n *Node) CheckOverflow() error {
 	size := n.Size()
 	if size > PageSize {
+		println("DEBUG CheckOverflow: size=", size, "PageSize=", PageSize, "NumKeys=", n.NumKeys)
 		return ErrPageOverflow
 	}
 	return nil
@@ -205,7 +206,10 @@ func (n *Node) CheckOverflow() error {
 // IsFull checks if a Node is full
 func (n *Node) IsFull(key, value []byte) bool {
 	if n.IsLeaf() {
-		return n.Size()+LeafElementSize+len(key)+len(value) > PageSize
+		currentSize := n.Size()
+		projectedSize := currentSize + LeafElementSize + len(key) + len(value)
+		isFull := projectedSize > PageSize
+		return isFull
 	}
 	// Branch nodes only have keys, no values
 	return n.Size()+BranchElementSize+len(key) > PageSize

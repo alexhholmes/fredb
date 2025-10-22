@@ -52,13 +52,13 @@ func (b *Bucket) Get(key []byte) []byte {
 	return val
 }
 
-// Put stores a key-value pair in this bucket
-func (b *Bucket) Put(key, value []byte) error {
+// Set stores a key-value pair in this bucket
+func (b *Bucket) Set(key, value []byte) error {
 	if !b.writable {
 		return ErrTxNotWritable
 	}
 
-	// Validate key/value size (same as Put)
+	// Validate key/value size (same as Set)
 	if len(key) > MaxKeySize {
 		return ErrKeyTooLarge
 	}
@@ -71,6 +71,17 @@ func (b *Bucket) Put(key, value []byte) error {
 	if len(key) > maxKeySize {
 		return ErrPageOverflow
 	}
+
+	// Copy key and value to prevent aliasing bugs
+	// User may reuse the provided buffers after this call returns
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+	valueCopy := make([]byte, len(value))
+	copy(valueCopy, value)
+
+	// Use copies for all subsequent operations
+	key = keyCopy
+	value = valueCopy
 
 	// Handle root split if needed
 	if b.root.IsFull(key, value) {
