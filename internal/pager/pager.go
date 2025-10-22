@@ -2,6 +2,7 @@ package pager
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -558,6 +559,9 @@ func (p *Pager) Close() error {
 
 	// Get active meta for reading
 	meta := p.active.Load().Meta
+
+	// Release all pending pages (no readers at shutdown)
+	p.freelist.Release(math.MaxUint64, nil)
 
 	// Serialize freelist to disk
 	pagesNeeded := p.freelist.PagesNeeded()

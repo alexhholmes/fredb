@@ -8,11 +8,6 @@ import (
 	"github.com/alexhholmes/fredb/internal/base"
 )
 
-const (
-	// PendingMarker indicates transition from Free IDs to pending entries in serialization
-	PendingMarker = base.PageID(0xFFFFFFFFFFFFFFFF)
-)
-
 // Freelist manages Free and pending pages for MVCC transaction isolation.
 // Pages are freed in two stages:
 // 1. Pending: Pages freed at epoch cannot be reused until all readers < epoch complete
@@ -74,10 +69,10 @@ func (f *Freelist) Release(minEpoch uint64, onRelease func(base.PageID)) int {
 	for epoch, pages := range f.pending {
 		if epoch <= minEpoch {
 			for _, pageID := range pages {
-				f.freed[pageID] = struct{}{}
 				if onRelease != nil {
 					onRelease(pageID) // Cache invalidation happens atomically under lock
 				}
+				f.freed[pageID] = struct{}{}
 				released++
 			}
 			delete(f.pending, epoch)
@@ -92,17 +87,7 @@ func (f *Freelist) PagesNeeded() int {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	freeBytes := 8 + len(f.freed)*8
-
-	pendingBytes := 0
-	if len(f.pending) > 0 {
-		pendingBytes = 8 + 8 // marker + count
-		for _, pages := range f.pending {
-			pendingBytes += 8 + 8 + len(pages)*8 // epoch + count + pageIDs
-		}
-	}
-
-	totalBytes := freeBytes + pendingBytes
+	totalBytes := 8 + len(f.freed)*8
 	if totalBytes == 0 {
 		return 1
 	}
@@ -149,50 +134,6 @@ func (f *Freelist) Serialize(pages []*base.Page) {
 		buf = append(buf, idBytes...)
 	}
 
-	// Write pending data if present
-	if len(f.pending) > 0 {
-		// Write marker
-		markerBytes := make([]byte, 8)
-		*(*base.PageID)(unsafe.Pointer(&markerBytes[0])) = PendingMarker
-		buf = append(buf, markerBytes...)
-
-		// Write pending count
-		pendingCountBytes := make([]byte, 8)
-		*(*uint64)(unsafe.Pointer(&pendingCountBytes[0])) = uint64(len(f.pending))
-		buf = append(buf, pendingCountBytes...)
-
-		// Sort epochs for deterministic serialization
-		epochs := make([]uint64, 0, len(f.pending))
-		for epoch := range f.pending {
-			epochs = append(epochs, epoch)
-		}
-		sort.Slice(epochs, func(i, j int) bool {
-			return epochs[i] < epochs[j]
-		})
-
-		// Write each pending entry (epoch + page count + pageIDs)
-		for _, epoch := range epochs {
-			pages := f.pending[epoch]
-
-			// Write epoch
-			epochBytes := make([]byte, 8)
-			*(*uint64)(unsafe.Pointer(&epochBytes[0])) = epoch
-			buf = append(buf, epochBytes...)
-
-			// Write page count
-			countBytes := make([]byte, 8)
-			*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(pages))
-			buf = append(buf, countBytes...)
-
-			// Write pageIDs
-			for _, pageID := range pages {
-				pidBytes := make([]byte, 8)
-				*(*base.PageID)(unsafe.Pointer(&pidBytes[0])) = pageID
-				buf = append(buf, pidBytes...)
-			}
-		}
-	}
-
 	// Copy buffer to pages
 	offset := 0
 	for i := 0; i < len(pages); i++ {
@@ -232,55 +173,6 @@ func (f *Freelist) Deserialize(pages []*base.Page) {
 		id := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
 		f.freed[id] = struct{}{}
 		offset += 8
-	}
-
-	// Check for pending marker
-	if offset+8 > len(buf) {
-		return
-	}
-	marker := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
-	if marker != PendingMarker {
-		return
-	}
-	offset += 8
-
-	// Read pending count
-	if offset+8 > len(buf) {
-		return
-	}
-	pendingCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
-	offset += 8
-
-	// Read pending entries (epoch + page count + pageIDs)
-	for i := uint64(0); i < pendingCount; i++ {
-		// Read epoch
-		if offset+8 > len(buf) {
-			break
-		}
-		epoch := *(*uint64)(unsafe.Pointer(&buf[offset]))
-		offset += 8
-
-		// Read page count
-		if offset+8 > len(buf) {
-			break
-		}
-		pageCount := *(*uint64)(unsafe.Pointer(&buf[offset]))
-		offset += 8
-
-		// Read pageIDs
-		pageIDs := make([]base.PageID, 0, pageCount)
-		for j := uint64(0); j < pageCount; j++ {
-			if offset+8 > len(buf) {
-				break
-			}
-			pageID := *(*base.PageID)(unsafe.Pointer(&buf[offset]))
-			pageIDs = append(pageIDs, pageID)
-			offset += 8
-		}
-
-		if len(pageIDs) > 0 {
-			f.pending[epoch] = pageIDs
-		}
 	}
 }
 
