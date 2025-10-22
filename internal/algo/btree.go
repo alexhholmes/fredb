@@ -103,10 +103,28 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 		if len(node.Keys) == 0 {
 			panic("cannot split empty node")
 		}
-		// Split at first key - left gets the entry, right gets nothing
-		// This way, ascending inserts go to the empty right child
-		sep := make([]byte, len(node.Keys[0]))
-		copy(sep, node.Keys[0])
+
+		// Use insertKey to decide which child gets the existing entry
+		// This prevents infinite loop when inserting smaller keys
+		existingKey := node.Keys[0]
+
+		if insertKey != nil && bytes.Compare(insertKey, existingKey) < 0 {
+			// New key < existing: put existing in right, leave left empty
+			// Separator = existing key (right's first key after insert)
+			sep := make([]byte, len(existingKey))
+			copy(sep, existingKey)
+			return SplitPoint{
+				Mid:          -1, // Special: means left gets nothing
+				LeftCount:    0,
+				RightCount:   1,
+				SeparatorKey: sep,
+			}
+		}
+
+		// New key >= existing: put existing in left, leave right empty
+		// Separator = new key (right's first key after insert)
+		sep := make([]byte, len(insertKey))
+		copy(sep, insertKey)
 		return SplitPoint{
 			Mid:          0,
 			LeftCount:    1,
@@ -137,12 +155,26 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 	case SplitLeftBias:
 		// Keep right node nearly full (90%), left node minimal (10%)
 		mid = int(float64(len(node.Keys)) * 0.1)
-		if mid < 1 {
-			mid = 1
+		// For leaves: need mid+1 < len(keys) to access separator
+		// For branches: need mid < len(keys)
+		minMid := 0
+		if !node.IsLeaf() && mid < 1 {
+			minMid = 1
+		}
+		if mid < minMid {
+			mid = minMid
 		}
 	default:
 		// Balanced split
 		mid = len(node.Keys)/2 - 1
+		if mid < 0 {
+			mid = 0
+		}
+	}
+
+	// Final bounds check for leaf separator access
+	if node.IsLeaf() && mid+1 >= len(node.Keys) {
+		mid = len(node.Keys) - 2
 		if mid < 0 {
 			mid = 0
 		}
@@ -173,8 +205,14 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 
 // ExtractRightPortion copies right portion data (read-only on input)
 func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals [][]byte, children []base.PageID) {
+	// Handle special case: Mid=-1 means right gets everything (sp.RightCount=1 for single key)
+	startIdx := sp.Mid + 1
+	if sp.Mid == -1 {
+		startIdx = 0
+	}
+
 	keys = make([][]byte, 0, sp.RightCount)
-	for i := sp.Mid + 1; i < len(node.Keys); i++ {
+	for i := startIdx; i < len(node.Keys); i++ {
 		keyCopy := make([]byte, len(node.Keys[i]))
 		copy(keyCopy, node.Keys[i])
 		keys = append(keys, keyCopy)
@@ -182,7 +220,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 
 	if node.IsLeaf() {
 		vals = make([][]byte, 0, sp.RightCount)
-		for i := sp.Mid + 1; i < len(node.Values); i++ {
+		for i := startIdx; i < len(node.Values); i++ {
 			valCopy := make([]byte, len(node.Values[i]))
 			copy(valCopy, node.Values[i])
 			vals = append(vals, valCopy)
@@ -191,7 +229,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 
 	if !node.IsLeaf() {
 		children = make([]base.PageID, 0)
-		for i := sp.Mid + 1; i < len(node.Children); i++ {
+		for i := startIdx; i < len(node.Children); i++ {
 			children = append(children, node.Children[i])
 		}
 	}
@@ -238,9 +276,12 @@ func ExtractFirstFromSibling(sibling *base.Node) BorrowData {
 	return data
 }
 
-// InsertAt inserts value at index in slice
+// InsertAt inserts value at index in slice with deep copy
 func InsertAt(slice [][]byte, index int, value []byte) [][]byte {
-	return append(slice[:index], append([][]byte{value}, slice[index:]...)...)
+	// Deep copy the value to prevent aliasing
+	valueCopy := make([]byte, len(value))
+	copy(valueCopy, value)
+	return append(slice[:index], append([][]byte{valueCopy}, slice[index:]...)...)
 }
 
 // RemoveAt removes element at index from slice

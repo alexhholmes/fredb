@@ -7,7 +7,10 @@ import (
 // ApplyLeafUpdate updates a key's value in leaf node
 // Assumes node is already writable (COW'd by caller)
 func ApplyLeafUpdate(node *base.Node, pos int, newValue []byte) {
-	node.Values[pos] = newValue
+	// Deep copy the new value to prevent aliasing
+	valCopy := make([]byte, len(newValue))
+	copy(valCopy, newValue)
+	node.Values[pos] = valCopy
 	node.Dirty = true
 }
 
@@ -97,9 +100,13 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 		// Extract first from right sibling
 		borrowed := ExtractFirstFromSibling(rightSibling)
 
-		// Append to end of node
-		node.Keys = append(node.Keys, borrowed.Key)
-		node.Values = append(node.Values, borrowed.Value)
+		// Deep copy and append to end of node
+		keyCopy := make([]byte, len(borrowed.Key))
+		copy(keyCopy, borrowed.Key)
+		valCopy := make([]byte, len(borrowed.Value))
+		copy(valCopy, borrowed.Value)
+		node.Keys = append(node.Keys, keyCopy)
+		node.Values = append(node.Values, valCopy)
 		node.NumKeys++
 
 		// Remove borrowed key from right sibling
@@ -113,8 +120,10 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 		// Branch borrow: traditional B-tree style
 		borrowed := ExtractFirstFromSibling(rightSibling)
 
-		// Move parent key to node (at end)
-		node.Keys = append(node.Keys, parent.Keys[parentKeyIdx])
+		// Deep copy parent key and append to node
+		keyCopy := make([]byte, len(parent.Keys[parentKeyIdx]))
+		copy(keyCopy, parent.Keys[parentKeyIdx])
+		node.Keys = append(node.Keys, keyCopy)
 		node.Children = append(node.Children, borrowed.Child)
 		node.NumKeys++
 
@@ -143,19 +152,35 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 	hasChildren := len(leftNode.Children) > 0
 
 	if hasChildren {
-		// Branch node: pull down separator key
-		leftNode.Keys = append(leftNode.Keys, separatorKey)
-		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
+		// Branch node: pull down separator key (deep copy)
+		sepCopy := make([]byte, len(separatorKey))
+		copy(sepCopy, separatorKey)
+		leftNode.Keys = append(leftNode.Keys, sepCopy)
+
+		// Deep copy keys from right node
+		for _, key := range rightNode.Keys {
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			leftNode.Keys = append(leftNode.Keys, keyCopy)
+		}
 
 		// Always clear Values for branch nodes (defense against corruption)
 		leftNode.Values = nil
 
-		// Merge children pointers
+		// Merge children pointers (PageIDs are copy-by-value)
 		leftNode.Children = append(leftNode.Children, rightNode.Children...)
 	} else {
-		// Leaf node: no separator, merge keys and values
-		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
-		leftNode.Values = append(leftNode.Values, rightNode.Values...)
+		// Leaf node: no separator, deep copy keys and values from right
+		for _, key := range rightNode.Keys {
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			leftNode.Keys = append(leftNode.Keys, keyCopy)
+		}
+		for _, val := range rightNode.Values {
+			valCopy := make([]byte, len(val))
+			copy(valCopy, val)
+			leftNode.Values = append(leftNode.Values, valCopy)
+		}
 	}
 
 	// Update left node's key count
@@ -200,13 +225,37 @@ func ApplyChildSplit(parent *base.Node, childIdx int, leftChild, rightChild *bas
 // TruncateLeft modifies node to keep only left portion after split
 // Assumes node is already writable (COW'd by caller)
 func TruncateLeft(node *base.Node, sp SplitPoint) {
+	// Handle special case: Mid=-1 means left gets nothing (sp.LeftCount=0)
+	if sp.Mid == -1 {
+		node.Keys = [][]byte{}
+		if node.IsLeaf() {
+			node.Values = [][]byte{}
+		} else {
+			node.Values = nil
+			node.Children = []base.PageID{}
+		}
+		node.NumKeys = 0
+		node.Dirty = true
+		return
+	}
+
+	// Deep copy keys to prevent aliasing with split sibling
 	leftKeys := make([][]byte, sp.LeftCount)
-	copy(leftKeys, node.Keys[:sp.LeftCount])
+	for i := 0; i < sp.LeftCount; i++ {
+		keyCopy := make([]byte, len(node.Keys[i]))
+		copy(keyCopy, node.Keys[i])
+		leftKeys[i] = keyCopy
+	}
 	node.Keys = leftKeys
 
 	if node.IsLeaf() {
+		// Deep copy values to prevent aliasing with split sibling
 		leftVals := make([][]byte, sp.LeftCount)
-		copy(leftVals, node.Values[:sp.LeftCount])
+		for i := 0; i < sp.LeftCount; i++ {
+			valCopy := make([]byte, len(node.Values[i]))
+			copy(valCopy, node.Values[i])
+			leftVals[i] = valCopy
+		}
 		node.Values = leftVals
 	} else {
 		node.Values = nil

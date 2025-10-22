@@ -934,7 +934,7 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 
 		splitIdx := 0
 		leftSize := base.PageHeaderSize + 8 // +8 for first child pointer
-		for i := 0; i < totalKeys-1; i++ { // -1 to ensure right has at least 1 key
+		for i := 0; i < totalKeys-1; i++ {  // -1 to ensure right has at least 1 key
 			entrySize := base.BranchElementSize + len(allKeys[i])
 			if leftSize+entrySize > targetSize && i > 0 {
 				break
@@ -1274,8 +1274,7 @@ func (tx *Tx) ForEachPrefix(prefix []byte, fn func(key, value []byte) error) err
 
 // tryReleasePages releases pages that are safe to reuse based on active transactions.
 func (tx *Tx) tryReleasePages() {
-	// Start with NEXT transaction ID (last assigned + 1)
-	minTxID := tx.db.nextTxID.Load() + 1
+	minTxID := tx.db.nextTxID.Load()
 
 	// Consider active write transaction
 	if writerTx := tx.db.writer.Load(); writerTx != nil {

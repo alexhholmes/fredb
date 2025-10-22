@@ -96,7 +96,7 @@ func (b *Bucket) Set(key, value []byte) error {
 		}
 
 		b.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-		// Add new root to tx.pages so it gets committed with real PageID
+		// Add new root to tx.pages immediately so ensureWritable can find it
 		b.tx.pages.ReplaceOrInsert(b.root)
 	}
 

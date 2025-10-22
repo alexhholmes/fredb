@@ -230,7 +230,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		cache:   c,
 		store:   store,
 	}
-	db.nextTxID.Store(meta.TxID) // Resume from last committed TxID
+	db.nextTxID.Store(meta.TxID) // Next writer will get TxID + 1
 
 	// Initialize reader tracking based on MaxReaders option
 	if opts.MaxReaders < 1 {
@@ -291,7 +291,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		}
 
 		// Writers get a new unique txnID (atomic increment)
-		txnID := db.nextTxID.Add(1)
+		txnID := db.nextTxID.Add(1) - 1
 
 		// Atomically load current snapshot (meta + root)
 		snapshot := db.pager.GetSnapshot()
