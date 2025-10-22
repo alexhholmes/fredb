@@ -507,6 +507,24 @@ func TestExtractRightPortion(t *testing.T) {
 }
 
 func TestCanBorrowFrom(t *testing.T) {
+	// MinFillRatio = 0.25, PageSize = 4096, so MinSize = 1024 bytes
+	// Create nodes with specific sizes to test borrowing threshold
+
+	makeKeys := func(count, size int) [][]byte {
+		keys := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			keys[i] = make([]byte, size)
+		}
+		return keys
+	}
+	makeValues := func(count, size int) [][]byte {
+		values := make([][]byte, count)
+		for i := 0; i < count; i++ {
+			values[i] = make([]byte, size)
+		}
+		return values
+	}
+
 	tests := []struct {
 		name string
 		node *base.Node
@@ -514,25 +532,28 @@ func TestCanBorrowFrom(t *testing.T) {
 	}{
 		{
 			name: "can_borrow_above_min",
+			// 20 keys * 100 bytes/entry = ~2344 bytes > 1024
 			node: makeLeafNode(
-				make([][]byte, base.MinKeysPerNode+1),
-				make([][]byte, base.MinKeysPerNode+1),
+				makeKeys(20, 50),
+				makeValues(20, 50),
 			),
 			want: true,
 		},
 		{
 			name: "cannot_borrow_at_min",
+			// 16 keys * 46 bytes/entry = ~1016 bytes < 1024
 			node: makeLeafNode(
-				make([][]byte, base.MinKeysPerNode),
-				make([][]byte, base.MinKeysPerNode),
+				makeKeys(16, 23),
+				makeValues(16, 23),
 			),
 			want: false,
 		},
 		{
 			name: "cannot_borrow_below_min",
+			// 10 keys * 46 bytes/entry = ~644 bytes < 1024
 			node: makeLeafNode(
-				make([][]byte, base.MinKeysPerNode-1),
-				make([][]byte, base.MinKeysPerNode-1),
+				makeKeys(10, 23),
+				makeValues(10, 23),
 			),
 			want: false,
 		},

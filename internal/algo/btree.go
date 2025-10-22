@@ -237,9 +237,10 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 	return keys, vals, children
 }
 
-// CanBorrowFrom returns true if node has extra keys to lend
+// CanBorrowFrom returns true if node has extra capacity to lend
+// Must have: 1) more than 1 key (so it can lend one), and 2) not underflow after lending
 func CanBorrowFrom(node *base.Node) bool {
-	return node.NumKeys > base.MinKeysPerNode
+	return node.NumKeys > 1 && !node.IsUnderflow()
 }
 
 // BorrowData contains data borrowed from sibling

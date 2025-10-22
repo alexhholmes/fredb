@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	// MinKeysPerNode is the minimum Keys for non-root nodes
-	MinKeysPerNode = 16
+	// MinFillRatio is the minimum page utilization (25%)
+	MinFillRatio = 0.25
 )
 
 // Node represents a B-tree Node with decoded Page data
@@ -189,9 +189,10 @@ func (n *Node) Clone() *Node {
 	return cloned
 }
 
-// IsUnderflow checks if Node has too few Keys (doesn't apply to root)
+// IsUnderflow checks if Node has insufficient fill ratio (doesn't apply to root)
 func (n *Node) IsUnderflow() bool {
-	return int(n.NumKeys) < MinKeysPerNode
+	minSize := int(float64(PageSize) * MinFillRatio)
+	return n.Size() < minSize
 }
 
 func (n *Node) CheckOverflow() error {
