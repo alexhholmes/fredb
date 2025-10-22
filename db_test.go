@@ -2861,3 +2861,66 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 	t.Logf("After deletions: root.IsLeaf()=%v, root.NumKeys=%d",
 		db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
 }
+
+func TestDBRestartPersistence(t *testing.T) {
+	t.Parallel()
+
+	tmpfile := fmt.Sprintf("/tmp/test_restart_%s.db", t.Name())
+	_ = os.Remove(tmpfile)
+	defer os.Remove(tmpfile)
+
+	// Phase 1: Insert 100 values one at a time
+	db, err := Open(tmpfile, WithCacheSizeMB(0))
+	require.NoError(t, err)
+
+	for i := 0; i < 100; i++ {
+		key := []byte(fmt.Sprintf("key%03d", i))
+		value := []byte(fmt.Sprintf("value%03d", i))
+		err := db.Update(func(tx *Tx) error {
+			return tx.Set(key, value)
+		})
+		require.NoError(t, err, "Failed to insert key%03d", i)
+	}
+
+	// Close the database
+	err = db.Close()
+	require.NoError(t, err)
+
+	// Phase 2: Reopen and read the last value
+	db, err = Open(tmpfile, WithCacheSizeMB(0))
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Read the last key inserted
+	lastKey := []byte("key099")
+	expectedValue := []byte("value099")
+
+	err = db.View(func(tx *Tx) error {
+		val, err := tx.Get(lastKey)
+		if err != nil {
+			return err
+		}
+		if val == nil {
+			return fmt.Errorf("key099 returned nil after restart")
+		}
+		assert.Equal(t, expectedValue, val, "Value mismatch after restart")
+		return nil
+	})
+	require.NoError(t, err)
+
+	// Verify all 100 keys are readable
+	err = db.View(func(tx *Tx) error {
+		for i := 0; i < 100; i++ {
+			key := []byte(fmt.Sprintf("key%03d", i))
+			val, err := tx.Get(key)
+			if err != nil {
+				return err
+			}
+			if val == nil {
+				return fmt.Errorf("key%03d returned nil after restart", i)
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err, "Failed to read all keys after restart")
+}
