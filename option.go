@@ -24,6 +24,9 @@ type Options struct {
 	MaxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
 }
 
+// Option configures database options using the functional options pattern.
+type Option func(*Options)
+
 // DefaultOptions returns safe default configuration.
 //
 // goland:noinspection GoUnusedExportedFunction
@@ -34,9 +37,6 @@ func DefaultOptions() Option {
 		opts.MaxCacheSizeMB = 1024
 	}
 }
-
-// Option configures database options using the functional options pattern.
-type Option func(*Options)
 
 // WithSyncEveryCommit configures the database to fsync on every commit.
 // This provides maximum durability (zero data loss) but lower throughput.
