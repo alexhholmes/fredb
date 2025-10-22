@@ -335,12 +335,11 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	}
 
 	// Register reader in a slot
-	slot, err := db.readerSlots.Register(tx.txID)
+	unregister, err := db.readerSlots.Register(tx.txID)
 	if err != nil {
 		return nil, err
 	}
-	tx.readerSlot = slot
-	tx.usedSlot = true
+	tx.unregister = unregister
 
 	return tx, nil
 }
@@ -449,7 +448,7 @@ func (db *DB) tryReleasePages() {
 	}
 
 	// Check reader slots (returns 0 if no readers)
-	readerMinTxID := db.readerSlots.GetMinTxID()
+	readerMinTxID := db.readerSlots.MinTxID()
 	if readerMinTxID > 0 && readerMinTxID < minTxID {
 		minTxID = readerMinTxID
 	}

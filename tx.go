@@ -25,7 +25,7 @@ type Tx struct {
 	done     bool   // Has Commit() or Rollback() been called?
 
 	db   *DB        // Database this transaction belongs to (concrete type for internal access)
-	root *base.Node // Root Node at transaction start (stores bucket metadata)
+	root *base.Node // Root Node at transaction start (stores bucket metadata, different from the `__root__` bucket root)
 
 	// Bucket tracking
 	buckets  map[string]*Bucket       // Cache of loaded buckets
@@ -38,8 +38,7 @@ type Tx struct {
 	allocated map[base.PageID]bool      // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
 
 	// Reader tracking
-	readerSlot int  // Slot index in readerSlots array (only for read-only transactions)
-	usedSlot   bool // Whether this reader used a slot (vs sync.Map)
+	unregister func() // Slot unregister function in readerSlots array (only for read-only transactions)
 }
 
 // Get retrieves the value for a key from the default bucket.
@@ -324,7 +323,7 @@ func (tx *Tx) Rollback() error {
 			}
 		}
 	} else {
-		tx.db.readerSlots.Unregister(tx.readerSlot)
+		tx.unregister()
 		// Page release is lazy - next writer will handle it
 	}
 
