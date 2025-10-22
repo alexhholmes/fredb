@@ -118,6 +118,16 @@ func (b *Bucket) Delete(key []byte) error {
 	if newRoot != nil {
 		b.root = newRoot
 	}
+
+	// Shrink tree: if root is internal with single child, make child the new root
+	if !b.root.IsLeaf() && len(b.root.Children) == 1 {
+		child, err := b.tx.loadNode(b.root.Children[0])
+		if err != nil {
+			return err
+		}
+		b.root = child
+	}
+
 	return nil
 }
 

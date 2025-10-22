@@ -326,6 +326,15 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	}
 	tx.root = root
 
+	// Shrink tree: if root is internal with single child, make child the new root
+	if !tx.root.IsLeaf() && len(tx.root.Children) == 1 {
+		child, err := tx.loadNode(tx.root.Children[0])
+		if err != nil {
+			return err
+		}
+		tx.root = child
+	}
+
 	// Remove from cache if present
 	delete(tx.buckets, string(name))
 
