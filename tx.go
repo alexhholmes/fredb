@@ -55,9 +55,6 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 	}
 
 	val := bucket.Get(key)
-	if val == nil {
-		return nil, ErrKeyNotFound
-	}
 
 	return val, nil
 }
