@@ -148,6 +148,292 @@ func (tx *Tx) Cursor() *Cursor {
 	return bucket.Cursor()
 }
 
+// Bucket returns an existing bucket or nil
+func (tx *Tx) Bucket(name []byte) *Bucket {
+	if err := tx.check(); err != nil {
+		return nil
+	}
+
+	// Check if transaction deleted bucket
+	if _, deleted := tx.deletes[string(name)]; deleted {
+		return nil
+	}
+
+	// Check tx cache first
+	if b, exists := tx.buckets[string(name)]; exists {
+		return b
+	}
+
+	// Load bucket metadata from root tree (including __root__ bucket)
+	meta, err := tx.search(tx.root, name)
+	if err != nil {
+		return nil
+	}
+
+	// deserialize bucket metadata
+	if len(meta) < 16 {
+		return nil
+	}
+
+	bucket := &Bucket{}
+	bucket.deserialize(meta)
+	bucket.tx = tx
+	bucket.writable = tx.writable
+	bucket.name = name
+	bucket.root, err = tx.loadNode(bucket.rootID)
+	if err != nil {
+		return nil
+	}
+
+	// Important, get a lock on the bucket through the pager in case
+	// the bucket is being deleted concurrently by another transaction.
+	// This must be released on rollback or commit.
+	// Exception: __root__ bucket is never deleted, so no need to track it
+	if string(name) != "__root__" {
+		acquired := tx.db.pager.AcquireBucket(bucket.rootID)
+		if !acquired {
+			return nil
+		}
+		// Track that we acquired this bucket (for later release)
+		tx.acquired[bucket.rootID] = struct{}{}
+	}
+
+	tx.buckets[string(name)] = bucket
+	return bucket
+}
+
+// CreateBucket creates a new bucket
+func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
+	if err := tx.check(); err != nil {
+		return nil, err
+	}
+	if !tx.writable {
+		return nil, ErrTxNotWritable
+	}
+
+	// Validate bucket name
+	if len(name) == 0 {
+		return nil, errors.New("bucket name cannot be empty")
+	}
+	if string(name) == "__root__" {
+		return nil, errors.New("cannot create reserved bucket __root__")
+	}
+
+	// Check if bucket was deleted in this transaction
+	if _, deleted := tx.deletes[string(name)]; deleted {
+		return nil, errors.New("cannot recreate bucket deleted in same transaction")
+	}
+
+	// Check if bucket already exists
+	if tx.Bucket(name) != nil {
+		return nil, errors.New("bucket already exists")
+	}
+
+	bucketRootID := tx.allocatePage()
+	bucketLeafID := tx.allocatePage()
+
+	// Create bucket's leaf node (empty)
+	bucketLeaf := &base.Node{
+		PageID:   bucketLeafID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: nil,
+	}
+
+	// Create bucket's root node (branch with single child)
+	bucketRoot := &base.Node{
+		PageID:   bucketRootID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   nil,
+		Children: []base.PageID{bucketLeafID},
+	}
+
+	// Add nodes to transaction cache
+	tx.pages.ReplaceOrInsert(bucketLeaf)
+	tx.pages.ReplaceOrInsert(bucketRoot)
+
+	// Create and cache bucket
+	// NOTE: We don't persist metadata to root tree yet - that happens at Commit()
+	// This avoids the chicken-and-egg problem with virtual vs real page IDs
+	// We don't need to track this bucket's reference in tx.buckets yet either
+	// because it's a new bucket that can't be accessed until after Commit(),
+	// and because there is only a single writer transaction at a time.
+	bucket := &Bucket{
+		tx:       tx,
+		root:     bucketRoot,
+		name:     name,
+		sequence: 0,
+		writable: true,
+	}
+
+	tx.buckets[string(name)] = bucket
+	return bucket, nil
+}
+
+// CreateBucketIfNotExists convenience method
+func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
+	if b := tx.Bucket(name); b != nil {
+		return b, nil
+	}
+	return tx.CreateBucket(name)
+}
+
+// DeleteBucket removes a bucket and all its data
+func (tx *Tx) DeleteBucket(name []byte) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	// Validate bucket name
+	if len(name) == 0 {
+		return errors.New("bucket name cannot be empty")
+	}
+	if string(name) == "__root__" {
+		return errors.New("cannot delete reserved bucket __root__")
+	}
+
+	// Check if already deleted in this transaction
+	if _, deleted := tx.deletes[string(name)]; deleted {
+		return ErrBucketNotFound
+	}
+
+	// Load bucket metadata WITHOUT acquiring (since we're deleting it)
+	// We don't need to protect it from deletion - we ARE the deleter
+	meta, err := tx.search(tx.root, name)
+	if err != nil {
+		return ErrBucketNotFound
+	}
+
+	if len(meta) < 16 {
+		return ErrBucketNotFound
+	}
+
+	// deserialize just to get the rootID
+	var bucket Bucket
+	bucket.deserialize(meta)
+
+	// Delete bucket metadata from root tree
+	root, err := tx.deleteFromNode(tx.root, name)
+	if err != nil {
+		return err
+	}
+	tx.root = root
+
+	// Remove from cache if present
+	delete(tx.buckets, string(name))
+
+	// Mark bucket's root page for deletion on commit
+	// The bucket will remain accessible to existing readers until their refcount drops to 0
+	tx.deletes[string(name)] = bucket.rootID
+
+	return nil
+}
+
+// ForEachBucket iterates over all buckets
+func (tx *Tx) ForEachBucket(fn func(name []byte, b *Bucket) error) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+
+	// Create cursor for root tree (bucket directory)
+	c := &Cursor{
+		tx:         tx,
+		bucketRoot: tx.root,
+		valid:      false,
+	}
+
+	// Iterate over all bucket metadata
+	for k, v := c.First(); k != nil; k, v = c.Next() {
+		// Skip __root__ bucket
+		if string(k) == "__root__" {
+			continue
+		}
+
+		// deserialize bucket metadata
+		if len(v) < 16 {
+			continue
+		}
+
+		var err error
+		var bucket Bucket
+		bucket.deserialize(v)
+		bucket.tx = tx
+		bucket.writable = tx.writable
+		bucket.name = k
+		bucket.root, err = tx.loadNode(bucket.rootID)
+		if err != nil {
+			continue
+		}
+
+		// Call user function
+		if err := fn(k, &bucket); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ForEach iterates over all key-value pairs in the default bucket
+func (tx *Tx) ForEach(fn func(key, value []byte) error) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+
+	// Get __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return nil // No keys if bucket doesn't exist
+	}
+
+	// Delegate to bucket's ForEach
+	return bucket.ForEach(fn)
+}
+
+// ForEachPrefix iterates over all key-value pairs in the default bucket that start with the given prefix
+func (tx *Tx) ForEachPrefix(prefix []byte, fn func(key, value []byte) error) error {
+	if err := tx.check(); err != nil {
+		return err
+	}
+
+	// Get __root__ bucket (default namespace)
+	bucket := tx.Bucket([]byte("__root__"))
+	if bucket == nil {
+		return nil // No keys if bucket doesn't exist
+	}
+
+	// Create cursor for iteration
+	c := bucket.Cursor()
+
+	// Seek to the first key >= prefix
+	k, v := c.Seek(prefix)
+
+	// Iterate while keys match prefix
+	for k != nil {
+		// Check if key still has the prefix
+		if !bytes.HasPrefix(k, prefix) {
+			break // No more keys with this prefix
+		}
+
+		// Call user function
+		if err := fn(k, v); err != nil {
+			return err
+		}
+
+		// Move to next key
+		k, v = c.Next()
+	}
+
+	return nil
+}
+
 // Commit writes all changes and makes them visible to future transactions.
 // Returns ErrTxNotWritable if called on a read-only transaction.
 // Returns ErrTxDone if transaction has already been committed or rolled back.
@@ -161,14 +447,6 @@ func (tx *Tx) Commit() error {
 
 	tx.db.mu.Lock()
 	defer tx.db.mu.Unlock()
-
-	// Convert SyncMode to storage package type
-	var syncMode pager.SyncMode
-	if tx.db.options.SyncMode == SyncEveryCommit {
-		syncMode = pager.SyncEveryCommit
-	} else {
-		syncMode = pager.SyncOff
-	}
 
 	for name, bucket := range tx.buckets {
 		if bucket.writable {
@@ -257,7 +535,6 @@ func (tx *Tx) Commit() error {
 		tx.root,
 		tx.freed,
 		tx.txID,
-		syncMode,
 	)
 	if err != nil {
 		return err
@@ -982,292 +1259,6 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 	leftNode.Dirty = true
 	rightNode.Dirty = true
 	parent.Dirty = true
-
-	return nil
-}
-
-// Bucket returns an existing bucket or nil
-func (tx *Tx) Bucket(name []byte) *Bucket {
-	if err := tx.check(); err != nil {
-		return nil
-	}
-
-	// Check if transaction deleted bucket
-	if _, deleted := tx.deletes[string(name)]; deleted {
-		return nil
-	}
-
-	// Check tx cache first
-	if b, exists := tx.buckets[string(name)]; exists {
-		return b
-	}
-
-	// Load bucket metadata from root tree (including __root__ bucket)
-	meta, err := tx.search(tx.root, name)
-	if err != nil {
-		return nil
-	}
-
-	// deserialize bucket metadata
-	if len(meta) < 16 {
-		return nil
-	}
-
-	bucket := &Bucket{}
-	bucket.deserialize(meta)
-	bucket.tx = tx
-	bucket.writable = tx.writable
-	bucket.name = name
-	bucket.root, err = tx.loadNode(bucket.rootID)
-	if err != nil {
-		return nil
-	}
-
-	// Important, get a lock on the bucket through the pager in case
-	// the bucket is being deleted concurrently by another transaction.
-	// This must be released on rollback or commit.
-	// Exception: __root__ bucket is never deleted, so no need to track it
-	if string(name) != "__root__" {
-		acquired := tx.db.pager.AcquireBucket(bucket.rootID)
-		if !acquired {
-			return nil
-		}
-		// Track that we acquired this bucket (for later release)
-		tx.acquired[bucket.rootID] = struct{}{}
-	}
-
-	tx.buckets[string(name)] = bucket
-	return bucket
-}
-
-// CreateBucket creates a new bucket
-func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
-	if err := tx.check(); err != nil {
-		return nil, err
-	}
-	if !tx.writable {
-		return nil, ErrTxNotWritable
-	}
-
-	// Validate bucket name
-	if len(name) == 0 {
-		return nil, errors.New("bucket name cannot be empty")
-	}
-	if string(name) == "__root__" {
-		return nil, errors.New("cannot create reserved bucket __root__")
-	}
-
-	// Check if bucket was deleted in this transaction
-	if _, deleted := tx.deletes[string(name)]; deleted {
-		return nil, errors.New("cannot recreate bucket deleted in same transaction")
-	}
-
-	// Check if bucket already exists
-	if tx.Bucket(name) != nil {
-		return nil, errors.New("bucket already exists")
-	}
-
-	bucketRootID := tx.allocatePage()
-	bucketLeafID := tx.allocatePage()
-
-	// Create bucket's leaf node (empty)
-	bucketLeaf := &base.Node{
-		PageID:   bucketLeafID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   make([][]byte, 0),
-		Children: nil,
-	}
-
-	// Create bucket's root node (branch with single child)
-	bucketRoot := &base.Node{
-		PageID:   bucketRootID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   nil,
-		Children: []base.PageID{bucketLeafID},
-	}
-
-	// Add nodes to transaction cache
-	tx.pages.ReplaceOrInsert(bucketLeaf)
-	tx.pages.ReplaceOrInsert(bucketRoot)
-
-	// Create and cache bucket
-	// NOTE: We don't persist metadata to root tree yet - that happens at Commit()
-	// This avoids the chicken-and-egg problem with virtual vs real page IDs
-	// We don't need to track this bucket's reference in tx.buckets yet either
-	// because it's a new bucket that can't be accessed until after Commit(),
-	// and because there is only a single writer transaction at a time.
-	bucket := &Bucket{
-		tx:       tx,
-		root:     bucketRoot,
-		name:     name,
-		sequence: 0,
-		writable: true,
-	}
-
-	tx.buckets[string(name)] = bucket
-	return bucket, nil
-}
-
-// CreateBucketIfNotExists convenience method
-func (tx *Tx) CreateBucketIfNotExists(name []byte) (*Bucket, error) {
-	if b := tx.Bucket(name); b != nil {
-		return b, nil
-	}
-	return tx.CreateBucket(name)
-}
-
-// DeleteBucket removes a bucket and all its data
-func (tx *Tx) DeleteBucket(name []byte) error {
-	if err := tx.check(); err != nil {
-		return err
-	}
-	if !tx.writable {
-		return ErrTxNotWritable
-	}
-
-	// Validate bucket name
-	if len(name) == 0 {
-		return errors.New("bucket name cannot be empty")
-	}
-	if string(name) == "__root__" {
-		return errors.New("cannot delete reserved bucket __root__")
-	}
-
-	// Check if already deleted in this transaction
-	if _, deleted := tx.deletes[string(name)]; deleted {
-		return ErrBucketNotFound
-	}
-
-	// Load bucket metadata WITHOUT acquiring (since we're deleting it)
-	// We don't need to protect it from deletion - we ARE the deleter
-	meta, err := tx.search(tx.root, name)
-	if err != nil {
-		return ErrBucketNotFound
-	}
-
-	if len(meta) < 16 {
-		return ErrBucketNotFound
-	}
-
-	// deserialize just to get the rootID
-	var bucket Bucket
-	bucket.deserialize(meta)
-
-	// Delete bucket metadata from root tree
-	root, err := tx.deleteFromNode(tx.root, name)
-	if err != nil {
-		return err
-	}
-	tx.root = root
-
-	// Remove from cache if present
-	delete(tx.buckets, string(name))
-
-	// Mark bucket's root page for deletion on commit
-	// The bucket will remain accessible to existing readers until their refcount drops to 0
-	tx.deletes[string(name)] = bucket.rootID
-
-	return nil
-}
-
-// ForEachBucket iterates over all buckets
-func (tx *Tx) ForEachBucket(fn func(name []byte, b *Bucket) error) error {
-	if err := tx.check(); err != nil {
-		return err
-	}
-
-	// Create cursor for root tree (bucket directory)
-	c := &Cursor{
-		tx:         tx,
-		bucketRoot: tx.root,
-		valid:      false,
-	}
-
-	// Iterate over all bucket metadata
-	for k, v := c.First(); k != nil; k, v = c.Next() {
-		// Skip __root__ bucket
-		if string(k) == "__root__" {
-			continue
-		}
-
-		// deserialize bucket metadata
-		if len(v) < 16 {
-			continue
-		}
-
-		var err error
-		var bucket Bucket
-		bucket.deserialize(v)
-		bucket.tx = tx
-		bucket.writable = tx.writable
-		bucket.name = k
-		bucket.root, err = tx.loadNode(bucket.rootID)
-		if err != nil {
-			continue
-		}
-
-		// Call user function
-		if err := fn(k, &bucket); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// ForEach iterates over all key-value pairs in the default bucket
-func (tx *Tx) ForEach(fn func(key, value []byte) error) error {
-	if err := tx.check(); err != nil {
-		return err
-	}
-
-	// Get __root__ bucket (default namespace)
-	bucket := tx.Bucket([]byte("__root__"))
-	if bucket == nil {
-		return nil // No keys if bucket doesn't exist
-	}
-
-	// Delegate to bucket's ForEach
-	return bucket.ForEach(fn)
-}
-
-// ForEachPrefix iterates over all key-value pairs in the default bucket that start with the given prefix
-func (tx *Tx) ForEachPrefix(prefix []byte, fn func(key, value []byte) error) error {
-	if err := tx.check(); err != nil {
-		return err
-	}
-
-	// Get __root__ bucket (default namespace)
-	bucket := tx.Bucket([]byte("__root__"))
-	if bucket == nil {
-		return nil // No keys if bucket doesn't exist
-	}
-
-	// Create cursor for iteration
-	c := bucket.Cursor()
-
-	// Seek to the first key >= prefix
-	k, v := c.Seek(prefix)
-
-	// Iterate while keys match prefix
-	for k != nil {
-		// Check if key still has the prefix
-		if !bytes.HasPrefix(k, prefix) {
-			break // No more keys with this prefix
-		}
-
-		// Call user function
-		if err := fn(k, v); err != nil {
-			return err
-		}
-
-		// Move to next key
-		k, v = c.Next()
-	}
 
 	return nil
 }

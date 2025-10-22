@@ -34,6 +34,7 @@ const (
 type Pager struct {
 	cache *cache.Cache     // Simple LRU cache
 	store *storage.Storage // File I/O backend
+	mode  SyncMode         // Sync mode for commits
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
 	active atomic.Pointer[Snapshot]
@@ -60,8 +61,9 @@ type Pager struct {
 }
 
 // NewPager creates a pager with injected dependencies
-func NewPager(store *storage.Storage, cache *cache.Cache) (*Pager, error) {
+func NewPager(mode SyncMode, store *storage.Storage, cache *cache.Cache) (*Pager, error) {
 	c := &Pager{
+		mode:  mode,
 		store: store,
 		cache: cache,
 		freelist: &Freelist{
@@ -345,7 +347,6 @@ func (p *Pager) WriteTransaction(
 	root *base.Node,
 	freed map[base.PageID]struct{},
 	txID uint64,
-	syncMode SyncMode,
 ) error {
 	// Write all pages to disk
 	buf := p.store.GetBuffer()
@@ -436,7 +437,7 @@ func (p *Pager) WriteTransaction(
 	}
 
 	// Conditional sync (this is the commit point!)
-	if syncMode == SyncEveryCommit {
+	if p.mode == SyncEveryCommit {
 		if err := p.store.Sync(); err != nil {
 			return err
 		}

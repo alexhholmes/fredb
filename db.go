@@ -62,7 +62,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	c := cache.NewCache(opts.MaxCacheSizeMB*256, nil)
 
 	// Create pg with dependencies
-	pg, err := pager.NewPager(store, c)
+	pg, err := pager.NewPager(pager.SyncMode(opts.SyncMode), store, c)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
@@ -307,7 +307,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			}),
 			acquired:  make(map[base.PageID]struct{}),
 			freed:     make(map[base.PageID]struct{}),
-			allocated: make(map[base.PageID]bool),
+			allocated: make(map[base.PageID]pager.Allocation),
 			deletes:   make(map[string]base.PageID),
 			done:      false,
 			buckets:   make(map[string]*Bucket),

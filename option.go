@@ -1,20 +1,22 @@
 package fredb
 
+import "github.com/alexhholmes/fredb/internal/pager"
+
 // SyncMode controls when database writes are fsynced to disk
-type SyncMode int
+type SyncMode pager.SyncMode
 
 const (
 	// SyncEveryCommit fsyncs on every transaction commit. Uses direct I/O.
 	// - Guarantees zero data loss on power failure
 	// - Limited by fsync latency (typically 1-10ms per commit)
 	// - Use for: Financial transactions, critical data
-	SyncEveryCommit SyncMode = iota
+	SyncEveryCommit = SyncMode(pager.SyncEveryCommit)
 
 	// SyncOff disables fsync entirely (testing/bulk loads only).
 	// - Maximum throughput
 	// - All unflushed data lost on crash
 	// - Use for: Testing, bulk imports with external durability
-	SyncOff
+	SyncOff = SyncMode(pager.SyncOff)
 )
 
 // Options configures database behavior.
