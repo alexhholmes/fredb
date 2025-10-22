@@ -69,8 +69,9 @@ func TestDBBasicOperations(t *testing.T) {
 	assert.NoError(t, err, "Failed to delete key")
 
 	// Verify key is deleted
-	_, err = db.Get(key)
-	assert.ErrorIs(t, err, ErrKeyNotFound)
+	val, err := db.Get(key)
+	assert.NoError(t, err)
+	assert.Nil(t, val)
 }
 
 func TestDBErrors(t *testing.T) {
@@ -79,8 +80,9 @@ func TestDBErrors(t *testing.T) {
 	db, _ := setup(t)
 
 	// get non-existent key
-	_, err := db.Get([]byte("non-existent"))
-	assert.ErrorIs(t, err, ErrKeyNotFound)
+	val, err := db.Get([]byte("non-existent"))
+	assert.NoError(t, err)
+	assert.Nil(t, val)
 
 	// Delete non-existent key (idempotent - should not error)
 	err = db.Delete([]byte("non-existent"))
@@ -174,13 +176,13 @@ func TestDBConcurrency(t *testing.T) {
 
 					val, err := db.Get([]byte(key))
 					// It's OK if key not found (not written yet)
-					if err != nil && err != ErrKeyNotFound {
+					if err != nil {
 						assert.NoError(t, err, "get failed with unexpected error")
 						return
 					}
 
 					// If found, verify it matches expected pattern
-					if err == nil {
+					if val != nil {
 						expectedPattern := fmt.Sprintf("value-%d-%d", readID, readJ)
 						if !assert.Equal(t, expectedPattern, string(val)) {
 							return
@@ -697,13 +699,15 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		// Check explicit rollback Keys
 		key := []byte(fmt.Sprintf("rollback-tx-%d-key-0", i*100))
-		_, err := db.Get(key)
-		assert.ErrorIs(t, err, ErrKeyNotFound, "Rolled-back key should not exist: %s", key)
+		val, err := db.Get(key)
+		assert.NoError(t, err)
+		assert.Nil(t, val, "Rolled-back key should not exist: %s", key)
 
 		// Check error rollback Keys
 		key = []byte(fmt.Sprintf("error-tx-%d-key-0", i*100))
-		_, err = db.Get(key)
-		assert.ErrorIs(t, err, ErrKeyNotFound, "Error-rolled-back key should not exist: %s", key)
+		val, err = db.Get(key)
+		assert.NoError(t, err)
+		assert.Nil(t, val, "Error-rolled-back key should not exist: %s", key)
 	}
 
 	// Heuristic active for Page leaks: file size should be reasonable
@@ -815,8 +819,9 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 			assert.NoError(t, db.Delete(key), "Failed to delete large key %d", i)
 
 			// Verify deleted
-			_, err := db.Get(key)
-			assert.ErrorIs(t, err, ErrKeyNotFound, "Key %d should be deleted", i)
+			val, err := db.Get(key)
+			assert.Nil(t, val, "Key %d should be deleted", i)
+			assert.NoError(t, err, "Get on deleted key %d should not error", i)
 		}
 
 		// Verify remaining Keys still exist
@@ -1119,8 +1124,10 @@ func TestDiskPageManagerDelete(t *testing.T) {
 	assert.NoError(t, err, "Key 'c' should exist")
 
 	// b should be gone
-	_, err = db2.Get([]byte("b"))
-	assert.Error(t, err, "Key 'b' should be deleted")
+	val, err := db2.Get([]byte("b"))
+	assert.Nil(t, val, "Key 'b' should return nil value")
+	assert.Nil(t, err, "Key 'b' should return nil error")
+	assert.NoError(t, db2.Close(), "Failed to close DB")
 
 	db2.Close()
 }
@@ -1614,8 +1621,8 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	defer db.Close()
 
 	// If open succeeded, verify state
-	_, err = db.Get([]byte("key1"))
-	if err == ErrKeyNotFound {
+	val, err := db.Get([]byte("key1"))
+	if val == nil {
 		t.Logf("Key not found (expected with RootPageID=0)")
 	} else if err != nil {
 		t.Logf("get returned error: %v", err)
@@ -1739,9 +1746,9 @@ func TestBTreeBasicOps(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "value2", string(val))
 
-	// get non-existent key (should return ErrKeyNotFound)
-	_, err = db.Get([]byte("nonexistent"))
-	assert.Equal(t, ErrKeyNotFound, err)
+	// get non-existent key (should return nil value)
+	val, err = db.Get([]byte("nonexistent"))
+	assert.Nil(t, err)
 }
 
 func TestBTreeUpdate(t *testing.T) {
@@ -2014,8 +2021,9 @@ func TestBTreeDelete(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify key3 is gone
-	_, err = db.Get([]byte("key3"))
-	assert.Equal(t, ErrKeyNotFound, err)
+	val, err := db.Get([]byte("key3"))
+	assert.NoError(t, err)
+	assert.Nil(t, val)
 
 	// Verify other Keys still exist
 	for _, k := range []string{"key1", "key2", "key4", "key5"} {
@@ -2068,8 +2076,9 @@ func TestBTreeDeleteAll(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify deleted
-		_, err = db.Get([]byte(key))
-		assert.Equal(t, ErrKeyNotFound, err)
+		val, err := db.Get([]byte(key))
+		assert.NoError(t, err)
+		assert.Nil(t, val)
 
 		// Verify remaining Keys still exist
 		for j := i + 1; j < numKeys && j < i+5; j++ {
@@ -2085,8 +2094,9 @@ func TestBTreeDeleteAll(t *testing.T) {
 	// Tree should be empty now
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
-		_, err := db.Get([]byte(key))
-		assert.Equal(t, ErrKeyNotFound, err)
+		val, err := db.Get([]byte(key))
+		assert.NoError(t, err)
+		assert.Nil(t, val)
 	}
 }
 
@@ -2123,8 +2133,9 @@ func TestBTreeSequentialDelete(t *testing.T) {
 		}
 
 		// Verify key is deleted
-		_, err = db.Get([]byte(key))
-		assert.Equal(t, ErrKeyNotFound, err)
+		val, err := db.Get([]byte(key))
+		assert.NoError(t, err)
+		assert.Nil(t, val)
 	}
 
 	// Final tree should be empty
@@ -2187,8 +2198,9 @@ func TestBTreeRandomDelete(t *testing.T) {
 			}
 
 			// Verify deleted key is gone
-			_, err = db.Get([]byte(key))
-			assert.Equal(t, ErrKeyNotFound, err)
+			val, err := db.Get([]byte(key))
+			assert.NoError(t, err)
+			assert.Nil(t, val)
 
 			// Verify some non-deleted Keys still exist (spot active)
 			checked := 0
@@ -2245,8 +2257,9 @@ func TestBTreeReverseDelete(t *testing.T) {
 		}
 
 		// Verify key is deleted
-		_, err = db.Get([]byte(key))
-		assert.Equal(t, ErrKeyNotFound, err)
+		val, err := db.Get([]byte(key))
+		assert.NoError(t, err)
+		assert.Nil(t, val)
 	}
 
 	// Final tree should be empty
@@ -2307,9 +2320,10 @@ func TestEmptyTree(t *testing.T) {
 	// Test operations on empty tree
 	db, _ := setup(t)
 
-	// get from empty tree (should return ErrKeyNotFound)
-	_, err := db.Get([]byte("nonexistent"))
-	assert.Equal(t, ErrKeyNotFound, err)
+	// get from empty tree (should return nil)
+	val, err := db.Get([]byte("nonexistent"))
+	assert.NoError(t, err)
+	assert.Nil(t, val)
 
 	// Try multiple different Keys on empty tree
 	testKeys := [][]byte{
@@ -2320,8 +2334,9 @@ func TestEmptyTree(t *testing.T) {
 	}
 
 	for _, key := range testKeys {
-		_, err = db.Get(key)
-		assert.Equal(t, ErrKeyNotFound, err)
+		val, err = db.Get(key)
+		assert.NoError(t, err)
+		assert.Nil(t, val)
 	}
 }
 
@@ -2344,8 +2359,9 @@ func TestSingleKey(t *testing.T) {
 	assert.Equal(t, string(testValue), string(val))
 
 	// get non-existent key
-	_, err = db.Get([]byte("nonexistent"))
-	assert.Equal(t, ErrKeyNotFound, err)
+	val2, err := db.Get([]byte("nonexistent"))
+	assert.NoError(t, err)
+	assert.Nil(t, val2)
 
 	// Update the key
 	newValue := []byte("updated_value")

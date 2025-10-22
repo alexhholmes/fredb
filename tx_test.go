@@ -83,8 +83,9 @@ func TestTxCommitRollback(t *testing.T) {
 
 	// Verify rolled back data does not persist
 	err = db.View(func(tx *Tx) error {
-		_, err := tx.Get([]byte("rolled-back"))
-		assert.ErrorIs(t, err, ErrKeyNotFound)
+		val, err := tx.Get([]byte("rolled-back"))
+		require.NoError(t, err)
+		assert.Nil(t, val)
 		return nil
 	})
 	require.NoError(t, err)
@@ -221,8 +222,9 @@ func TestTxAutoRollback(t *testing.T) {
 
 	// Key should not exist (rolled back)
 	err = db.View(func(tx *Tx) error {
-		_, err := tx.Get([]byte("key"))
-		assert.ErrorIs(t, err, ErrKeyNotFound)
+		val, err := tx.Get([]byte("key"))
+		require.NoError(t, err)
+		assert.Nil(t, val)
 		return nil
 	})
 	require.NoError(t, err)
@@ -411,8 +413,12 @@ func TestTxWriteThenReadMultiple(t *testing.T) {
 			}
 
 			// Should NOT see uncommitted write
-			_, err = readTx.Get([]byte("write_key"))
-			if err != ErrKeyNotFound {
+			val, err = readTx.Get([]byte("write_key"))
+			if err != nil {
+				readerErrors <- fmt.Errorf("reader %d: failed to get write_key: %v", id, err)
+				return
+			}
+			if val != nil {
 				readerErrors <- fmt.Errorf("reader %d: should not see uncommitted write", id)
 				return
 			}

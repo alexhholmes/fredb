@@ -104,10 +104,7 @@ func TestLargeWrite(t *testing.T) {
 					keyStr := fmt.Sprintf("%0*d", *keySize, keyIdx)
 					var valOk bool
 					err := db.View(func(tx *fredb.Tx) error {
-						val, err := tx.Get([]byte(keyStr))
-						if err != nil {
-							return err
-						}
+						val, _ := tx.Get([]byte(keyStr))
 						// Verify we got a real value with expected size
 						valOk = val != nil && len(val) == *valueSize
 						return nil
