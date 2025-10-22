@@ -2,8 +2,9 @@ package base
 
 import (
 	"errors"
-	"hash/crc32"
 	"unsafe"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 var (
@@ -201,8 +202,8 @@ func (p *Page) dataAreaStart() int {
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1
-// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxID: 8][CheckpointTxnID: 8][NumPages: 8][Checksum: 4]
-// Total: 60 bytes
+// Layout: [Magic: 4][Version: 2][PageSize: 2][RootPageID: 8][FreelistID: 8][FreelistPages: 8][TxID: 8][CheckpointTxnID: 8][NumPages: 8][Checksum: 8]
+// Total: 64 bytes
 type MetaPage struct {
 	Magic           uint32 // 4 bytes: 0x66726462 ("frdb")
 	Version         uint16 // 2 bytes: format version (1)
@@ -213,7 +214,7 @@ type MetaPage struct {
 	TxID            uint64 // 8 bytes: transaction counter
 	CheckpointTxnID uint64 // 8 bytes: last checkpointed transaction
 	NumPages        uint64 // 8 bytes: total pages allocated
-	Checksum        uint32 // 4 bytes: CRC32 of above fields
+	Checksum        uint64 // 8 bytes: CRC32 of above fields
 }
 
 // WriteMeta writes metadata to the Page starting at PageHeaderSize
@@ -231,10 +232,10 @@ func (p *Page) ReadMeta() *MetaPage {
 }
 
 // CalculateChecksum computes CRC32 checksum of all fields except Checksum itself
-func (m *MetaPage) CalculateChecksum() uint32 {
+func (m *MetaPage) CalculateChecksum() uint64 {
 	// MetaPage is 60 bytes, Checksum is last 4 bytes, so we hash first 56 bytes
 	data := unsafe.Slice((*byte)(unsafe.Pointer(m)), 56)
-	return crc32.ChecksumIEEE(data)
+	return xxhash.Sum64(data)
 }
 
 // Validate checks if the metadata is valid

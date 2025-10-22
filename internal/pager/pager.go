@@ -339,10 +339,10 @@ func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, bool) {
 	return node, true
 }
 
-// WriteTransaction writes all pages to disk, handles freed pages, updates metadata, and syncs.
+// Commit writes all pages to disk, handles freed pages, updates metadata, and syncs.
 // This is phase 2 of commit: writing pages with real IDs to disk.
 // Caller must hold db.mu.
-func (p *Pager) WriteTransaction(
+func (p *Pager) Commit(
 	pages *btree.BTreeG[*base.Node],
 	root *base.Node,
 	freed map[base.PageID]struct{},

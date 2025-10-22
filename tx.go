@@ -484,7 +484,7 @@ func (tx *Tx) Commit() error {
 				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
-				// Otherwise it won't get a real page ID allocated during WriteTransaction
+				// Otherwise it won't get a real page ID allocated during Commit
 				if int64(newRootID) < 0 {
 					tx.pages.ReplaceOrInsert(newRoot)
 				}
@@ -514,7 +514,7 @@ func (tx *Tx) Commit() error {
 				newRoot2 := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
-				// Otherwise it won't get a real page ID allocated during WriteTransaction
+				// Otherwise it won't get a real page ID allocated during Commit
 				if int64(newRootID) < 0 {
 					tx.pages.ReplaceOrInsert(newRoot2)
 				}
@@ -530,7 +530,7 @@ func (tx *Tx) Commit() error {
 
 	// Phase 3: Write everything to disk in a single operation
 	// This handles: page writes, freed pages, meta update, sync (if needed), and CommitSnapshot
-	err := tx.db.pager.WriteTransaction(
+	err := tx.db.pager.Commit(
 		tx.pages,
 		tx.root,
 		tx.freed,
