@@ -13,7 +13,7 @@ import (
 type Bucket struct {
 	tx       *Tx
 	rootID   base.PageID
-	root     *base.Node
+	root     base.PageData
 	name     []byte
 	sequence uint64
 	writable bool
@@ -59,17 +59,20 @@ func (b *Bucket) Put(key, value []byte) error {
 	value = valueCopy
 
 	// Handle root split if needed
-	if b.root.IsFull(key, value) {
+	var needsSplit bool
+	if b.root.PageType() == base.LeafPageFlag {
+		needsSplit = b.root.(*base.LeafPage).IsFull(key, value)
+	} else {
+		needsSplit = b.root.(*base.BranchPage).IsFull(key)
+	}
+
+	if needsSplit {
 		leftChild, rightChild, midKey, _, err := b.tx.splitChild(b.root, key)
 		if err != nil {
 			return err
 		}
 
 		newRootID := b.tx.allocatePage()
-		if err != nil {
-			return err
-		}
-
 		b.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 		// Add new root to tx.pages immediately so ensureWritable can find it
 		b.tx.pages.ReplaceOrInsert(b.root)
@@ -120,12 +123,16 @@ func (b *Bucket) Delete(key []byte) error {
 	}
 
 	// Shrink tree: if root is internal with single child, make child the new root
-	if !b.root.IsLeaf() && len(b.root.Children) == 1 {
-		child, err := b.tx.loadNode(b.root.Children[0])
-		if err != nil {
-			return err
+	if b.root.PageType() == base.BranchPageFlag {
+		branch := b.root.(*base.BranchPage)
+		children := branch.Children()
+		if len(children) == 1 {
+			child, err := b.tx.loadNode(children[0])
+			if err != nil {
+				return err
+			}
+			b.root = child
 		}
-		b.root = child
 	}
 
 	return nil
@@ -210,7 +217,7 @@ func (b *Bucket) SetSequence(v uint64) error {
 // Format: RootPageID (8 bytes) + Sequence (8 bytes)
 func (b *Bucket) serialize() []byte {
 	buf := make([]byte, 16)
-	binary.LittleEndian.PutUint64(buf[0:8], uint64(b.root.PageID))
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(b.root.GetPageID()))
 	binary.LittleEndian.PutUint64(buf[8:16], b.sequence)
 	return buf
 }

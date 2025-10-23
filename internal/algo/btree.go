@@ -11,71 +11,111 @@ import (
 const searchThreshold = 32
 
 // FindChildIndex returns the index of child pointer to follow for key
-func FindChildIndex(node *base.Node, key []byte) int {
-	if node.NumKeys < searchThreshold {
+func FindChildIndex(node base.PageData, key []byte) int {
+	var keys [][]byte
+	var numKeys uint16
+
+	if node.PageType() == base.LeafPageFlag {
+		leaf := node.(*base.LeafPage)
+		keys = leaf.Keys
+		numKeys = leaf.Header.NumKeys
+	} else {
+		branch := node.(*base.BranchPage)
+		keys = branch.Keys
+		numKeys = branch.Header.NumKeys
+	}
+
+	if numKeys < searchThreshold {
 		i := 0
-		for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
+		for i < int(numKeys) && bytes.Compare(key, keys[i]) >= 0 {
 			i++
 		}
 		return i
 	}
 
-	return sort.Search(int(node.NumKeys), func(i int) bool {
-		return bytes.Compare(key, node.Keys[i]) < 0
+	return sort.Search(int(numKeys), func(i int) bool {
+		return bytes.Compare(key, keys[i]) < 0
 	})
 }
 
 // FindKeyInLeaf returns index of key in leaf, or -1 if not found
-func FindKeyInLeaf(node *base.Node, key []byte) int {
-	if !node.IsLeaf() {
+func FindKeyInLeaf(node base.PageData, key []byte) int {
+	if node.PageType() != base.LeafPageFlag {
 		return -1
 	}
 
-	if node.NumKeys < searchThreshold {
-		for i := 0; i < int(node.NumKeys); i++ {
-			if bytes.Equal(key, node.Keys[i]) {
+	leaf := node.(*base.LeafPage)
+	if leaf.Header.NumKeys < searchThreshold {
+		for i := 0; i < int(leaf.Header.NumKeys); i++ {
+			if bytes.Equal(key, leaf.Keys[i]) {
 				return i
 			}
 		}
 		return -1
 	}
 
-	idx := sort.Search(int(node.NumKeys), func(i int) bool {
-		return bytes.Compare(node.Keys[i], key) >= 0
+	idx := sort.Search(int(leaf.Header.NumKeys), func(i int) bool {
+		return bytes.Compare(leaf.Keys[i], key) >= 0
 	})
-	if idx < int(node.NumKeys) && bytes.Equal(node.Keys[idx], key) {
+	if idx < int(leaf.Header.NumKeys) && bytes.Equal(leaf.Keys[idx], key) {
 		return idx
 	}
 	return -1
 }
 
 // FindInsertPosition returns position to insert key in leaf
-func FindInsertPosition(node *base.Node, key []byte) int {
-	if node.NumKeys < searchThreshold {
+func FindInsertPosition(node base.PageData, key []byte) int {
+	var keys [][]byte
+	var numKeys uint16
+
+	if node.PageType() == base.LeafPageFlag {
+		leaf := node.(*base.LeafPage)
+		keys = leaf.Keys
+		numKeys = leaf.Header.NumKeys
+	} else {
+		branch := node.(*base.BranchPage)
+		keys = branch.Keys
+		numKeys = branch.Header.NumKeys
+	}
+
+	if numKeys < searchThreshold {
 		pos := 0
-		for pos < int(node.NumKeys) && bytes.Compare(key, node.Keys[pos]) > 0 {
+		for pos < int(numKeys) && bytes.Compare(key, keys[pos]) > 0 {
 			pos++
 		}
 		return pos
 	}
 
-	return sort.Search(int(node.NumKeys), func(i int) bool {
-		return bytes.Compare(key, node.Keys[i]) <= 0
+	return sort.Search(int(numKeys), func(i int) bool {
+		return bytes.Compare(key, keys[i]) <= 0
 	})
 }
 
 // FindDeleteChildIndex returns child index for deletion in branch node
-func FindDeleteChildIndex(node *base.Node, key []byte) int {
-	if node.NumKeys < searchThreshold {
+func FindDeleteChildIndex(node base.PageData, key []byte) int {
+	var keys [][]byte
+	var numKeys uint16
+
+	if node.PageType() == base.LeafPageFlag {
+		leaf := node.(*base.LeafPage)
+		keys = leaf.Keys
+		numKeys = leaf.Header.NumKeys
+	} else {
+		branch := node.(*base.BranchPage)
+		keys = branch.Keys
+		numKeys = branch.Header.NumKeys
+	}
+
+	if numKeys < searchThreshold {
 		idx := 0
-		for idx < int(node.NumKeys) && bytes.Compare(key, node.Keys[idx]) >= 0 {
+		for idx < int(numKeys) && bytes.Compare(key, keys[idx]) >= 0 {
 			idx++
 		}
 		return idx
 	}
 
-	return sort.Search(int(node.NumKeys), func(i int) bool {
-		return bytes.Compare(key, node.Keys[i]) < 0
+	return sort.Search(int(numKeys), func(i int) bool {
+		return bytes.Compare(key, keys[i]) < 0
 	})
 }
 
@@ -97,16 +137,26 @@ type SplitPoint struct {
 }
 
 // CalculateSplitPointWithHint determines split position with adaptive strategy
-func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHint) SplitPoint {
+func CalculateSplitPointWithHint(node base.PageData, insertKey []byte, hint SplitHint) SplitPoint {
+	// Get keys based on type
+	var keys [][]byte
+	isLeaf := node.PageType() == base.LeafPageFlag
+
+	if isLeaf {
+		keys = node.(*base.LeafPage).Keys
+	} else {
+		keys = node.(*base.BranchPage).Keys
+	}
+
 	// Handle edge case: node with only 1 key (can happen with large values)
-	if len(node.Keys) <= 1 {
-		if len(node.Keys) == 0 {
+	if len(keys) <= 1 {
+		if len(keys) == 0 {
 			panic("cannot split empty node")
 		}
 
 		// Use insertKey to decide which child gets the existing entry
 		// This prevents infinite loop when inserting smaller keys
-		existingKey := node.Keys[0]
+		existingKey := keys[0]
 
 		if insertKey != nil && bytes.Compare(insertKey, existingKey) < 0 {
 			// New key < existing: put existing in right, leave left empty
@@ -135,10 +185,10 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 
 	// Detect pattern if hint not provided
 	if hint == SplitBalanced && insertKey != nil {
-		if bytes.Compare(insertKey, node.Keys[len(node.Keys)-1]) > 0 {
+		if bytes.Compare(insertKey, keys[len(keys)-1]) > 0 {
 			// Inserting beyond rightmost key → ascending pattern
 			hint = SplitRightBias
-		} else if bytes.Compare(insertKey, node.Keys[0]) < 0 {
+		} else if bytes.Compare(insertKey, keys[0]) < 0 {
 			// Inserting before leftmost key → descending pattern
 			hint = SplitLeftBias
 		}
@@ -148,17 +198,17 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 	switch hint {
 	case SplitRightBias:
 		// Keep left node nearly full (90%), right node minimal (10%)
-		mid = int(float64(len(node.Keys)) * 0.9)
-		if mid >= len(node.Keys)-1 {
-			mid = len(node.Keys) - 2
+		mid = int(float64(len(keys)) * 0.9)
+		if mid >= len(keys)-1 {
+			mid = len(keys) - 2
 		}
 	case SplitLeftBias:
 		// Keep right node nearly full (90%), left node minimal (10%)
-		mid = int(float64(len(node.Keys)) * 0.1)
+		mid = int(float64(len(keys)) * 0.1)
 		// For leaves: need mid+1 < len(keys) to access separator
 		// For branches: need mid < len(keys)
 		minMid := 0
-		if !node.IsLeaf() && mid < 1 {
+		if !isLeaf && mid < 1 {
 			minMid = 1
 		}
 		if mid < minMid {
@@ -166,15 +216,15 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 		}
 	default:
 		// Balanced split
-		mid = len(node.Keys)/2 - 1
+		mid = len(keys)/2 - 1
 		if mid < 0 {
 			mid = 0
 		}
 	}
 
 	// Final bounds check for leaf separator access
-	if node.IsLeaf() && mid+1 >= len(node.Keys) {
-		mid = len(node.Keys) - 2
+	if isLeaf && mid+1 >= len(keys) {
+		mid = len(keys) - 2
 		if mid < 0 {
 			mid = 0
 		}
@@ -183,16 +233,16 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 	var sep []byte
 	var leftCnt, rightCnt int
 
-	if node.IsLeaf() {
-		sep = make([]byte, len(node.Keys[mid+1]))
-		copy(sep, node.Keys[mid+1])
+	if isLeaf {
+		sep = make([]byte, len(keys[mid+1]))
+		copy(sep, keys[mid+1])
 		leftCnt = mid + 1
-		rightCnt = len(node.Keys) - mid - 1
+		rightCnt = len(keys) - mid - 1
 	} else {
-		sep = make([]byte, len(node.Keys[mid]))
-		copy(sep, node.Keys[mid])
+		sep = make([]byte, len(keys[mid]))
+		copy(sep, keys[mid])
 		leftCnt = mid
-		rightCnt = len(node.Keys) - mid - 1
+		rightCnt = len(keys) - mid - 1
 	}
 
 	return SplitPoint{
@@ -204,77 +254,48 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 }
 
 // ExtractRightPortion copies right portion data (read-only on input)
-func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals [][]byte, children []base.PageID) {
+func ExtractRightPortion(node base.PageData, sp SplitPoint) (keys [][]byte, vals [][]byte, children []base.PageID) {
 	// Handle special case: Mid=-1 means right gets everything (sp.RightCount=1 for single key)
 	startIdx := sp.Mid + 1
 	if sp.Mid == -1 {
 		startIdx = 0
 	}
 
-	keys = make([][]byte, 0, sp.RightCount)
-	for i := startIdx; i < len(node.Keys); i++ {
-		keyCopy := make([]byte, len(node.Keys[i]))
-		copy(keyCopy, node.Keys[i])
-		keys = append(keys, keyCopy)
-	}
+	isLeaf := node.PageType() == base.LeafPageFlag
 
-	if node.IsLeaf() {
+	if isLeaf {
+		leaf := node.(*base.LeafPage)
+		keys = make([][]byte, 0, sp.RightCount)
+		for i := startIdx; i < len(leaf.Keys); i++ {
+			keyCopy := make([]byte, len(leaf.Keys[i]))
+			copy(keyCopy, leaf.Keys[i])
+			keys = append(keys, keyCopy)
+		}
+
 		vals = make([][]byte, 0, sp.RightCount)
-		for i := startIdx; i < len(node.Values); i++ {
-			valCopy := make([]byte, len(node.Values[i]))
-			copy(valCopy, node.Values[i])
+		for i := startIdx; i < len(leaf.Values); i++ {
+			valCopy := make([]byte, len(leaf.Values[i]))
+			copy(valCopy, leaf.Values[i])
 			vals = append(vals, valCopy)
 		}
-	}
+	} else {
+		branch := node.(*base.BranchPage)
+		keys = make([][]byte, 0, sp.RightCount)
+		for i := startIdx; i < len(branch.Keys); i++ {
+			keyCopy := make([]byte, len(branch.Keys[i]))
+			copy(keyCopy, branch.Keys[i])
+			keys = append(keys, keyCopy)
+		}
 
-	if !node.IsLeaf() {
+		// Extract right portion of children
+		nodeChildren := branch.Children()
 		children = make([]base.PageID, 0)
-		for i := startIdx; i < len(node.Children); i++ {
-			children = append(children, node.Children[i])
+		for i := startIdx; i < len(nodeChildren); i++ {
+			children = append(children, nodeChildren[i])
 		}
 	}
 
 	return keys, vals, children
-}
-
-// CanBorrowFrom returns true if node has extra capacity to lend
-// Must have: 1) more than 1 key (so it can lend one), and 2) not underflow after lending
-func CanBorrowFrom(node *base.Node) bool {
-	return node.NumKeys > 1 && !node.IsUnderflow()
-}
-
-// BorrowData contains data borrowed from sibling
-type BorrowData struct {
-	Key   []byte
-	Value []byte
-	Child base.PageID
-}
-
-// ExtractLastFromSibling gets last key/val/child from sibling (read-only)
-func ExtractLastFromSibling(sibling *base.Node) BorrowData {
-	lastIdx := sibling.NumKeys - 1
-	data := BorrowData{
-		Key: sibling.Keys[lastIdx],
-	}
-	if sibling.IsLeaf() {
-		data.Value = sibling.Values[lastIdx]
-	} else {
-		data.Child = sibling.Children[len(sibling.Children)-1]
-	}
-	return data
-}
-
-// ExtractFirstFromSibling gets first key/val/child from sibling (read-only)
-func ExtractFirstFromSibling(sibling *base.Node) BorrowData {
-	data := BorrowData{
-		Key: sibling.Keys[0],
-	}
-	if sibling.IsLeaf() {
-		data.Value = sibling.Values[0]
-	} else {
-		data.Child = sibling.Children[0]
-	}
-	return data
 }
 
 // InsertAt inserts value at index in slice with deep copy

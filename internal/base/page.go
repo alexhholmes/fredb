@@ -19,8 +19,9 @@ var (
 const (
 	PageSize = 4096
 
-	LeafPageFlag   uint16 = 0x01
-	BranchPageFlag uint16 = 0x02
+	// Page type constants moved to page_types.go to avoid duplication
+	// Kept here for compatibility during migration
+	MinFillRatio = 0.25
 
 	PageHeaderSize    = 24 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxID(8)
 	LeafElementSize   = 16
@@ -32,6 +33,7 @@ const (
 	FormatVersion uint16 = 1
 )
 
+// @layout size=8
 type PageID uint64
 
 // Page is raw disk Page (4096 bytes)
@@ -80,32 +82,35 @@ type Page struct {
 
 // PageHeader represents the fixed-Size Header at the start of each Page
 // Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8]
+// @layout size=24
 type PageHeader struct {
-	PageID  PageID // 8 bytes
-	Flags   uint16 // 2 bytes: leaf/branch
-	NumKeys uint16 // 2 bytes: number of key-value pairs or keys
-	Padding uint32 // 4 bytes: unused (for future use or alignment)
-	TxnID   uint64 // 8 bytes - transaction that committed this Page version
+	PageID  PageID `layout:"@0"`  // 8 bytes
+	Flags   uint16 `layout:"@8"`  // 2 bytes: leaf/branch
+	NumKeys uint16 `layout:"@10"` // 2 bytes: number of key-value pairs or keys
+	Padding uint32 `layout:"@12"` // 4 bytes: unused (for future use or alignment)
+	TxnID   uint64 `layout:"@16"` // 8 bytes - transaction that committed this Page version
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf Page
 // Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][Reserved: 8]
+// @layout size=16
 type LeafElement struct {
-	KeyOffset   uint16 // 2 bytes: offset from data area start
-	KeySize     uint16 // 2 bytes
-	ValueOffset uint16 // 2 bytes: offset from data area start
-	ValueSize   uint16 // 2 bytes
-	Reserved    uint64 // 8 bytes: unused (for future use or alignment)
+	KeyOffset   uint16 `layout:"@0"`  // 2 bytes: offset from data area start
+	KeySize     uint16 `layout:"@2"`  // 2 bytes
+	ValueOffset uint16 `layout:"@4"`  // 2 bytes: offset from data area start
+	ValueSize   uint16 `layout:"@6"`  // 2 bytes
+	Reserved    uint64 `layout:"@8"`  // 8 bytes: unused (for future use or alignment)
 }
 
 // BranchElement represents metadata for a routing key and child pointer in a branch Page
 // B+ tree: branch nodes only store Keys for routing, no Values
 // Layout: [KeyOffset: 2][KeySize: 2][Reserved: 4][ChildID: 8]
+// @layout size=16
 type BranchElement struct {
-	KeyOffset uint16 // 2 bytes: offset from data area start
-	KeySize   uint16 // 2 bytes
-	Reserved  uint32 // 4 bytes: unused (for future use or alignment)
-	ChildID   PageID // 8 bytes
+	KeyOffset uint16 `layout:"@0"`  // 2 bytes: offset from data area start
+	KeySize   uint16 `layout:"@2"`  // 2 bytes
+	Reserved  uint32 `layout:"@4"`  // 4 bytes: unused (for future use or alignment)
+	ChildID   PageID `layout:"@8"`  // 8 bytes
 }
 
 // Header returns the Page Header decoded from Page Data
@@ -254,4 +259,154 @@ func (m *MetaPage) Validate() error {
 		return ErrInvalidChecksum
 	}
 	return nil
+}
+
+// AllocatePageBuffer is the allocator function for zero-copy page buffers
+// Must return 8191 bytes (4096 + 4095) to allow for 4096-byte alignment
+func AllocatePageBuffer() []byte {
+	// Allocate extra space for alignment
+	return make([]byte, 8191)
+}
+
+// PageData is the common interface for all page types
+type PageData interface {
+	GetPageID() PageID
+	SetPageID(PageID)
+	IsDirty() bool
+	SetDirty(bool)
+	PageType() uint16
+	GetNumKeys() uint16
+}
+
+// @layout size=4096 mode=zerocopy align=4096 allocator=AllocatePageBuffer
+type LeafPage struct {
+	backing  []byte        // Over-allocated buffer for alignment
+	buf      []byte        // Aligned slice into backing
+	Header   PageHeader    `layout:"@0"`
+	Elements []LeafElement `layout:"start-end,count=Header.NumKeys"`
+	Data     []byte        `layout:"end-start"`
+	Keys     [][]byte      `layout:"from=Elements,offset=KeyOffset,size=KeySize,region=Data"`
+	Values   [][]byte      `layout:"from=Elements,offset=ValueOffset,size=ValueSize,region=Data"`
+	dirty    bool          // Not serialized - tracks if page needs write
+}
+
+// @layout size=4096 mode=zerocopy align=4096 allocator=AllocatePageBuffer
+type BranchPage struct{
+	backing    []byte          // Over-allocated buffer for alignment
+	buf        []byte          // Aligned slice into backing
+	Header     PageHeader      `layout:"@0"`
+	Elements   []BranchElement `layout:"start-end,count=Header.NumKeys"`
+	Data       []byte          `layout:"end-start"`
+	Keys       [][]byte        `layout:"from=Elements,offset=KeyOffset,size=KeySize,region=Data"`
+	FirstChild PageID          `layout:"@4088"`
+	dirty      bool            // Not serialized - tracks if page needs write
+}
+
+// @layout size=4096 mode=zerocopy align=4096 allocator=AllocatePageBuffer
+type OverflowPage struct {
+	backing  []byte     // Over-allocated buffer for alignment
+	buf      []byte     // Aligned slice into backing
+	Header   PageHeader `layout:"@0"`
+	NextPage PageID     `layout:"@24"`
+	DataSize uint32     `layout:"@32"`
+	Data     []byte     `layout:"@36,start-end,count=DataSize"`
+	dirty    bool       // Not serialized - tracks if page needs write
+}
+
+// PageData interface implementations for LeafPage
+func (p *LeafPage) GetPageID() PageID       { return p.Header.PageID }
+func (p *LeafPage) SetPageID(id PageID)     { p.Header.PageID = id }
+func (p *LeafPage) IsDirty() bool           { return p.dirty }
+func (p *LeafPage) SetDirty(dirty bool)     { p.dirty = dirty }
+func (p *LeafPage) PageType() uint16        { return LeafPageFlag }
+func (p *LeafPage) GetNumKeys() uint16      { return p.Header.NumKeys }
+
+// PageData interface implementations for BranchPage
+func (p *BranchPage) GetPageID() PageID     { return p.Header.PageID }
+func (p *BranchPage) SetPageID(id PageID)   { p.Header.PageID = id }
+func (p *BranchPage) IsDirty() bool         { return p.dirty }
+func (p *BranchPage) SetDirty(dirty bool)   { p.dirty = dirty }
+func (p *BranchPage) PageType() uint16      { return BranchPageFlag }
+func (p *BranchPage) GetNumKeys() uint16    { return p.Header.NumKeys }
+
+// PageData interface implementations for OverflowPage
+func (p *OverflowPage) GetPageID() PageID   { return p.Header.PageID }
+func (p *OverflowPage) SetPageID(id PageID) { p.Header.PageID = id }
+func (p *OverflowPage) IsDirty() bool       { return p.dirty }
+func (p *OverflowPage) SetDirty(dirty bool) { p.dirty = dirty }
+func (p *OverflowPage) PageType() uint16    { return OverflowPageFlag }
+func (p *OverflowPage) GetNumKeys() uint16  { return 0 }
+
+// UnmarshalPage reads a Page and dispatches to the correct type based on header flags
+// Uses zero-copy constructors for optimal performance
+func UnmarshalPage(page *Page) (PageData, error) {
+	header := page.Header()
+
+	if (header.Flags & LeafPageFlag) != 0 {
+		leaf := NewLeafPage()
+		if err := leaf.UnmarshalLayout(page.Data[:]); err != nil {
+			return nil, err
+		}
+		return leaf, nil
+	}
+
+	if (header.Flags & BranchPageFlag) != 0 {
+		branch := NewBranchPage()
+		if err := branch.UnmarshalLayout(page.Data[:]); err != nil {
+			return nil, err
+		}
+		return branch, nil
+	}
+
+	if (header.Flags & OverflowPageFlag) != 0 {
+		overflow := NewOverflowPage()
+		if err := overflow.UnmarshalLayout(page.Data[:]); err != nil {
+			return nil, err
+		}
+		return overflow, nil
+	}
+
+	return nil, errors.New("unknown page type")
+}
+
+// MarshalPage serializes a PageData into a Page
+// With zero-copy mode, this copies from the page's embedded buffer
+func MarshalPage(pd PageData, txID uint64) (*Page, error) {
+	page := &Page{}
+
+	switch p := pd.(type) {
+	case *LeafPage:
+		p.Header.TxnID = txID
+		p.Header.Flags = LeafPageFlag
+		p.RebuildIndirectSlices()
+		buf, err := p.MarshalLayout()
+		if err != nil {
+			return nil, err
+		}
+		copy(page.Data[:], buf)
+
+	case *BranchPage:
+		p.Header.TxnID = txID
+		p.Header.Flags = BranchPageFlag
+		p.RebuildIndirectSlices()
+		buf, err := p.MarshalLayout()
+		if err != nil {
+			return nil, err
+		}
+		copy(page.Data[:], buf)
+
+	case *OverflowPage:
+		p.Header.TxnID = txID
+		p.Header.Flags = OverflowPageFlag
+		buf, err := p.MarshalLayout()
+		if err != nil {
+			return nil, err
+		}
+		copy(page.Data[:], buf)
+
+	default:
+		return nil, errors.New("unknown page type")
+	}
+
+	return page, nil
 }

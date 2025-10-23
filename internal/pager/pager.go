@@ -258,7 +258,7 @@ func (p *Pager) GetSnapshot() Snapshot {
 
 // PutSnapshot updates the metadata and root pointer, persists metadata to disk
 // Does NOT make it visible to readers - call CommitSnapshot after fsync
-func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
+func (p *Pager) PutSnapshot(meta base.MetaPage, root base.PageData) error {
 	// Put NumPages from max written page + 1 (NumPages is count, not max ID)
 	meta.NumPages = p.pagesOnDisk.Load() + 1
 
@@ -303,48 +303,48 @@ func (p *Pager) CommitSnapshot() {
 }
 
 // GetNode retrieves a node, checking cache first then loading from disk.
-func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
+func (p *Pager) GetNode(pageID base.PageID) (base.PageData, error) {
 	// Check cache first
-	if node, hit := p.cache.Get(pageID); hit {
-		return node, nil
+	if page, hit := p.cache.Get(pageID); hit {
+		return page, nil
 	}
 
 	// Load from disk
-	page, err := p.store.ReadPage(pageID)
+	rawPage, err := p.store.ReadPage(pageID)
 	if err != nil {
 		return nil, err
 	}
 
-	node := &base.Node{
-		PageID: pageID,
-		Dirty:  false,
-	}
-
-	if err = node.Deserialize(page); err != nil {
+	// Unmarshal to typed page (zero-copy)
+	page, err := base.UnmarshalPage(rawPage)
+	if err != nil {
 		return nil, err
 	}
 
+	page.SetPageID(pageID)
+	page.SetDirty(false)
+
 	// Cache and return
-	p.cache.Put(pageID, node)
-	return node, nil
+	p.cache.Put(pageID, page)
+	return page, nil
 }
 
-// LoadNode loads a node, coordinating cache and disk I/O.
+// LoadNode loads a page, coordinating cache and disk I/O.
 // Routes TX calls through Pager instead of direct cache access.
-func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, bool) {
-	node, err := p.GetNode(pageID)
+func (p *Pager) LoadNode(pageID base.PageID) (base.PageData, bool) {
+	page, err := p.GetNode(pageID)
 	if err != nil {
 		return nil, false
 	}
-	return node, true
+	return page, true
 }
 
 // Commit writes all pages to disk, handles freed pages, updates metadata, and syncs.
 // This is phase 2 of commit: writing pages with real IDs to disk.
 // Caller must hold db.mu.
 func (p *Pager) Commit(
-	pages *btree.BTreeG[*base.Node],
-	root *base.Node,
+	pages *btree.BTreeG[base.PageData],
+	root base.PageData,
 	freed map[base.PageID]struct{},
 	txID uint64,
 ) error {
@@ -355,14 +355,14 @@ func (p *Pager) Commit(
 	if pages.Len() == 1 {
 		// Special case: single page - avoid run logic
 		single, _ := pages.Min()
-		if err := p.WriteRun([]*base.Node{single}, buf, txID); err != nil {
+		if err := p.WriteRun([]base.PageData{single}, buf, txID); err != nil {
 			return err
 		}
 	} else {
-		// Ascend the btree, forming contiguous runs of nodes to write at once
+		// Ascend the btree, forming contiguous runs of pages to write at once
 		var err error
-		run := make([]*base.Node, 0, pages.Len())
-		pages.Ascend(func(item *base.Node) bool {
+		run := make([]base.PageData, 0, pages.Len())
+		pages.Ascend(func(item base.PageData) bool {
 			if len(run) == 0 {
 				run = append(run, item)
 				return true
@@ -370,7 +370,7 @@ func (p *Pager) Commit(
 
 			// Check if current item is contiguous with last in run
 			last := run[len(run)-1]
-			if item.PageID == last.PageID+1 {
+			if item.GetPageID() == last.GetPageID()+1 {
 				run = append(run, item)
 				return true
 			}
@@ -399,20 +399,19 @@ func (p *Pager) Commit(
 	}
 
 	// Write root separately if dirty
-	if root != nil && root.Dirty {
-		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		err := root.Serialize(txID, page)
+	if root != nil && root.IsDirty() {
+		page, err := base.MarshalPage(root, txID)
 		if err != nil {
 			return err
 		}
 
-		if err = p.store.WritePage(root.PageID, page); err != nil {
+		if err = p.store.WritePage(root.GetPageID(), page); err != nil {
 			return err
 		}
 
-		root.Dirty = false
-		p.cache.Put(root.PageID, root)
-		p.TrackWrite(root.PageID)
+		root.SetDirty(false)
+		p.cache.Put(root.GetPageID(), root)
+		p.TrackWrite(root.GetPageID())
 	}
 
 	// Add freed pages to pending
@@ -427,7 +426,7 @@ func (p *Pager) Commit(
 	// Update meta
 	meta := p.active.Load().Meta
 	if root != nil {
-		meta.RootPageID = root.PageID
+		meta.RootPageID = root.GetPageID()
 	}
 	meta.TxID = txID
 	meta.Checksum = meta.CalculateChecksum()
@@ -449,46 +448,47 @@ func (p *Pager) Commit(
 	return nil
 }
 
-func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64) error {
+func (p *Pager) WriteRun(run []base.PageData, buf []byte, txID uint64) error {
 	// Write current run to disk
 	if len(run) == 1 {
-		node := run[0]
-		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		if err := node.Serialize(txID, page); err != nil {
+		pageData := run[0]
+		page, err := base.MarshalPage(pageData, txID)
+		if err != nil {
 			return err
 		}
-		if err := p.store.WritePage(node.PageID, page); err != nil {
+		if err := p.store.WritePage(pageData.GetPageID(), page); err != nil {
 			return err
 		}
 
-		node.Dirty = false
-		p.cache.Put(node.PageID, node)
-		p.TrackWrite(node.PageID)
+		pageData.SetDirty(false)
+		p.cache.Put(pageData.GetPageID(), pageData)
+		p.TrackWrite(pageData.GetPageID())
 	} else {
 		// Allocate aligned buffer for contiguous write
 		bigBuf := directio.AlignedBlock(len(run) * base.PageSize)
 
-		for i, node := range run {
-			page := (*base.Page)(unsafe.Pointer(&bigBuf[i*base.PageSize]))
-			if err := node.Serialize(txID, page); err != nil {
+		for i, pageData := range run {
+			page, err := base.MarshalPage(pageData, txID)
+			if err != nil {
 				return err
 			}
+			copy(bigBuf[i*base.PageSize:(i+1)*base.PageSize], page.Data[:])
 		}
 
 		// Write all at once
-		if err := p.store.WriteAt(run[0].PageID, bigBuf); err != nil {
+		if err := p.store.WriteAt(run[0].GetPageID(), bigBuf); err != nil {
 			return err
 		}
 
 		// Mark clean and cache only after successful write
-		for _, node := range run {
-			node.Dirty = false
-			p.cache.Put(node.PageID, node)
+		for _, pageData := range run {
+			pageData.SetDirty(false)
+			p.cache.Put(pageData.GetPageID(), pageData)
 		}
 
 		// Track max written page (last in run since run is sorted)
-		maxNode := run[len(run)-1]
-		p.TrackWrite(maxNode.PageID)
+		maxPage := run[len(run)-1]
+		p.TrackWrite(maxPage.GetPageID())
 	}
 
 	return nil

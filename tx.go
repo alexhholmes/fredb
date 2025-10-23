@@ -24,8 +24,8 @@ type Tx struct {
 	writable bool   // Is this a read-write transaction?
 	done     bool   // Has Commit() or Rollback() been called?
 
-	db   *DB        // Database this transaction belongs to (concrete type for internal access)
-	root *base.Node // Root Node at transaction start (stores bucket metadata, different from the `__root__` bucket root)
+	db   *DB           // Database this transaction belongs to (concrete type for internal access)
+	root base.PageData // Root page at transaction start (stores bucket metadata, different from the `__root__` bucket root)
 
 	// Bucket tracking
 	buckets  map[string]*Bucket       // Cache of loaded buckets
@@ -33,7 +33,7 @@ type Tx struct {
 	deletes  map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	// Page tracking
-	pages     *btree.BTreeG[*base.Node]        // TX-LOCAL: uncommitted COW pages (write transactions only)
+	pages     *btree.BTreeG[base.PageData]     // TX-LOCAL: uncommitted COW pages (write transactions only)
 	freed     map[base.PageID]struct{}         // Pages freed in this transaction (for freelist)
 	allocated map[base.PageID]pager.Allocation // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
 
@@ -60,27 +60,31 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 }
 
 // search recursively searches for a key using algo functions
-func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
-	// Find position in current node
-	i := 0
-	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
-		i++
-	}
-	// After loop: i points to first key > search_key (or NumKeys if all keys <= search_key)
-
-	// If leaf node, check if key found
-	if node.IsLeaf() {
-		// In leaf, we need to check the previous position (since loop went past equal keys)
-		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
-			return node.Values[i-1], nil
+func (tx *Tx) search(node base.PageData, key []byte) ([]byte, error) {
+	// Handle based on page type
+	if node.PageType() == base.LeafPageFlag {
+		leaf := node.(*base.LeafPage)
+		// Find position in leaf
+		i := 0
+		for i < int(leaf.Header.NumKeys) && bytes.Compare(key, leaf.Keys[i]) >= 0 {
+			i++
 		}
-		// Not found in leaf
+		// In leaf, check if key found at previous position
+		if i > 0 && bytes.Equal(key, leaf.Keys[i-1]) {
+			return leaf.Values[i-1], nil
+		}
 		return nil, ErrKeyNotFound
 	}
 
-	// Branch node: continue descending
-	// `i` is the correct child index (first child with keys >= search_key)
-	child, err := tx.loadNode(node.Children[i])
+	// Branch node: find child and descend
+	branch := node.(*base.BranchPage)
+	i := 0
+	for i < int(branch.Header.NumKeys) && bytes.Compare(key, branch.Keys[i]) >= 0 {
+		i++
+	}
+
+	children := branch.Children()
+	child, err := tx.loadNode(children[i])
 	if err != nil {
 		return nil, err
 	}
@@ -233,24 +237,15 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	bucketLeafID := tx.allocatePage()
 
 	// Create bucket's leaf node (empty)
-	bucketLeaf := &base.Node{
-		PageID:   bucketLeafID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   make([][]byte, 0),
-		Children: nil,
-	}
+	bucketLeaf := base.NewLeafPage()
+	bucketLeaf.SetPageID(bucketLeafID)
+	bucketLeaf.SetDirty(true)
 
 	// Create bucket's root node (branch with single child)
-	bucketRoot := &base.Node{
-		PageID:   bucketRootID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   nil,
-		Children: []base.PageID{bucketLeafID},
-	}
+	bucketRoot := base.NewBranchPage()
+	bucketRoot.SetPageID(bucketRootID)
+	bucketRoot.SetDirty(true)
+	bucketRoot.FirstChild = bucketLeafID
 
 	// Add nodes to transaction cache
 	tx.pages.ReplaceOrInsert(bucketLeaf)
@@ -327,12 +322,16 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	tx.root = root
 
 	// Shrink tree: if root is internal with single child, make child the new root
-	if !tx.root.IsLeaf() && len(tx.root.Children) == 1 {
-		child, err := tx.loadNode(tx.root.Children[0])
-		if err != nil {
-			return err
+	if tx.root.PageType() == base.BranchPageFlag {
+		branch := tx.root.(*base.BranchPage)
+		children := branch.Children()
+		if len(children) == 1 {
+			child, err := tx.loadNode(children[0])
+			if err != nil {
+				return err
+			}
+			tx.root = child
 		}
-		tx.root = child
 	}
 
 	// Remove from cache if present
@@ -481,7 +480,14 @@ func (tx *Tx) Commit() error {
 			root := tx.root
 
 			// Handle root split with COW
-			if root.IsFull(key, value) {
+			var needsSplit bool
+			if root.PageType() == base.LeafPageFlag {
+				needsSplit = root.(*base.LeafPage).IsFull(key, value)
+			} else {
+				needsSplit = root.(*base.BranchPage).IsFull(key)
+			}
+
+			if needsSplit {
 				// Split root using COW
 				leftChild, rightChild, midKey, _, err := tx.splitChild(root, key)
 				if err != nil {
@@ -622,22 +628,37 @@ func (tx *Tx) check() error {
 	return nil
 }
 
-// EnsureWritable ensures a Node is safe to modify in this transaction.
-// Performs COW only if the Node doesn't already belong to this transaction.
-// Returns a writable Node (either the original if already owned, or a Clone).
-func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
-	if cloned, exists := tx.pages.Get(node); exists {
+// EnsureWritable ensures a page is safe to modify in this transaction.
+// Performs COW only if the page doesn't already belong to this transaction.
+// Returns a writable page (either the original if already owned, or a Clone).
+func (tx *Tx) ensureWritable(node base.PageData) (base.PageData, error) {
+	// Create a dummy for lookup
+	dummy := base.NewLeafPage()
+	dummy.SetPageID(node.GetPageID())
+	if cloned, exists := tx.pages.Get(dummy); exists {
 		return cloned, nil
 	}
 
-	cloned := node.Clone()
+	// Clone based on type
+	var cloned base.PageData
+	switch n := node.(type) {
+	case *base.LeafPage:
+		cloned = n.Clone()
+	case *base.BranchPage:
+		cloned = n.Clone()
+	case *base.OverflowPage:
+		cloned = n.Clone()
+	default:
+		return nil, errors.New("unknown page type")
+	}
 
-	// Put up cloned Node with new Page
-	cloned.PageID = tx.allocatePage()
-	cloned.Dirty = true
+	// Allocate new page ID
+	newID := tx.allocatePage()
+	cloned.SetPageID(newID)
+	cloned.SetDirty(true)
 
-	// Free the node page itself
-	tx.addFreed(node.PageID)
+	// Free the old page
+	tx.addFreed(node.GetPageID())
 
 	// Store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
@@ -665,7 +686,7 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
-func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.Node, []byte, []byte, error) {
+func (tx *Tx) splitChild(child base.PageData, insertKey []byte) (base.PageData, base.PageData, []byte, []byte, error) {
 	// I/O: COW BEFORE any computation
 	child, err := tx.ensureWritable(child)
 	if err != nil {
@@ -681,14 +702,30 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	// I/O: allocate page for right node
 	nodeID := tx.allocatePage()
 
-	// State: construct right node
-	node := &base.Node{
-		PageID:   nodeID,
-		Dirty:    true,
-		NumKeys:  uint16(sp.RightCount),
-		Keys:     rightKeys,
-		Values:   rightVals,
-		Children: rightChildren,
+	// State: construct right node based on type
+	var node base.PageData
+	if child.PageType() == base.LeafPageFlag {
+		leaf := base.NewLeafPage()
+		leaf.SetPageID(nodeID)
+		leaf.SetDirty(true)
+		leaf.Header.NumKeys = uint16(sp.RightCount)
+		leaf.Keys = rightKeys
+		leaf.Values = rightVals
+		node = leaf
+	} else {
+		branch := base.NewBranchPage()
+		branch.SetPageID(nodeID)
+		branch.SetDirty(true)
+		branch.Header.NumKeys = uint16(sp.RightCount)
+		branch.Keys = rightKeys
+		if len(rightChildren) > 0 {
+			branch.FirstChild = rightChildren[0]
+			branch.Elements = make([]base.BranchElement, len(rightChildren)-1)
+			for i := 1; i < len(rightChildren); i++ {
+				branch.Elements[i-1].ChildID = rightChildren[i]
+			}
+		}
+		node = branch
 	}
 
 	// State: truncate left (child already COW'd, safe to mutate)
@@ -701,10 +738,13 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 }
 
 // loadNode loads a node using the pager: tx.pages → Pager → Storage
-func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
+func (tx *Tx) loadNode(pageID base.PageID) (base.PageData, error) {
 	// Check TX-local cache first (if writable tx with uncommitted changes)
 	if tx.writable && tx.pages != nil {
-		if node, exists := tx.pages.Get(&base.Node{PageID: pageID}); exists {
+		// Create a dummy page for lookup (comparator only uses PageID)
+		dummy := base.NewLeafPage()
+		dummy.SetPageID(pageID)
+		if node, exists := tx.pages.Get(dummy); exists {
 			return node, nil
 		}
 	}
@@ -719,62 +759,73 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 
 // insertNonFull inserts into a non-full node with COW
 // Returns the (possibly new) root node after COW
-func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
-	if node.IsLeaf() {
+func (tx *Tx) insertNonFull(node base.PageData, key, value []byte) (base.PageData, error) {
+	if node.PageType() == base.LeafPageFlag {
 		// COW before modifying leaf
 		n, err := tx.ensureWritable(node)
 		if err != nil {
 			return nil, err
 		}
+		leaf := n.(*base.LeafPage)
 
 		// Pure: find insert position
-		pos := algo.FindInsertPosition(n, key)
+		pos := algo.FindInsertPosition(leaf, key)
 
 		// Check for update
-		if pos < int(n.NumKeys) && bytes.Equal(n.Keys[pos], key) {
+		if pos < int(leaf.Header.NumKeys) && bytes.Equal(leaf.Keys[pos], key) {
 			// Make a copy of old value for rollback
-			oldValue := n.Values[pos]
+			oldValue := leaf.Values[pos]
 			oldValueCopy := make([]byte, len(oldValue))
 			copy(oldValueCopy, oldValue)
 
-			algo.ApplyLeafUpdate(n, pos, value)
+			algo.ApplyLeafUpdate(leaf, pos, value)
 
 			// Check size after update
-			if err := n.CheckOverflow(); err != nil {
+			if err := leaf.CheckOverflow(); err != nil {
 				// Rollback: restore old value
-				n.Values[pos] = oldValueCopy
+				leaf.Values[pos] = oldValueCopy
 				return nil, err
 			}
-			return n, nil
+			return leaf, nil
 		}
 
 		// Insert new key-value using algo
-		algo.ApplyLeafInsert(n, pos, key, value)
+		algo.ApplyLeafInsert(leaf, pos, key, value)
 
 		// Check size after insertion
-		if err := n.CheckOverflow(); err != nil {
+		if err := leaf.CheckOverflow(); err != nil {
 			// Rollback: remove the inserted key/value
-			n.Keys = algo.RemoveAt(n.Keys, pos)
-			n.Values = algo.RemoveAt(n.Values, pos)
-			n.NumKeys--
+			leaf.Keys = algo.RemoveAt(leaf.Keys, pos)
+			leaf.Values = algo.RemoveAt(leaf.Values, pos)
+			leaf.Header.NumKeys--
 			return nil, err
 		}
 
-		return n, nil
+		return leaf, nil
 	}
 
 	// Branch node - recursive COW
+	branch := node.(*base.BranchPage)
+
 	// Find child to insert into
-	i := algo.FindChildIndex(node, key)
+	i := algo.FindChildIndex(branch, key)
 
 	// Load child
-	child, err := tx.loadNode(node.Children[i])
+	children := branch.Children()
+	child, err := tx.loadNode(children[i])
 	if err != nil {
 		return nil, err
 	}
 
 	// Handle full child with COW-aware split
-	if child.IsFull(key, value) {
+	var needsSplit bool
+	if child.PageType() == base.LeafPageFlag {
+		needsSplit = child.(*base.LeafPage).IsFull(key, value)
+	} else {
+		needsSplit = child.(*base.BranchPage).IsFull(key)
+	}
+
+	if needsSplit {
 		// Split child using COW
 		leftChild, rightChild, midKey, midVal, err := tx.splitChild(child, key)
 		if err != nil {
@@ -786,23 +837,24 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		if err != nil {
 			return nil, err
 		}
+		branch = node.(*base.BranchPage)
 
 		// Save old state for rollback
-		oldKeys := node.Keys
-		oldValues := node.Values
-		oldChildren := node.Children
-		oldNumKeys := node.NumKeys
+		oldKeys := branch.Keys
+		oldFirstChild := branch.FirstChild
+		oldElements := branch.Elements
+		oldNumKeys := branch.Header.NumKeys
 
 		// Apply split to parent using algo
-		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
+		algo.ApplyChildSplit(branch, i, leftChild, rightChild, midKey, midVal)
 
 		// Check size after modification
-		if err := node.CheckOverflow(); err != nil {
+		if err := branch.CheckOverflow(); err != nil {
 			// Rollback: restore old state
-			node.Keys = oldKeys
-			node.Values = oldValues
-			node.Children = oldChildren
-			node.NumKeys = oldNumKeys
+			branch.Keys = oldKeys
+			branch.FirstChild = oldFirstChild
+			branch.Elements = oldElements
+			branch.Header.NumKeys = oldNumKeys
 			return nil, err
 		}
 
@@ -816,7 +868,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	}
 
 	// Store original child PageID to detect COW
-	oldChildID := child.PageID
+	oldChildID := child.GetPageID()
 
 	// Recursive insert (may COW child)
 	newChild, err := tx.insertNonFull(child, key, value)
@@ -832,23 +884,24 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		if err != nil {
 			return nil, err
 		}
+		branch = node.(*base.BranchPage)
 
 		// Save old state for rollback
-		oldKeys := node.Keys
-		oldValues := node.Values
-		oldChildren := node.Children
-		oldNumKeys := node.NumKeys
+		oldKeys := branch.Keys
+		oldFirstChild := branch.FirstChild
+		oldElements := branch.Elements
+		oldNumKeys := branch.Header.NumKeys
 
 		// Apply split to parent using algo
-		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
+		algo.ApplyChildSplit(branch, i, leftChild, rightChild, midKey, midVal)
 
 		// Check size after modification
-		if err := node.CheckOverflow(); err != nil {
+		if err := branch.CheckOverflow(); err != nil {
 			// Rollback: restore old state
-			node.Keys = oldKeys
-			node.Values = oldValues
-			node.Children = oldChildren
-			node.NumKeys = oldNumKeys
+			branch.Keys = oldKeys
+			branch.FirstChild = oldFirstChild
+			branch.Elements = oldElements
+			branch.Header.NumKeys = oldNumKeys
 			return nil, err
 		}
 
@@ -863,7 +916,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 			return nil, err
 		}
 
-		return node, nil
+		return branch, nil
 	} else if err != nil {
 		return nil, err
 	}
@@ -872,16 +925,23 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	child = newChild
 
 	// If child was COW'd, update parent pointer
-	if child.PageID != oldChildID {
+	if child.GetPageID() != oldChildID {
 		// COW parent to update child pointer
 		node, err = tx.ensureWritable(node)
 		if err != nil {
 			return nil, err
 		}
+		branch = node.(*base.BranchPage)
 
-		node.Children[i] = child.PageID
-		node.Dirty = true
-		if err := node.CheckOverflow(); err != nil {
+		// Update child pointer in FirstChild or Elements
+		children = branch.Children()
+		if i == 0 {
+			branch.FirstChild = child.GetPageID()
+		} else {
+			branch.Elements[i-1].ChildID = child.GetPageID()
+		}
+		branch.SetDirty(true)
+		if err := branch.CheckOverflow(); err != nil {
 			return nil, err
 		}
 	}
@@ -891,9 +951,9 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 // deleteFromNode recursively deletes a key from the subtree rooted at node with COW
 // Returns the (possibly new) node after COW
-func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
+func (tx *Tx) deleteFromNode(node base.PageData, key []byte) (base.PageData, error) {
 	// B+ tree: if this is a leaf, check if key exists and delete
-	if node.IsLeaf() {
+	if node.PageType() == base.LeafPageFlag {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
 			return tx.deleteFromLeaf(node, idx)
@@ -902,10 +962,13 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	}
 
 	// Branch node: descend to child (never delete from branch)
+	branch := node.(*base.BranchPage)
+
 	// Find child where key might be using algo
 	childIdx := algo.FindDeleteChildIndex(node, key)
 
-	child, err := tx.loadNode(node.Children[childIdx])
+	children := branch.Children()
+	child, err := tx.loadNode(children[childIdx])
 	if err != nil {
 		return nil, err
 	}
@@ -921,13 +984,26 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	branch = node.(*base.BranchPage)
 
 	// Update child pointer (child may have been COW'd)
-	node.Children[childIdx] = child.PageID
+	if childIdx == 0 {
+		branch.FirstChild = child.GetPageID()
+	} else {
+		branch.Elements[childIdx-1].ChildID = child.GetPageID()
+	}
 
 	// Check for underflow only if there are siblings to borrow from or merge with
 	// When parent has only 1 child (e.g., root with single child), underflow is allowed
-	if child.IsUnderflow() && len(node.Children) > 1 {
+	children = branch.Children()
+	var childUnderflow bool
+	if child.PageType() == base.LeafPageFlag {
+		childUnderflow = child.(*base.LeafPage).IsUnderflow()
+	} else {
+		childUnderflow = child.(*base.BranchPage).IsUnderflow()
+	}
+
+	if childUnderflow && len(children) > 1 {
 		// CRITICAL: capture both returned parent and child
 		node, child, err = tx.fixUnderflow(node, childIdx, child)
 		if err != nil {
@@ -939,54 +1015,86 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 }
 
 // deleteFromLeaf performs COW on the leaf before deleting
-func (tx *Tx) deleteFromLeaf(node *base.Node, idx int) (*base.Node, error) {
+func (tx *Tx) deleteFromLeaf(node base.PageData, idx int) (base.PageData, error) {
 	// COW before modifying leaf
 	node, err := tx.ensureWritable(node)
 	if err != nil {
 		return nil, err
 	}
+	leaf := node.(*base.LeafPage)
 
 	// Remove key and value using algo
-	algo.ApplyLeafDelete(node, idx)
+	algo.ApplyLeafDelete(leaf, idx)
 
-	return node, nil
+	return leaf, nil
 }
 
 // fixUnderflow fixes underflow in child at childIdx with COW semantics
 // Returns (updatedParent, updatedChild, error)
-func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*base.Node, *base.Node, error) {
+func (tx *Tx) fixUnderflow(parent base.PageData, childIdx int, child base.PageData) (base.PageData, base.PageData, error) {
+	branch := parent.(*base.BranchPage)
+	children := branch.Children()
+
 	// Try to borrow from left sibling
 	if childIdx > 0 {
-		leftSibling, err := tx.loadNode(parent.Children[childIdx-1])
+		leftSibling, err := tx.loadNode(children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if algo.CanBorrowFrom(leftSibling) {
+		var canBorrow bool
+		if leftSibling.PageType() == base.LeafPageFlag {
+			leaf := leftSibling.(*base.LeafPage)
+			canBorrow = leaf.Header.NumKeys > 1 && !leaf.IsUnderflow()
+		} else {
+			branch := leftSibling.(*base.BranchPage)
+			canBorrow = branch.Header.NumKeys > 1 && !branch.IsUnderflow()
+		}
+
+		if canBorrow {
 			child, leftSibling, parent, err = tx.borrowFromLeft(child, leftSibling, parent, childIdx-1)
 			if err != nil {
 				return nil, nil, err
 			}
 			// Update parent's child pointer for borrowed child
-			parent.Children[childIdx] = child.PageID
+			branch = parent.(*base.BranchPage)
+			if childIdx == 0 {
+				branch.FirstChild = child.GetPageID()
+			} else {
+				branch.Elements[childIdx-1].ChildID = child.GetPageID()
+			}
 			return parent, child, nil
 		}
 	}
 
 	// Try to borrow from right sibling
-	if childIdx < len(parent.Children)-1 {
-		rightSibling, err := tx.loadNode(parent.Children[childIdx+1])
+	if childIdx < len(children)-1 {
+		rightSibling, err := tx.loadNode(children[childIdx+1])
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if algo.CanBorrowFrom(rightSibling) {
+		var canBorrow bool
+		if rightSibling.PageType() == base.LeafPageFlag {
+			leaf := rightSibling.(*base.LeafPage)
+			canBorrow = leaf.Header.NumKeys > 1 && !leaf.IsUnderflow()
+		} else {
+			branch := rightSibling.(*base.BranchPage)
+			canBorrow = branch.Header.NumKeys > 1 && !branch.IsUnderflow()
+		}
+
+		if canBorrow {
 			child, rightSibling, parent, err = tx.borrowFromRight(child, rightSibling, parent, childIdx)
 			if err != nil {
 				return nil, nil, err
 			}
 			// Update parent's child pointer for borrowed child
-			parent.Children[childIdx] = child.PageID
+			branch = parent.(*base.BranchPage)
+			if childIdx == 0 {
+				branch.FirstChild = child.GetPageID()
+			} else {
+				branch.Elements[childIdx-1].ChildID = child.GetPageID()
+			}
 			return parent, child, nil
 		}
 	}
@@ -994,7 +1102,7 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 	// Merge with a sibling
 	if childIdx > 0 {
 		// Merge with left sibling
-		leftSibling, err := tx.loadNode(parent.Children[childIdx-1])
+		leftSibling, err := tx.loadNode(children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1007,7 +1115,7 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 	}
 
 	// Merge with right sibling
-	rightSibling, err := tx.loadNode(parent.Children[childIdx+1])
+	rightSibling, err := tx.loadNode(children[childIdx+1])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1020,7 +1128,7 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 }
 
 // borrowFromLeft borrows a key from left sibling through parent (COW)
-func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
+func (tx *Tx) borrowFromLeft(node, leftSibling, parent base.PageData, parentKeyIdx int) (base.PageData, base.PageData, base.PageData, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -1037,17 +1145,31 @@ func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx 
 		return nil, nil, nil, err
 	}
 
-	algo.BorrowFromLeft(node, leftSibling, parent, parentKeyIdx)
+	// Call algo function based on node type
+	if node.PageType() == base.LeafPageFlag {
+		algo.BorrowFromLeftLeaf(node.(*base.LeafPage), leftSibling.(*base.LeafPage), parent.(*base.BranchPage), parentKeyIdx)
+	} else {
+		algo.BorrowFromLeftBranch(node.(*base.BranchPage), leftSibling.(*base.BranchPage), parent.(*base.BranchPage), parentKeyIdx)
+	}
 
 	// Update parent's children pointers to COW'd nodes
-	parent.Children[parentKeyIdx] = leftSibling.PageID
-	parent.Children[parentKeyIdx+1] = node.PageID
+	branch := parent.(*base.BranchPage)
+	if parentKeyIdx == 0 {
+		branch.FirstChild = leftSibling.GetPageID()
+	} else {
+		branch.Elements[parentKeyIdx-1].ChildID = leftSibling.GetPageID()
+	}
+	if parentKeyIdx+1 == 0 {
+		branch.FirstChild = node.GetPageID()
+	} else {
+		branch.Elements[parentKeyIdx].ChildID = node.GetPageID()
+	}
 
 	return node, leftSibling, parent, nil
 }
 
 // borrowFromRight borrows a key from right sibling through parent (COW)
-func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
+func (tx *Tx) borrowFromRight(node, rightSibling, parent base.PageData, parentKeyIdx int) (base.PageData, base.PageData, base.PageData, error) {
 	// COW all three nodes being modified
 	node, err := tx.ensureWritable(node)
 	if err != nil {
@@ -1064,18 +1186,32 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 		return nil, nil, nil, err
 	}
 
-	algo.BorrowFromRight(node, rightSibling, parent, parentKeyIdx)
+	// Call algo function based on node type
+	if node.PageType() == base.LeafPageFlag {
+		algo.BorrowFromRightLeaf(node.(*base.LeafPage), rightSibling.(*base.LeafPage), parent.(*base.BranchPage), parentKeyIdx)
+	} else {
+		algo.BorrowFromRightBranch(node.(*base.BranchPage), rightSibling.(*base.BranchPage), parent.(*base.BranchPage), parentKeyIdx)
+	}
 
 	// Update parent's children pointers to COW'd nodes
-	parent.Children[parentKeyIdx] = node.PageID
-	parent.Children[parentKeyIdx+1] = rightSibling.PageID
+	branch := parent.(*base.BranchPage)
+	if parentKeyIdx == 0 {
+		branch.FirstChild = node.GetPageID()
+	} else {
+		branch.Elements[parentKeyIdx-1].ChildID = node.GetPageID()
+	}
+	if parentKeyIdx+1 == 0 {
+		branch.FirstChild = rightSibling.GetPageID()
+	} else {
+		branch.Elements[parentKeyIdx].ChildID = rightSibling.GetPageID()
+	}
 
 	return node, rightSibling, parent, nil
 }
 
 // mergeNodes merges two nodes with COW semantics
 // Returns (parent, merged, error) where merged=true if nodes were actually merged, false if redistributed
-func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, bool, error) {
+func (tx *Tx) mergeNodes(leftNode, rightNode, parent base.PageData, parentKeyIdx int) (base.PageData, bool, error) {
 	// COW left node (will receive merged content)
 	leftNode, err := tx.ensureWritable(leftNode)
 	if err != nil {
@@ -1097,10 +1233,18 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	// Try merging - check if result would overflow
 	// For large keys/values, two underflow nodes might be nearly full in bytes
 	// Calculate merged size before actually merging
-	mergedSize := leftNode.Size() + rightNode.Size()
-	if !leftNode.IsLeaf() {
+	var mergedSize int
+	if leftNode.PageType() == base.LeafPageFlag {
+		leftLeaf := leftNode.(*base.LeafPage)
+		rightLeaf := rightNode.(*base.LeafPage)
+		mergedSize = leftLeaf.Size() + rightLeaf.Size()
+	} else {
+		leftBranch := leftNode.(*base.BranchPage)
+		rightBranch := rightNode.(*base.BranchPage)
+		mergedSize = leftBranch.Size() + rightBranch.Size()
 		// Branch nodes: add separator key size
-		mergedSize += len(parent.Keys[parentKeyIdx])
+		branch := parent.(*base.BranchPage)
+		mergedSize += len(branch.Keys[parentKeyIdx])
 	}
 
 	if mergedSize > base.PageSize {
@@ -1112,35 +1256,63 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 			return nil, false, err
 		}
 		// Update parent's child pointers (both nodes remain)
-		parent.Children[parentKeyIdx] = leftNode.PageID
-		parent.Children[parentKeyIdx+1] = rightNode.PageID
+		branch := parent.(*base.BranchPage)
+		if parentKeyIdx == 0 {
+			branch.FirstChild = leftNode.GetPageID()
+		} else {
+			branch.Elements[parentKeyIdx-1].ChildID = leftNode.GetPageID()
+		}
+		if parentKeyIdx+1 == 0 {
+			branch.FirstChild = rightNode.GetPageID()
+		} else {
+			branch.Elements[parentKeyIdx].ChildID = rightNode.GetPageID()
+		}
 		return parent, false, nil // false = redistributed, not merged
 	}
 
-	algo.MergeNodes(leftNode, rightNode, parent.Keys[parentKeyIdx])
-	algo.ApplyBranchRemoveSeparator(parent, parentKeyIdx)
+	// Perform merge based on node type
+	branch := parent.(*base.BranchPage)
+	if leftNode.PageType() == base.LeafPageFlag {
+		leftLeaf := leftNode.(*base.LeafPage)
+		rightLeaf := rightNode.(*base.LeafPage)
+		algo.MergeNodesLeaf(leftLeaf, rightLeaf, branch.Keys[parentKeyIdx])
+	} else {
+		leftBranch := leftNode.(*base.BranchPage)
+		rightBranch := rightNode.(*base.BranchPage)
+		algo.MergeNodesBranch(leftBranch, rightBranch, branch.Keys[parentKeyIdx])
+	}
+	algo.ApplyBranchRemoveSeparator(branch, parentKeyIdx)
+
 	// Update parent's child pointer to merged node
-	parent.Children[parentKeyIdx] = leftNode.PageID
+	if parentKeyIdx == 0 {
+		branch.FirstChild = leftNode.GetPageID()
+	} else {
+		branch.Elements[parentKeyIdx-1].ChildID = leftNode.GetPageID()
+	}
 
 	// Track right node as freed
-	tx.addFreed(rightNode.PageID)
+	tx.addFreed(rightNode.GetPageID())
 
 	return parent, true, nil // true = actually merged
 }
 
 // redistributeNodes redistributes keys evenly between two siblings when merge would overflow
 // This is called when both nodes are underflow but merging them would exceed page size
-func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) error {
-	if leftNode.IsLeaf() {
+func (tx *Tx) redistributeNodes(leftNode, rightNode, parent base.PageData, parentKeyIdx int) error {
+	if leftNode.PageType() == base.LeafPageFlag {
+		leftLeaf := leftNode.(*base.LeafPage)
+		rightLeaf := rightNode.(*base.LeafPage)
+		parentBranch := parent.(*base.BranchPage)
+
 		// Combine all keys and values
-		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
+		totalKeys := int(leftLeaf.Header.NumKeys) + int(rightLeaf.Header.NumKeys)
 		allKeys := make([][]byte, 0, totalKeys)
 		allValues := make([][]byte, 0, totalKeys)
 
-		allKeys = append(allKeys, leftNode.Keys[:leftNode.NumKeys]...)
-		allKeys = append(allKeys, rightNode.Keys[:rightNode.NumKeys]...)
-		allValues = append(allValues, leftNode.Values[:leftNode.NumKeys]...)
-		allValues = append(allValues, rightNode.Values[:rightNode.NumKeys]...)
+		allKeys = append(allKeys, leftLeaf.Keys[:leftLeaf.Header.NumKeys]...)
+		allKeys = append(allKeys, rightLeaf.Keys[:rightLeaf.Header.NumKeys]...)
+		allValues = append(allValues, leftLeaf.Values[:leftLeaf.Header.NumKeys]...)
+		allValues = append(allValues, rightLeaf.Values[:rightLeaf.Header.NumKeys]...)
 
 		// Find split point by size, not count
 		// Target: split when left node reaches ~half of combined size
@@ -1170,46 +1342,55 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		}
 
 		// Split at calculated point
-		leftNode.NumKeys = uint16(leftCount)
-		leftNode.Keys = make([][]byte, leftCount)
-		leftNode.Values = make([][]byte, leftCount)
-		copy(leftNode.Keys, allKeys[:leftCount])
-		copy(leftNode.Values, allValues[:leftCount])
+		leftLeaf.Header.NumKeys = uint16(leftCount)
+		leftLeaf.Keys = make([][]byte, leftCount)
+		leftLeaf.Values = make([][]byte, leftCount)
+		copy(leftLeaf.Keys, allKeys[:leftCount])
+		copy(leftLeaf.Values, allValues[:leftCount])
 
 		rightCount := totalKeys - leftCount
-		rightNode.NumKeys = uint16(rightCount)
-		rightNode.Keys = make([][]byte, rightCount)
-		rightNode.Values = make([][]byte, rightCount)
-		copy(rightNode.Keys, allKeys[leftCount:])
-		copy(rightNode.Values, allValues[leftCount:])
+		rightLeaf.Header.NumKeys = uint16(rightCount)
+		rightLeaf.Keys = make([][]byte, rightCount)
+		rightLeaf.Values = make([][]byte, rightCount)
+		copy(rightLeaf.Keys, allKeys[leftCount:])
+		copy(rightLeaf.Values, allValues[leftCount:])
 
 		// Update parent separator to first key of right node
-		parent.Keys[parentKeyIdx] = rightNode.Keys[0]
+		parentBranch.Keys[parentKeyIdx] = rightLeaf.Keys[0]
 
 		// Check for overflow after redistribution
-		if err := leftNode.CheckOverflow(); err != nil {
+		if err := leftLeaf.CheckOverflow(); err != nil {
 			return err
 		}
-		if err := rightNode.CheckOverflow(); err != nil {
+		if err := rightLeaf.CheckOverflow(); err != nil {
 			return err
 		}
+
+		leftLeaf.SetDirty(true)
+		rightLeaf.SetDirty(true)
 	} else {
+		leftBranch := leftNode.(*base.BranchPage)
+		rightBranch := rightNode.(*base.BranchPage)
+		parentBranch := parent.(*base.BranchPage)
+
 		// Branch node: include parent separator key in redistribution
-		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys) + 1 // +1 for parent separator
+		totalKeys := int(leftBranch.Header.NumKeys) + int(rightBranch.Header.NumKeys) + 1 // +1 for parent separator
 
 		allKeys := make([][]byte, 0, totalKeys)
 		allChildren := make([]base.PageID, 0, totalKeys+1)
 
 		// Left node keys and children
-		allKeys = append(allKeys, leftNode.Keys[:leftNode.NumKeys]...)
-		allChildren = append(allChildren, leftNode.Children[:leftNode.NumKeys+1]...)
+		leftChildren := leftBranch.Children()
+		allKeys = append(allKeys, leftBranch.Keys[:leftBranch.Header.NumKeys]...)
+		allChildren = append(allChildren, leftChildren[:leftBranch.Header.NumKeys+1]...)
 
 		// Parent separator
-		allKeys = append(allKeys, parent.Keys[parentKeyIdx])
+		allKeys = append(allKeys, parentBranch.Keys[parentKeyIdx])
 
 		// Right node keys and children
-		allKeys = append(allKeys, rightNode.Keys[:rightNode.NumKeys]...)
-		allChildren = append(allChildren, rightNode.Children[:rightNode.NumKeys+1]...)
+		rightChildren := rightBranch.Children()
+		allKeys = append(allKeys, rightBranch.Keys[:rightBranch.Header.NumKeys]...)
+		allChildren = append(allChildren, rightChildren[:rightBranch.Header.NumKeys+1]...)
 
 		// Find split point by size
 		totalSize := 0
@@ -1240,34 +1421,43 @@ func (tx *Tx) redistributeNodes(leftNode, rightNode, parent *base.Node, parentKe
 		// Split keys (separator goes to parent)
 		newSeparator := allKeys[splitIdx]
 
-		leftNode.NumKeys = uint16(splitIdx)
-		leftNode.Keys = make([][]byte, splitIdx)
-		leftNode.Children = make([]base.PageID, splitIdx+1)
-		copy(leftNode.Keys, allKeys[:splitIdx])
-		copy(leftNode.Children, allChildren[:splitIdx+1])
+		leftBranch.Header.NumKeys = uint16(splitIdx)
+		leftBranch.Keys = make([][]byte, splitIdx)
+		newLeftChildren := allChildren[:splitIdx+1]
+		leftBranch.FirstChild = newLeftChildren[0]
+		leftBranch.Elements = make([]base.BranchElement, len(newLeftChildren)-1)
+		for i := 1; i < len(newLeftChildren); i++ {
+			leftBranch.Elements[i-1].ChildID = newLeftChildren[i]
+		}
+		copy(leftBranch.Keys, allKeys[:splitIdx])
 
 		rightCount := totalKeys - splitIdx - 1 // -1 because separator goes to parent
-		rightNode.NumKeys = uint16(rightCount)
-		rightNode.Keys = make([][]byte, rightCount)
-		rightNode.Children = make([]base.PageID, rightCount+1)
-		copy(rightNode.Keys, allKeys[splitIdx+1:])
-		copy(rightNode.Children, allChildren[splitIdx+1:])
+		rightBranch.Header.NumKeys = uint16(rightCount)
+		rightBranch.Keys = make([][]byte, rightCount)
+		newRightChildren := allChildren[splitIdx+1:]
+		rightBranch.FirstChild = newRightChildren[0]
+		rightBranch.Elements = make([]base.BranchElement, len(newRightChildren)-1)
+		for i := 1; i < len(newRightChildren); i++ {
+			rightBranch.Elements[i-1].ChildID = newRightChildren[i]
+		}
+		copy(rightBranch.Keys, allKeys[splitIdx+1:])
 
 		// Update parent separator
-		parent.Keys[parentKeyIdx] = newSeparator
+		parentBranch.Keys[parentKeyIdx] = newSeparator
 
 		// Check for overflow after redistribution
-		if err := leftNode.CheckOverflow(); err != nil {
+		if err := leftBranch.CheckOverflow(); err != nil {
 			return err
 		}
-		if err := rightNode.CheckOverflow(); err != nil {
+		if err := rightBranch.CheckOverflow(); err != nil {
 			return err
 		}
+
+		leftBranch.SetDirty(true)
+		rightBranch.SetDirty(true)
 	}
 
-	leftNode.Dirty = true
-	rightNode.Dirty = true
-	parent.Dirty = true
+	parent.SetDirty(true)
 
 	return nil
 }
@@ -1326,10 +1516,12 @@ func (tx *Tx) freeTree(rootID base.PageID) error {
 			stack[len(stack)-1].childrenProcessed = true
 
 			// Push children in reverse for correct post-order
-			if !node.IsLeaf() {
-				for i := len(node.Children) - 1; i >= 0; i-- {
+			if node.PageType() == base.BranchPageFlag {
+				branch := node.(*base.BranchPage)
+				children := branch.Children()
+				for i := len(children) - 1; i >= 0; i-- {
 					stack = append(stack, stackItem{
-						pageID:            node.Children[i],
+						pageID:            children[i],
 						childrenProcessed: false,
 					})
 				}

@@ -69,7 +69,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	}
 
 	// Initialize root (was newTree logic)
-	var root *base.Node
+	var root base.PageData
 	meta := pg.GetMeta()
 
 	if meta.RootPageID != 0 {
@@ -80,15 +80,14 @@ func Open(path string, options ...Option) (*DB, error) {
 			return nil, err
 		}
 
-		root = &base.Node{
-			PageID: meta.RootPageID,
-			Dirty:  false,
-		}
-
-		if err := root.Deserialize(rootPage); err != nil {
+		root, err = base.UnmarshalPage(rootPage)
+		if err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
+
+		root.SetPageID(meta.RootPageID)
+		root.SetDirty(false)
 
 		// Bundle root with metadata and make visible atomically
 		if err := pg.PutSnapshot(meta, root); err != nil {
@@ -103,45 +102,32 @@ func Open(path string, options ...Option) (*DB, error) {
 		rootPageID, _ := pg.AssignPageID()
 		rootLeafID, _ := pg.AssignPageID()
 
-		rootLeaf := &base.Node{
-			PageID:   rootLeafID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
+		rootLeaf := base.NewLeafPage()
+		rootLeaf.SetPageID(rootLeafID)
+		rootLeaf.SetDirty(true)
+		rootLeaf.Header.NumKeys = 0
 
-		root = &base.Node{
-			PageID:   rootPageID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{rootLeafID},
-		}
+		rootBranch := base.NewBranchPage()
+		rootBranch.SetPageID(rootPageID)
+		rootBranch.SetDirty(true)
+		rootBranch.FirstChild = rootLeafID
+		rootBranch.Header.NumKeys = 0
+		root = rootBranch
 
 		// 2. Create __root__ bucket's tree (default namespace)
 		rootBucketRootID, _ := pg.AssignPageID()
 		rootBucketLeafID, _ := pg.AssignPageID()
 
-		rootBucketLeaf := &base.Node{
-			PageID:   rootBucketLeafID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
+		rootBucketLeaf := base.NewLeafPage()
+		rootBucketLeaf.SetPageID(rootBucketLeafID)
+		rootBucketLeaf.SetDirty(true)
+		rootBucketLeaf.Header.NumKeys = 0
 
-		rootBucketRoot := &base.Node{
-			PageID:   rootBucketRootID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{rootBucketLeafID},
-		}
+		rootBucketRoot := base.NewBranchPage()
+		rootBucketRoot.SetPageID(rootBucketRootID)
+		rootBucketRoot.SetDirty(true)
+		rootBucketRoot.FirstChild = rootBucketLeafID
+		rootBucketRoot.Header.NumKeys = 0
 
 		// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
 		// We serialize manually since we don't have a Bucket object yet
@@ -151,14 +137,14 @@ func Open(path string, options ...Option) (*DB, error) {
 
 		// 4. Insert __root__ bucket metadata into root tree's leaf
 		// We need to manually insert since we don't have a transaction yet
-		rootLeaf.Keys = append(rootLeaf.Keys, []byte("__root__"))
-
-		rootLeaf.Values = append(rootLeaf.Values, metadata)
-		rootLeaf.NumKeys = 1
+		key := []byte("__root__")
+		rootLeaf.Keys = [][]byte{key}
+		rootLeaf.Values = [][]byte{metadata}
+		rootLeaf.Header.NumKeys = 1
+		rootLeaf.RebuildIndirectSlices()
 
 		// 5. serialize and write all 4 pages
-		leafPage := &base.Page{}
-		err = rootLeaf.Serialize(0, leafPage)
+		leafPage, err := base.MarshalPage(rootLeaf, 0)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -169,8 +155,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 		pg.TrackWrite(rootLeafID)
 
-		rootPage := &base.Page{}
-		err = root.Serialize(0, rootPage)
+		rootPage, err := base.MarshalPage(root, 0)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -181,8 +166,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 		pg.TrackWrite(rootPageID)
 
-		bucketLeafPage := &base.Page{}
-		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
+		bucketLeafPage, err := base.MarshalPage(rootBucketLeaf, 0)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -193,8 +177,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 		pg.TrackWrite(rootBucketLeafID)
 
-		bucketRootPage := &base.Page{}
-		err = rootBucketRoot.Serialize(0, bucketRootPage)
+		bucketRootPage, err := base.MarshalPage(rootBucketRoot, 0)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -302,8 +285,8 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			txID:     txnID,
 			writable: true,
 			root:     snapshot.Root, // Atomic snapshot of root
-			pages: btree.NewG[*base.Node](2, func(a, b *base.Node) bool {
-				return a.PageID < b.PageID
+			pages: btree.NewG[base.PageData](2, func(a, b base.PageData) bool {
+				return a.GetPageID() < b.GetPageID()
 			}),
 			acquired:  make(map[base.PageID]struct{}),
 			freed:     make(map[base.PageID]struct{}),
@@ -407,17 +390,16 @@ func (db *DB) Close() error {
 
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.pager.GetSnapshot()
-	if snapshot.Root != nil && snapshot.Root.Dirty {
-		page := &base.Page{}
-		err := snapshot.Root.Serialize(snapshot.Meta.TxID, page)
+	if snapshot.Root != nil && snapshot.Root.IsDirty() {
+		page, err := base.MarshalPage(snapshot.Root, snapshot.Meta.TxID)
 		if err != nil {
 			return err
 		}
-		if err := db.store.WritePage(snapshot.Root.PageID, page); err != nil {
+		if err := db.store.WritePage(snapshot.Root.GetPageID(), page); err != nil {
 			return err
 		}
-		db.pager.TrackWrite(snapshot.Root.PageID)
-		snapshot.Root.Dirty = false
+		db.pager.TrackWrite(snapshot.Root.GetPageID())
+		snapshot.Root.SetDirty(false)
 	}
 
 	// Safe to unlock, all pager operations finished.

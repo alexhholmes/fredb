@@ -13,26 +13,32 @@ import (
 var _ = flag.Bool("slow", false, "run slow tests")
 
 // Helper to create a test node
-func makeLeafNode(keys, values [][]byte) *base.Node {
-	return &base.Node{
-		NumKeys: uint16(len(keys)),
-		Keys:    keys,
-		Values:  values,
-	}
+func makeLeafNode(keys, values [][]byte) base.PageData {
+	leaf := base.NewLeafPage()
+	leaf.Header.NumKeys = uint16(len(keys))
+	leaf.Keys = keys
+	leaf.Values = values
+	return leaf
 }
 
-func makeBranchNode(keys [][]byte, children []base.PageID) *base.Node {
-	return &base.Node{
-		NumKeys:  uint16(len(keys)),
-		Keys:     keys,
-		Children: children,
+func makeBranchNode(keys [][]byte, children []base.PageID) base.PageData {
+	branch := base.NewBranchPage()
+	branch.Header.NumKeys = uint16(len(keys))
+	branch.Keys = keys
+	if len(children) > 0 {
+		branch.FirstChild = children[0]
+		branch.Elements = make([]base.BranchElement, len(children)-1)
+		for i := 1; i < len(children); i++ {
+			branch.Elements[i-1].ChildID = children[i]
+		}
 	}
+	return branch
 }
 
 func TestFindChildIndex(t *testing.T) {
 	tests := []struct {
 		name string
-		node *base.Node
+		node base.PageData
 		key  []byte
 		want int
 	}{
@@ -91,7 +97,7 @@ func TestFindChildIndex(t *testing.T) {
 func TestFindKeyInLeaf(t *testing.T) {
 	tests := []struct {
 		name string
-		node *base.Node
+		node base.PageData
 		key  []byte
 		want int
 	}{
@@ -156,7 +162,7 @@ func TestFindKeyInLeaf(t *testing.T) {
 func TestFindInsertPosition(t *testing.T) {
 	tests := []struct {
 		name string
-		node *base.Node
+		node base.PageData
 		key  []byte
 		want int
 	}{
@@ -223,7 +229,7 @@ func TestFindInsertPosition(t *testing.T) {
 func TestFindDeleteChildIndex(t *testing.T) {
 	tests := []struct {
 		name string
-		node *base.Node
+		node base.PageData
 		key  []byte
 		want int
 	}{
@@ -277,7 +283,7 @@ func TestFindDeleteChildIndex(t *testing.T) {
 
 func TestCalculateSplitPoint(t *testing.T) {
 	// Create a leaf with enough keys to split
-	makeFullLeaf := func(n int) *base.Node {
+	makeFullLeaf := func(n int) base.PageData {
 		keys := make([][]byte, n)
 		vals := make([][]byte, n)
 		for i := 0; i < n; i++ {
@@ -287,7 +293,7 @@ func TestCalculateSplitPoint(t *testing.T) {
 		return makeLeafNode(keys, vals)
 	}
 
-	makeFullBranch := func(n int) *base.Node {
+	makeFullBranch := func(n int) base.PageData {
 		keys := make([][]byte, n)
 		children := make([]base.PageID, n+1)
 		for i := 0; i < n; i++ {
@@ -300,7 +306,7 @@ func TestCalculateSplitPoint(t *testing.T) {
 
 	tests := []struct {
 		name               string
-		node               *base.Node
+		node               base.PageData
 		insertKey          []byte
 		hint               SplitHint
 		wantMid            int
@@ -398,16 +404,23 @@ func TestCalculateSplitPoint(t *testing.T) {
 			}
 
 			// Verify separator is a copy, not shared
-			if tt.node.IsLeaf() && sp.Mid+1 < len(tt.node.Keys) {
-				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid+1]) > 0 {
-					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid+1][0] {
-						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
+			var keys [][]byte
+			if tt.node.PageType() == base.LeafPageFlag {
+				keys = tt.node.(*base.LeafPage).Keys
+				if sp.Mid+1 < len(keys) {
+					if len(sp.SeparatorKey) > 0 && len(keys[sp.Mid+1]) > 0 {
+						if &sp.SeparatorKey[0] == &keys[sp.Mid+1][0] {
+							t.Error("SeparatorKey shares backing array with original (not CoW safe)")
+						}
 					}
 				}
-			} else if !tt.node.IsLeaf() && sp.Mid < len(tt.node.Keys) {
-				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid]) > 0 {
-					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid][0] {
-						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
+			} else {
+				keys = tt.node.(*base.BranchPage).Keys
+				if sp.Mid < len(keys) {
+					if len(sp.SeparatorKey) > 0 && len(keys[sp.Mid]) > 0 {
+						if &sp.SeparatorKey[0] == &keys[sp.Mid][0] {
+							t.Error("SeparatorKey shares backing array with original (not CoW safe)")
+						}
 					}
 				}
 			}
@@ -418,7 +431,7 @@ func TestCalculateSplitPoint(t *testing.T) {
 func TestExtractRightPortion(t *testing.T) {
 	tests := []struct {
 		name           string
-		node           *base.Node
+		node           base.PageData
 		sp             SplitPoint
 		wantKeysCount  int
 		wantValsCount  int
@@ -461,8 +474,14 @@ func TestExtractRightPortion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			originalKeys := make([][]byte, len(tt.node.Keys))
-			copy(originalKeys, tt.node.Keys)
+			var nodeKeys [][]byte
+			if tt.node.PageType() == base.LeafPageFlag {
+				nodeKeys = tt.node.(*base.LeafPage).Keys
+			} else {
+				nodeKeys = tt.node.(*base.BranchPage).Keys
+			}
+			originalKeys := make([][]byte, len(nodeKeys))
+			copy(originalKeys, nodeKeys)
 
 			keys, vals, children := ExtractRightPortion(tt.node, tt.sp)
 
@@ -479,210 +498,31 @@ func TestExtractRightPortion(t *testing.T) {
 			// Verify keys are copied, not shared (CoW requirement)
 			if len(keys) > 0 && len(keys[0]) > 0 {
 				originalIdx := tt.sp.Mid + 1
-				if len(tt.node.Keys[originalIdx]) > 0 {
-					if &keys[0][0] == &tt.node.Keys[originalIdx][0] {
+				if len(nodeKeys[originalIdx]) > 0 {
+					if &keys[0][0] == &nodeKeys[originalIdx][0] {
 						t.Error("extracted keys share backing array with original (not CoW safe)")
 					}
 				}
 			}
 
 			// Verify vals are copied for leaf nodes
-			if tt.node.IsLeaf() && len(vals) > 0 && len(vals[0]) > 0 {
-				originalIdx := tt.sp.Mid + 1
-				if len(tt.node.Values[originalIdx]) > 0 {
-					if &vals[0][0] == &tt.node.Values[originalIdx][0] {
-						t.Error("extracted vals share backing array with original (not CoW safe)")
+			if tt.node.PageType() == base.LeafPageFlag {
+				leaf := tt.node.(*base.LeafPage)
+				if len(vals) > 0 && len(vals[0]) > 0 {
+					originalIdx := tt.sp.Mid + 1
+					if len(leaf.Values[originalIdx]) > 0 {
+						if &vals[0][0] == &leaf.Values[originalIdx][0] {
+							t.Error("extracted vals share backing array with original (not CoW safe)")
+						}
 					}
 				}
 			}
 
 			// Verify original node is unchanged
 			for i, key := range originalKeys {
-				if !bytes.Equal(key, tt.node.Keys[i]) {
+				if !bytes.Equal(key, nodeKeys[i]) {
 					t.Error("ExtractRightPortion modified original node keys")
 				}
-			}
-		})
-	}
-}
-
-func TestCanBorrowFrom(t *testing.T) {
-	// MinFillRatio = 0.25, PageSize = 4096, so MinSize = 1024 bytes
-	// Create nodes with specific sizes to test borrowing threshold
-
-	makeKeys := func(count, size int) [][]byte {
-		keys := make([][]byte, count)
-		for i := 0; i < count; i++ {
-			keys[i] = make([]byte, size)
-		}
-		return keys
-	}
-	makeValues := func(count, size int) [][]byte {
-		values := make([][]byte, count)
-		for i := 0; i < count; i++ {
-			values[i] = make([]byte, size)
-		}
-		return values
-	}
-
-	tests := []struct {
-		name string
-		node *base.Node
-		want bool
-	}{
-		{
-			name: "can_borrow_above_min",
-			// 20 keys * 100 bytes/entry = ~2344 bytes > 1024
-			node: makeLeafNode(
-				makeKeys(20, 50),
-				makeValues(20, 50),
-			),
-			want: true,
-		},
-		{
-			name: "cannot_borrow_at_min",
-			// 16 keys * 46 bytes/entry = ~1016 bytes < 1024
-			node: makeLeafNode(
-				makeKeys(16, 23),
-				makeValues(16, 23),
-			),
-			want: false,
-		},
-		{
-			name: "cannot_borrow_below_min",
-			// 10 keys * 46 bytes/entry = ~644 bytes < 1024
-			node: makeLeafNode(
-				makeKeys(10, 23),
-				makeValues(10, 23),
-			),
-			want: false,
-		},
-		{
-			name: "empty_node_cannot_borrow",
-			node: makeLeafNode(nil, nil),
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := CanBorrowFrom(tt.node)
-			if got != tt.want {
-				t.Errorf("CanBorrowFrom() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestExtractLastFromSibling(t *testing.T) {
-	tests := []struct {
-		name      string
-		sibling   *base.Node
-		wantKey   []byte
-		wantValue []byte
-		wantChild base.PageID
-	}{
-		{
-			name: "leaf_extract_last",
-			sibling: makeLeafNode(
-				[][]byte{[]byte("a"), []byte("b"), []byte("c")},
-				[][]byte{[]byte("1"), []byte("2"), []byte("3")},
-			),
-			wantKey:   []byte("c"),
-			wantValue: []byte("3"),
-			wantChild: 0,
-		},
-		{
-			name: "branch_extract_last",
-			sibling: makeBranchNode(
-				[][]byte{[]byte("a"), []byte("b"), []byte("c")},
-				[]base.PageID{1, 2, 3, 4},
-			),
-			wantKey:   []byte("c"),
-			wantValue: nil,
-			wantChild: 4,
-		},
-		{
-			name: "single_key_leaf",
-			sibling: makeLeafNode(
-				[][]byte{[]byte("only")},
-				[][]byte{[]byte("val")},
-			),
-			wantKey:   []byte("only"),
-			wantValue: []byte("val"),
-			wantChild: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data := ExtractLastFromSibling(tt.sibling)
-
-			if !bytes.Equal(data.Key, tt.wantKey) {
-				t.Errorf("Key = %v, want %v", data.Key, tt.wantKey)
-			}
-			if !bytes.Equal(data.Value, tt.wantValue) {
-				t.Errorf("Value = %v, want %v", data.Value, tt.wantValue)
-			}
-			if data.Child != tt.wantChild {
-				t.Errorf("Child = %v, want %v", data.Child, tt.wantChild)
-			}
-		})
-	}
-}
-
-func TestExtractFirstFromSibling(t *testing.T) {
-	tests := []struct {
-		name      string
-		sibling   *base.Node
-		wantKey   []byte
-		wantValue []byte
-		wantChild base.PageID
-	}{
-		{
-			name: "leaf_extract_first",
-			sibling: makeLeafNode(
-				[][]byte{[]byte("a"), []byte("b"), []byte("c")},
-				[][]byte{[]byte("1"), []byte("2"), []byte("3")},
-			),
-			wantKey:   []byte("a"),
-			wantValue: []byte("1"),
-			wantChild: 0,
-		},
-		{
-			name: "branch_extract_first",
-			sibling: makeBranchNode(
-				[][]byte{[]byte("a"), []byte("b"), []byte("c")},
-				[]base.PageID{1, 2, 3, 4},
-			),
-			wantKey:   []byte("a"),
-			wantValue: nil,
-			wantChild: 1,
-		},
-		{
-			name: "single_key_leaf",
-			sibling: makeLeafNode(
-				[][]byte{[]byte("only")},
-				[][]byte{[]byte("val")},
-			),
-			wantKey:   []byte("only"),
-			wantValue: []byte("val"),
-			wantChild: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data := ExtractFirstFromSibling(tt.sibling)
-
-			if !bytes.Equal(data.Key, tt.wantKey) {
-				t.Errorf("Key = %v, want %v", data.Key, tt.wantKey)
-			}
-			if !bytes.Equal(data.Value, tt.wantValue) {
-				t.Errorf("Value = %v, want %v", data.Value, tt.wantValue)
-			}
-			if data.Child != tt.wantChild {
-				t.Errorf("Child = %v, want %v", data.Child, tt.wantChild)
 			}
 		})
 	}
@@ -847,18 +687,18 @@ func TestRemoveChildAt(t *testing.T) {
 func TestReadOnlyBehavior(t *testing.T) {
 	t.Run("FindChildIndex_no_mutation", func(t *testing.T) {
 		node := makeBranchNode([][]byte{[]byte("b"), []byte("d")}, []base.PageID{1, 2, 3})
-		originalNumKeys := node.NumKeys
+		originalNumKeys := node.GetNumKeys()
 		_ = FindChildIndex(node, []byte("c"))
-		if node.NumKeys != originalNumKeys {
+		if node.GetNumKeys() != originalNumKeys {
 			t.Error("FindChildIndex mutated node")
 		}
 	})
 
 	t.Run("FindKeyInLeaf_no_mutation", func(t *testing.T) {
 		node := makeLeafNode([][]byte{[]byte("a")}, [][]byte{[]byte("1")})
-		originalNumKeys := node.NumKeys
+		originalNumKeys := node.GetNumKeys()
 		_ = FindKeyInLeaf(node, []byte("a"))
-		if node.NumKeys != originalNumKeys {
+		if node.GetNumKeys() != originalNumKeys {
 			t.Error("FindKeyInLeaf mutated node")
 		}
 	})
@@ -869,14 +709,15 @@ func TestNumKeysConsistency(t *testing.T) {
 	t.Run("NumKeys_matches_Keys_length", func(t *testing.T) {
 		keys := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 		node := makeLeafNode(keys, [][]byte{[]byte("1"), []byte("2"), []byte("3")})
+		leaf := node.(*base.LeafPage)
 
-		if int(node.NumKeys) != len(node.Keys) {
-			t.Errorf("NumKeys = %v, len(Keys) = %v", node.NumKeys, len(node.Keys))
+		if int(node.GetNumKeys()) != len(leaf.Keys) {
+			t.Errorf("NumKeys = %v, len(Keys) = %v", node.GetNumKeys(), len(leaf.Keys))
 		}
 
 		// Test with FindChildIndex which uses NumKeys
 		idx := FindChildIndex(node, []byte("d"))
-		if idx < 0 || idx > len(node.Keys) {
+		if idx < 0 || idx > len(leaf.Keys) {
 			t.Errorf("FindChildIndex returned out of bounds index: %v", idx)
 		}
 	})

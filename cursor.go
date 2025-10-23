@@ -28,18 +28,18 @@ func init() {
 // For branch nodes: childIndex is which child we descended to
 // For leaf nodes: childIndex is which key we're currently at
 type path struct {
-	node       *base.Node
+	node       base.PageData
 	childIndex int
 }
 
 // Cursor provides ordered iteration over B-tree Keys
 type Cursor struct {
-	tx         *Tx        // Transaction this cursor belongs to
-	bucketRoot *base.Node // Bucket's root (if nil, use tx.root)
-	stack      []path     // Navigation path from root to current leaf
-	key        []byte     // Cached current key
-	value      []byte     // Cached current value
-	valid      bool       // Is cursor positioned on valid key?
+	tx         *Tx           // Transaction this cursor belongs to
+	bucketRoot base.PageData // Bucket's root (if nil, use tx.root)
+	stack      []path        // Navigation path from root to current leaf
+	key        []byte        // Cached current key
+	value      []byte        // Cached current value
+	valid      bool          // Is cursor positioned on valid key?
 }
 
 // First positions cursor at the first key in the database
@@ -59,9 +59,11 @@ func (c *Cursor) First() ([]byte, []byte) {
 
 	// Descend to leftmost leaf
 	node := root
-	for !node.IsLeaf() {
+	for node.PageType() != base.LeafPageFlag {
+		branch := node.(*base.BranchPage)
 		c.stack = append(c.stack, path{node: node, childIndex: 0})
-		child, err := c.tx.loadNode(node.Children[0])
+		children := branch.Children()
+		child, err := c.tx.loadNode(children[0])
 		if err != nil {
 			return nil, nil
 		}
@@ -69,11 +71,12 @@ func (c *Cursor) First() ([]byte, []byte) {
 	}
 
 	// At leftmost leaf
+	leaf := node.(*base.LeafPage)
 	c.stack = append(c.stack, path{node: node, childIndex: 0})
 
-	if node.NumKeys > 0 {
-		c.key = node.Keys[0]
-		c.value = node.Values[0]
+	if leaf.Header.NumKeys > 0 {
+		c.key = leaf.Keys[0]
+		c.value = leaf.Values[0]
 		c.valid = true
 
 		// Skip __root__ if present
@@ -105,10 +108,12 @@ func (c *Cursor) Last() ([]byte, []byte) {
 
 	// Descend to rightmost leaf
 	node := root
-	for !node.IsLeaf() {
-		lastChild := len(node.Children) - 1
+	for node.PageType() != base.LeafPageFlag {
+		branch := node.(*base.BranchPage)
+		children := branch.Children()
+		lastChild := len(children) - 1
 		c.stack = append(c.stack, path{node: node, childIndex: lastChild})
-		child, err := c.tx.loadNode(node.Children[lastChild])
+		child, err := c.tx.loadNode(children[lastChild])
 		if err != nil {
 			return nil, nil
 		}
@@ -116,12 +121,13 @@ func (c *Cursor) Last() ([]byte, []byte) {
 	}
 
 	// At rightmost leaf
-	lastIndex := int(node.NumKeys) - 1
+	leaf := node.(*base.LeafPage)
+	lastIndex := int(leaf.Header.NumKeys) - 1
 	c.stack = append(c.stack, path{node: node, childIndex: lastIndex})
 
 	if lastIndex >= 0 {
-		c.key = node.Keys[lastIndex]
-		c.value = node.Values[lastIndex]
+		c.key = leaf.Keys[lastIndex]
+		c.value = leaf.Values[lastIndex]
 		c.valid = true
 
 		// Skip __root__ if present
@@ -165,13 +171,15 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 
 	// Descend to appropriate leaf
 	node := root
-	for !node.IsLeaf() {
+	for node.PageType() != base.LeafPageFlag {
+		branch := node.(*base.BranchPage)
 		i := 0
-		for i < int(node.NumKeys) && bytes.Compare(seek, node.Keys[i]) > 0 {
+		for i < int(branch.Header.NumKeys) && bytes.Compare(seek, branch.Keys[i]) > 0 {
 			i++
 		}
 		c.stack = append(c.stack, path{node: node, childIndex: i})
-		child, err := c.tx.loadNode(node.Children[i])
+		children := branch.Children()
+		child, err := c.tx.loadNode(children[i])
 		if err != nil {
 			return nil, nil
 		}
@@ -179,16 +187,17 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 	}
 
 	// Find position within leaf
+	leaf := node.(*base.LeafPage)
 	i := 0
-	for i < int(node.NumKeys) && bytes.Compare(seek, node.Keys[i]) > 0 {
+	for i < int(leaf.Header.NumKeys) && bytes.Compare(seek, leaf.Keys[i]) > 0 {
 		i++
 	}
 
 	c.stack = append(c.stack, path{node: node, childIndex: i})
 
-	if i < int(node.NumKeys) {
-		c.key = node.Keys[i]
-		c.value = node.Values[i]
+	if i < int(leaf.Header.NumKeys) {
+		c.key = leaf.Keys[i]
+		c.value = leaf.Values[i]
 		c.valid = true
 
 		// Skip __root__ if present
@@ -217,12 +226,13 @@ func (c *Cursor) Next() ([]byte, []byte) {
 	}
 
 	// Try to move within current leaf
-	leaf := &c.stack[len(c.stack)-1]
-	leaf.childIndex++
+	pathEntry := &c.stack[len(c.stack)-1]
+	pathEntry.childIndex++
 
-	if leaf.childIndex < int(leaf.node.NumKeys) {
-		c.key = leaf.node.Keys[leaf.childIndex]
-		c.value = leaf.node.Values[leaf.childIndex]
+	leafNode := pathEntry.node.(*base.LeafPage)
+	if pathEntry.childIndex < int(leafNode.Header.NumKeys) {
+		c.key = leafNode.Keys[pathEntry.childIndex]
+		c.value = leafNode.Values[pathEntry.childIndex]
 
 		// Skip __root__ if present
 		if c.shouldSkip(c.key) {
@@ -259,12 +269,13 @@ func (c *Cursor) Prev() ([]byte, []byte) {
 	}
 
 	// Try to move within current leaf
-	leaf := &c.stack[len(c.stack)-1]
-	leaf.childIndex--
+	pathEntry := &c.stack[len(c.stack)-1]
+	pathEntry.childIndex--
 
-	if leaf.childIndex >= 0 {
-		c.key = leaf.node.Keys[leaf.childIndex]
-		c.value = leaf.node.Values[leaf.childIndex]
+	leafNode := pathEntry.node.(*base.LeafPage)
+	if pathEntry.childIndex >= 0 {
+		c.key = leafNode.Keys[pathEntry.childIndex]
+		c.value = leafNode.Values[pathEntry.childIndex]
 
 		// Skip __root__ if present
 		if c.shouldSkip(c.key) {
@@ -329,7 +340,7 @@ func (c *Cursor) active() error {
 // B+ tree: skip branch nodes, only visit leaves
 func (c *Cursor) nextLeaf() error {
 	// Tree navigation
-	// Pop up the stack to find a parent with more Children
+	// Pop up the stack to find a parent with more children
 	for len(c.stack) > 1 {
 		// Pop current leaf
 		c.stack = c.stack[:len(c.stack)-1]
@@ -338,19 +349,23 @@ func (c *Cursor) nextLeaf() error {
 		parent := &c.stack[len(c.stack)-1]
 		parent.childIndex++
 
-		// Does parent have more Children?
-		if parent.childIndex < len(parent.node.Children) {
+		// Does parent have more children?
+		parentBranch := parent.node.(*base.BranchPage)
+		parentChildren := parentBranch.Children()
+		if parent.childIndex < len(parentChildren) {
 			// Descend to leftmost leaf of next subtree
-			node, err := c.tx.loadNode(parent.node.Children[parent.childIndex])
+			node, err := c.tx.loadNode(parentChildren[parent.childIndex])
 			if err != nil {
 				c.valid = false
 				return err
 			}
 
 			// Keep descending to leftmost child
-			for !node.IsLeaf() {
+			for node.PageType() != base.LeafPageFlag {
+				branch := node.(*base.BranchPage)
 				c.stack = append(c.stack, path{node: node, childIndex: 0})
-				child, err := c.tx.loadNode(node.Children[0])
+				children := branch.Children()
+				child, err := c.tx.loadNode(children[0])
 				if err != nil {
 					c.valid = false
 					return err
@@ -359,11 +374,12 @@ func (c *Cursor) nextLeaf() error {
 			}
 
 			// Reached leaf
+			leaf := node.(*base.LeafPage)
 			c.stack = append(c.stack, path{node: node, childIndex: 0})
 
-			if node.NumKeys > 0 {
-				c.key = node.Keys[0]
-				c.value = node.Values[0]
+			if leaf.Header.NumKeys > 0 {
+				c.key = leaf.Keys[0]
+				c.value = leaf.Values[0]
 				c.valid = true
 			} else {
 				c.valid = false
@@ -373,7 +389,7 @@ func (c *Cursor) nextLeaf() error {
 		}
 	}
 
-	// Reached root with no more Children
+	// Reached root with no more children
 	c.valid = false
 	return nil
 }
@@ -382,7 +398,7 @@ func (c *Cursor) nextLeaf() error {
 // B+ tree: skip branch nodes, only visit leaves
 func (c *Cursor) prevLeaf() error {
 	// Tree navigation
-	// Pop up the stack to find a parent with more Children to the left
+	// Pop up the stack to find a parent with more children to the left
 	for len(c.stack) > 1 {
 		// Pop current leaf
 		c.stack = c.stack[:len(c.stack)-1]
@@ -391,20 +407,24 @@ func (c *Cursor) prevLeaf() error {
 		parent := &c.stack[len(c.stack)-1]
 		parent.childIndex--
 
-		// Does parent have more Children to the left?
+		// Does parent have more children to the left?
 		if parent.childIndex >= 0 {
 			// Descend to rightmost leaf of previous subtree
-			node, err := c.tx.loadNode(parent.node.Children[parent.childIndex])
+			parentBranch := parent.node.(*base.BranchPage)
+			parentChildren := parentBranch.Children()
+			node, err := c.tx.loadNode(parentChildren[parent.childIndex])
 			if err != nil {
 				c.valid = false
 				return err
 			}
 
 			// Keep descending to rightmost child
-			for !node.IsLeaf() {
-				lastChild := len(node.Children) - 1
+			for node.PageType() != base.LeafPageFlag {
+				branch := node.(*base.BranchPage)
+				children := branch.Children()
+				lastChild := len(children) - 1
 				c.stack = append(c.stack, path{node: node, childIndex: lastChild})
-				child, err := c.tx.loadNode(node.Children[lastChild])
+				child, err := c.tx.loadNode(children[lastChild])
 				if err != nil {
 					c.valid = false
 					return err
@@ -413,12 +433,13 @@ func (c *Cursor) prevLeaf() error {
 			}
 
 			// Reached leaf
-			lastIndex := int(node.NumKeys) - 1
+			leaf := node.(*base.LeafPage)
+			lastIndex := int(leaf.Header.NumKeys) - 1
 			c.stack = append(c.stack, path{node: node, childIndex: lastIndex})
 
 			if lastIndex >= 0 {
-				c.key = node.Keys[lastIndex]
-				c.value = node.Values[lastIndex]
+				c.key = leaf.Keys[lastIndex]
+				c.value = leaf.Values[lastIndex]
 				c.valid = true
 			} else {
 				c.valid = false
@@ -428,13 +449,13 @@ func (c *Cursor) prevLeaf() error {
 		}
 	}
 
-	// Reached root with no more Children to the left
+	// Reached root with no more children to the left
 	c.valid = false
 	return nil
 }
 
 // getRoot returns the root to use for this cursor
-func (c *Cursor) getRoot() *base.Node {
+func (c *Cursor) getRoot() base.PageData {
 	if c.bucketRoot != nil {
 		return c.bucketRoot
 	}
@@ -445,7 +466,7 @@ func (c *Cursor) getRoot() *base.Node {
 func (c *Cursor) shouldSkip(key []byte) bool {
 	// If iterating root tree (bucket directory), skip __root__ internal bucket
 	root := c.getRoot()
-	if root == c.tx.root {
+	if root.GetPageID() == c.tx.root.GetPageID() {
 		return string(key) == "__root__"
 	}
 	return false
