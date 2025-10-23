@@ -229,7 +229,9 @@ func (p *LeafPage) UnmarshalLayout(buf []byte) error {
 	for i := range p.Elements {
 		offset := int(p.Elements[i].KeyOffset)
 		size := int(p.Elements[i].KeySize)
-		p.Keys[i] = p.Data[offset:offset+size]
+		// Offset is absolute from page start, adjust to region-relative
+		regionOffset := offset - elementsEnd
+		p.Keys[i] = p.Data[regionOffset:regionOffset+size]
 	}
 
 	// Values: [][]byte from=Elements offset=ValueOffset size=ValueSize region=Data
@@ -242,7 +244,9 @@ func (p *LeafPage) UnmarshalLayout(buf []byte) error {
 	for i := range p.Elements {
 		offset := int(p.Elements[i].ValueOffset)
 		size := int(p.Elements[i].ValueSize)
-		p.Values[i] = p.Data[offset:offset+size]
+		// Offset is absolute from page start, adjust to region-relative
+		regionOffset := offset - elementsEnd
+		p.Values[i] = p.Data[regionOffset:regionOffset+size]
 	}
 
 	return nil
@@ -292,13 +296,13 @@ func (p *LeafPage) RebuildIndirectSlices() {
 		size0 := len(p.Keys[i])
 		offset -= size0
 		copy(p.buf[offset:offset+size0], p.Keys[i])
-		p.Elements[i].KeyOffset = uint16(offset - elementsEnd)
+		p.Elements[i].KeyOffset = uint16(offset)
 		p.Elements[i].KeySize = uint16(size0)
 		// Pack Values[i]
 		size1 := len(p.Values[i])
 		offset -= size1
 		copy(p.buf[offset:offset+size1], p.Values[i])
-		p.Elements[i].ValueOffset = uint16(offset - elementsEnd)
+		p.Elements[i].ValueOffset = uint16(offset)
 		p.Elements[i].ValueSize = uint16(size1)
 
 		// Restore non-indirect fields (only if saved element exists)
@@ -411,7 +415,9 @@ func (p *BranchPage) UnmarshalLayout(buf []byte) error {
 	for i := range p.Elements {
 		offset := int(p.Elements[i].KeyOffset)
 		size := int(p.Elements[i].KeySize)
-		p.Keys[i] = p.Data[offset:offset+size]
+		// Offset is absolute from page start, adjust to region-relative
+		regionOffset := offset - elementsEnd
+		p.Keys[i] = p.Data[regionOffset:regionOffset+size]
 	}
 
 	return nil
@@ -461,7 +467,7 @@ func (p *BranchPage) RebuildIndirectSlices() {
 		size0 := len(p.Keys[i])
 		offset -= size0
 		copy(p.buf[offset:offset+size0], p.Keys[i])
-		p.Elements[i].KeyOffset = uint16(offset - elementsEnd)
+		p.Elements[i].KeyOffset = uint16(offset)
 		p.Elements[i].KeySize = uint16(size0)
 
 		// Restore non-indirect fields (only if saved element exists)

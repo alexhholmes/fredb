@@ -285,8 +285,8 @@ type LeafPage struct {
 	Header   PageHeader    `layout:"@0"`
 	Elements []LeafElement `layout:"start-end,count=Header.NumKeys"`
 	Data     []byte        `layout:"end-start"`
-	Keys     [][]byte      `layout:"from=Elements,offset=KeyOffset,size=KeySize,region=Data"`
-	Values   [][]byte      `layout:"from=Elements,offset=ValueOffset,size=ValueSize,region=Data"`
+	Keys     [][]byte      `layout:"from=Elements,offset=KeyOffset,size=KeySize,region=Data,offsetmode=absolute"`
+	Values   [][]byte      `layout:"from=Elements,offset=ValueOffset,size=ValueSize,region=Data,offsetmode=absolute"`
 	dirty    bool          // Not serialized - tracks if page needs write
 }
 
@@ -297,7 +297,7 @@ type BranchPage struct {
 	Header     PageHeader      `layout:"@0"`
 	Elements   []BranchElement `layout:"start-end,count=Header.NumKeys"`
 	Data       []byte          `layout:"end-start"`
-	Keys       [][]byte        `layout:"from=Elements,offset=KeyOffset,size=KeySize,region=Data"`
+	Keys       [][]byte        `layout:"from=Elements,offset=KeyOffset,size=KeySize,region=Data,offsetmode=absolute"`
 	FirstChild PageID          `layout:"@4088"`
 	dirty      bool            // Not serialized - tracks if page needs write
 }
