@@ -137,21 +137,16 @@ func (p *BranchElement) UnmarshalLayout(buf []byte) error {
 
 func NewLeafPage() *LeafPage {
 	p := &LeafPage{}
-	// IMPORTANT: AllocatePageBuffer() must return a buffer of at least 8191 bytes
-	// (4096 bytes for data + 4095 bytes for 4096-byte alignment)
+	// IMPORTANT: AllocatePageBuffer() must return a buffer of at least 4096 bytes
 	p.backing = AllocatePageBuffer()
 	
 	// Validate buffer size to prevent out-of-bounds access
-	if len(p.backing) < 8191 {
-		panic(fmt.Sprintf("AllocatePageBuffer returned buffer of %d bytes, need at least 8191", len(p.backing)))
+	if len(p.backing) < 4096 {
+		panic(fmt.Sprintf("AllocatePageBuffer returned buffer of %d bytes, need at least 4096", len(p.backing)))
 	}
 	
-	// Find 4096-byte aligned offset
-	addr := uintptr(unsafe.Pointer(&p.backing[0]))
-	offset := int(((addr + 4095) &^ 4095) - addr)
-	
-	// Slice aligned region
-	p.buf = p.backing[offset : offset+4096]
+	// Use buffer directly (no alignment required)
+	p.buf = p.backing[:4096]
 	
 	// Initialize dynamic slices
 	// Data: end-start region, initialized during unmarshal
@@ -318,21 +313,16 @@ func (p *LeafPage) RebuildIndirectSlices() {
 
 func NewBranchPage() *BranchPage {
 	p := &BranchPage{}
-	// IMPORTANT: AllocatePageBuffer() must return a buffer of at least 8191 bytes
-	// (4096 bytes for data + 4095 bytes for 4096-byte alignment)
+	// IMPORTANT: AllocatePageBuffer() must return a buffer of at least 4096 bytes
 	p.backing = AllocatePageBuffer()
 	
 	// Validate buffer size to prevent out-of-bounds access
-	if len(p.backing) < 8191 {
-		panic(fmt.Sprintf("AllocatePageBuffer returned buffer of %d bytes, need at least 8191", len(p.backing)))
+	if len(p.backing) < 4096 {
+		panic(fmt.Sprintf("AllocatePageBuffer returned buffer of %d bytes, need at least 4096", len(p.backing)))
 	}
 	
-	// Find 4096-byte aligned offset
-	addr := uintptr(unsafe.Pointer(&p.backing[0]))
-	offset := int(((addr + 4095) &^ 4095) - addr)
-	
-	// Slice aligned region
-	p.buf = p.backing[offset : offset+4096]
+	// Use buffer directly (no alignment required)
+	p.buf = p.backing[:4096]
 	
 	// Initialize dynamic slices
 	// Data: end-start region, initialized during unmarshal
@@ -487,21 +477,16 @@ func (p *BranchPage) RebuildIndirectSlices() {
 
 func NewOverflowPage() *OverflowPage {
 	p := &OverflowPage{}
-	// IMPORTANT: AllocatePageBuffer() must return a buffer of at least 8191 bytes
-	// (4096 bytes for data + 4095 bytes for 4096-byte alignment)
+	// IMPORTANT: AllocatePageBuffer() must return a buffer of at least 4096 bytes
 	p.backing = AllocatePageBuffer()
 	
 	// Validate buffer size to prevent out-of-bounds access
-	if len(p.backing) < 8191 {
-		panic(fmt.Sprintf("AllocatePageBuffer returned buffer of %d bytes, need at least 8191", len(p.backing)))
+	if len(p.backing) < 4096 {
+		panic(fmt.Sprintf("AllocatePageBuffer returned buffer of %d bytes, need at least 4096", len(p.backing)))
 	}
 	
-	// Find 4096-byte aligned offset
-	addr := uintptr(unsafe.Pointer(&p.backing[0]))
-	offset := int(((addr + 4095) &^ 4095) - addr)
-	
-	// Slice aligned region
-	p.buf = p.backing[offset : offset+4096]
+	// Use buffer directly (no alignment required)
+	p.buf = p.backing[:4096]
 	
 	// Initialize dynamic slices
 	p.Data = p.buf[36:36:4096]

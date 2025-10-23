@@ -5,6 +5,8 @@ import (
 	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
+
+	"github.com/alexhholmes/fredb/internal/directio"
 )
 
 var (
@@ -95,11 +97,11 @@ type PageHeader struct {
 // Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][Reserved: 8]
 // @layout size=16
 type LeafElement struct {
-	KeyOffset   uint16 `layout:"@0"`  // 2 bytes: offset from data area start
-	KeySize     uint16 `layout:"@2"`  // 2 bytes
-	ValueOffset uint16 `layout:"@4"`  // 2 bytes: offset from data area start
-	ValueSize   uint16 `layout:"@6"`  // 2 bytes
-	Reserved    uint64 `layout:"@8"`  // 8 bytes: unused (for future use or alignment)
+	KeyOffset   uint16 `layout:"@0"` // 2 bytes: offset from data area start
+	KeySize     uint16 `layout:"@2"` // 2 bytes
+	ValueOffset uint16 `layout:"@4"` // 2 bytes: offset from data area start
+	ValueSize   uint16 `layout:"@6"` // 2 bytes
+	Reserved    uint64 `layout:"@8"` // 8 bytes: unused (for future use or alignment)
 }
 
 // BranchElement represents metadata for a routing key and child pointer in a branch Page
@@ -107,10 +109,10 @@ type LeafElement struct {
 // Layout: [KeyOffset: 2][KeySize: 2][Reserved: 4][ChildID: 8]
 // @layout size=16
 type BranchElement struct {
-	KeyOffset uint16 `layout:"@0"`  // 2 bytes: offset from data area start
-	KeySize   uint16 `layout:"@2"`  // 2 bytes
-	Reserved  uint32 `layout:"@4"`  // 4 bytes: unused (for future use or alignment)
-	ChildID   PageID `layout:"@8"`  // 8 bytes
+	KeyOffset uint16 `layout:"@0"` // 2 bytes: offset from data area start
+	KeySize   uint16 `layout:"@2"` // 2 bytes
+	Reserved  uint32 `layout:"@4"` // 4 bytes: unused (for future use or alignment)
+	ChildID   PageID `layout:"@8"` // 8 bytes
 }
 
 // Header returns the Page Header decoded from Page Data
@@ -262,10 +264,8 @@ func (m *MetaPage) Validate() error {
 }
 
 // AllocatePageBuffer is the allocator function for zero-copy page buffers
-// Must return 8191 bytes (4096 + 4095) to allow for 4096-byte alignment
 func AllocatePageBuffer() []byte {
-	// Allocate extra space for alignment
-	return make([]byte, 8191)
+	return directio.AlignedBlock(PageSize)
 }
 
 // PageData is the common interface for all page types
@@ -278,7 +278,7 @@ type PageData interface {
 	GetNumKeys() uint16
 }
 
-// @layout size=4096 mode=zerocopy align=4096 allocator=AllocatePageBuffer
+// @layout size=4096 mode=zerocopy allocator=AllocatePageBuffer
 type LeafPage struct {
 	backing  []byte        // Over-allocated buffer for alignment
 	buf      []byte        // Aligned slice into backing
@@ -290,8 +290,8 @@ type LeafPage struct {
 	dirty    bool          // Not serialized - tracks if page needs write
 }
 
-// @layout size=4096 mode=zerocopy align=4096 allocator=AllocatePageBuffer
-type BranchPage struct{
+// @layout size=4096 mode=zerocopy allocator=AllocatePageBuffer
+type BranchPage struct {
 	backing    []byte          // Over-allocated buffer for alignment
 	buf        []byte          // Aligned slice into backing
 	Header     PageHeader      `layout:"@0"`
@@ -302,7 +302,7 @@ type BranchPage struct{
 	dirty      bool            // Not serialized - tracks if page needs write
 }
 
-// @layout size=4096 mode=zerocopy align=4096 allocator=AllocatePageBuffer
+// @layout size=4096 mode=zerocopy allocator=AllocatePageBuffer
 type OverflowPage struct {
 	backing  []byte     // Over-allocated buffer for alignment
 	buf      []byte     // Aligned slice into backing
@@ -314,20 +314,20 @@ type OverflowPage struct {
 }
 
 // PageData interface implementations for LeafPage
-func (p *LeafPage) GetPageID() PageID       { return p.Header.PageID }
-func (p *LeafPage) SetPageID(id PageID)     { p.Header.PageID = id }
-func (p *LeafPage) IsDirty() bool           { return p.dirty }
-func (p *LeafPage) SetDirty(dirty bool)     { p.dirty = dirty }
-func (p *LeafPage) PageType() uint16        { return LeafPageFlag }
-func (p *LeafPage) GetNumKeys() uint16      { return p.Header.NumKeys }
+func (p *LeafPage) GetPageID() PageID   { return p.Header.PageID }
+func (p *LeafPage) SetPageID(id PageID) { p.Header.PageID = id }
+func (p *LeafPage) IsDirty() bool       { return p.dirty }
+func (p *LeafPage) SetDirty(dirty bool) { p.dirty = dirty }
+func (p *LeafPage) PageType() uint16    { return LeafPageFlag }
+func (p *LeafPage) GetNumKeys() uint16  { return p.Header.NumKeys }
 
 // PageData interface implementations for BranchPage
-func (p *BranchPage) GetPageID() PageID     { return p.Header.PageID }
-func (p *BranchPage) SetPageID(id PageID)   { p.Header.PageID = id }
-func (p *BranchPage) IsDirty() bool         { return p.dirty }
-func (p *BranchPage) SetDirty(dirty bool)   { p.dirty = dirty }
-func (p *BranchPage) PageType() uint16      { return BranchPageFlag }
-func (p *BranchPage) GetNumKeys() uint16    { return p.Header.NumKeys }
+func (p *BranchPage) GetPageID() PageID   { return p.Header.PageID }
+func (p *BranchPage) SetPageID(id PageID) { p.Header.PageID = id }
+func (p *BranchPage) IsDirty() bool       { return p.dirty }
+func (p *BranchPage) SetDirty(dirty bool) { p.dirty = dirty }
+func (p *BranchPage) PageType() uint16    { return BranchPageFlag }
+func (p *BranchPage) GetNumKeys() uint16  { return p.Header.NumKeys }
 
 // PageData interface implementations for OverflowPage
 func (p *OverflowPage) GetPageID() PageID   { return p.Header.PageID }
