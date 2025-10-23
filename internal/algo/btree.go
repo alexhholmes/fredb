@@ -265,14 +265,12 @@ func ExtractRightPortion(node base.PageData, sp SplitPoint) (keys [][]byte, vals
 
 	if isLeaf {
 		leaf := node.(*base.LeafPage)
-		keys = make([][]byte, 0, sp.RightCount)
 		for i := startIdx; i < len(leaf.Keys); i++ {
 			keyCopy := make([]byte, len(leaf.Keys[i]))
 			copy(keyCopy, leaf.Keys[i])
 			keys = append(keys, keyCopy)
 		}
 
-		vals = make([][]byte, 0, sp.RightCount)
 		for i := startIdx; i < len(leaf.Values); i++ {
 			valCopy := make([]byte, len(leaf.Values[i]))
 			copy(valCopy, leaf.Values[i])
@@ -280,7 +278,6 @@ func ExtractRightPortion(node base.PageData, sp SplitPoint) (keys [][]byte, vals
 		}
 	} else {
 		branch := node.(*base.BranchPage)
-		keys = make([][]byte, 0, sp.RightCount)
 		for i := startIdx; i < len(branch.Keys); i++ {
 			keyCopy := make([]byte, len(branch.Keys[i]))
 			copy(keyCopy, branch.Keys[i])
@@ -289,7 +286,6 @@ func ExtractRightPortion(node base.PageData, sp SplitPoint) (keys [][]byte, vals
 
 		// Extract right portion of children
 		nodeChildren := branch.Children()
-		children = make([]base.PageID, 0)
 		for i := startIdx; i < len(nodeChildren); i++ {
 			children = append(children, nodeChildren[i])
 		}

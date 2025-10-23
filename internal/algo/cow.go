@@ -311,20 +311,16 @@ func TruncateLeft(node base.PageData, sp SplitPoint) {
 	if isLeaf {
 		leaf := node.(*base.LeafPage)
 		// Deep copy keys to prevent aliasing with split sibling
-		leftKeys := make([][]byte, sp.LeftCount)
+		var leftKeys [][]byte
 		for i := 0; i < sp.LeftCount; i++ {
-			keyCopy := make([]byte, len(leaf.Keys[i]))
-			copy(keyCopy, leaf.Keys[i])
-			leftKeys[i] = keyCopy
+			leftKeys = append(leftKeys, append([]byte(nil), leaf.Keys[i]...))
 		}
 		leaf.Keys = leftKeys
 
 		// Deep copy values to prevent aliasing with split sibling
-		leftVals := make([][]byte, sp.LeftCount)
+		var leftVals [][]byte
 		for i := 0; i < sp.LeftCount; i++ {
-			valCopy := make([]byte, len(leaf.Values[i]))
-			copy(valCopy, leaf.Values[i])
-			leftVals[i] = valCopy
+			leftVals = append(leftVals, append([]byte(nil), leaf.Values[i]...))
 		}
 		leaf.Values = leftVals
 		leaf.Header.NumKeys = uint16(sp.LeftCount)
@@ -332,11 +328,9 @@ func TruncateLeft(node base.PageData, sp SplitPoint) {
 	} else {
 		branch := node.(*base.BranchPage)
 		// Deep copy keys to prevent aliasing with split sibling
-		leftKeys := make([][]byte, sp.LeftCount)
+		var leftKeys [][]byte
 		for i := 0; i < sp.LeftCount; i++ {
-			keyCopy := make([]byte, len(branch.Keys[i]))
-			copy(keyCopy, branch.Keys[i])
-			leftKeys[i] = keyCopy
+			leftKeys = append(leftKeys, append([]byte(nil), branch.Keys[i]...))
 		}
 		branch.Keys = leftKeys
 

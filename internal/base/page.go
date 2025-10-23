@@ -374,8 +374,9 @@ func UnmarshalPage(page *Page) (PageData, error) {
 func MarshalPage(pd PageData, txID uint64) (*Page, error) {
 	page := &Page{}
 
-	switch p := pd.(type) {
-	case *LeafPage:
+	switch pd.PageType() {
+	case LeafPageFlag:
+		p := pd.(*LeafPage)
 		p.Header.TxnID = txID
 		p.Header.Flags = LeafPageFlag
 		p.RebuildIndirectSlices()
@@ -385,7 +386,8 @@ func MarshalPage(pd PageData, txID uint64) (*Page, error) {
 		}
 		copy(page.Data[:], buf)
 
-	case *BranchPage:
+	case BranchPageFlag:
+		p := pd.(*BranchPage)
 		p.Header.TxnID = txID
 		p.Header.Flags = BranchPageFlag
 		p.RebuildIndirectSlices()
@@ -395,7 +397,8 @@ func MarshalPage(pd PageData, txID uint64) (*Page, error) {
 		}
 		copy(page.Data[:], buf)
 
-	case *OverflowPage:
+	case OverflowPageFlag:
+		p := pd.(*OverflowPage)
 		p.Header.TxnID = txID
 		p.Header.Flags = OverflowPageFlag
 		buf, err := p.MarshalLayout()
