@@ -1,6 +1,6 @@
 module bench
 
-go 1.25
+go 1.24.0
 
 require (
 	github.com/alexhholmes/fredb v0.0.0
