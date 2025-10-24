@@ -61,7 +61,7 @@ func (c *Cursor) First() ([]byte, []byte) {
 	node := root
 	for !node.IsLeaf() {
 		c.stack = append(c.stack, path{node: node, childIndex: 0})
-		child, err := c.tx.loadNode(node.Children[0])
+		child, err := c.tx.load(node.Children[0])
 		if err != nil {
 			return nil, nil
 		}
@@ -108,7 +108,7 @@ func (c *Cursor) Last() ([]byte, []byte) {
 	for !node.IsLeaf() {
 		lastChild := len(node.Children) - 1
 		c.stack = append(c.stack, path{node: node, childIndex: lastChild})
-		child, err := c.tx.loadNode(node.Children[lastChild])
+		child, err := c.tx.load(node.Children[lastChild])
 		if err != nil {
 			return nil, nil
 		}
@@ -171,7 +171,7 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 			i++
 		}
 		c.stack = append(c.stack, path{node: node, childIndex: i})
-		child, err := c.tx.loadNode(node.Children[i])
+		child, err := c.tx.load(node.Children[i])
 		if err != nil {
 			return nil, nil
 		}
@@ -341,7 +341,7 @@ func (c *Cursor) nextLeaf() error {
 		// Does parent have more Children?
 		if parent.childIndex < len(parent.node.Children) {
 			// Descend to leftmost leaf of next subtree
-			node, err := c.tx.loadNode(parent.node.Children[parent.childIndex])
+			node, err := c.tx.load(parent.node.Children[parent.childIndex])
 			if err != nil {
 				c.valid = false
 				return err
@@ -350,7 +350,7 @@ func (c *Cursor) nextLeaf() error {
 			// Keep descending to leftmost child
 			for !node.IsLeaf() {
 				c.stack = append(c.stack, path{node: node, childIndex: 0})
-				child, err := c.tx.loadNode(node.Children[0])
+				child, err := c.tx.load(node.Children[0])
 				if err != nil {
 					c.valid = false
 					return err
@@ -394,7 +394,7 @@ func (c *Cursor) prevLeaf() error {
 		// Does parent have more Children to the left?
 		if parent.childIndex >= 0 {
 			// Descend to rightmost leaf of previous subtree
-			node, err := c.tx.loadNode(parent.node.Children[parent.childIndex])
+			node, err := c.tx.load(parent.node.Children[parent.childIndex])
 			if err != nil {
 				c.valid = false
 				return err
@@ -404,7 +404,7 @@ func (c *Cursor) prevLeaf() error {
 			for !node.IsLeaf() {
 				lastChild := len(node.Children) - 1
 				c.stack = append(c.stack, path{node: node, childIndex: lastChild})
-				child, err := c.tx.loadNode(node.Children[lastChild])
+				child, err := c.tx.load(node.Children[lastChild])
 				if err != nil {
 					c.valid = false
 					return err

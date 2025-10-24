@@ -78,7 +78,7 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 
 	// Branch node: continue descending
 	// `i` is the correct child index (first child with keys >= search_key)
-	child, err := tx.loadNode(node.Children[i])
+	child, err := tx.load(node.Children[i])
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 	bucket.tx = tx
 	bucket.writable = tx.writable
 	bucket.name = name
-	bucket.root, err = tx.loadNode(bucket.rootID)
+	bucket.root, err = tx.load(bucket.rootID)
 	if err != nil {
 		return nil
 	}
@@ -326,7 +326,7 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 
 	// Shrink tree: if root is internal with single child, make child the new root
 	if !tx.root.IsLeaf() && len(tx.root.Children) == 1 {
-		child, err := tx.loadNode(tx.root.Children[0])
+		child, err := tx.load(tx.root.Children[0])
 		if err != nil {
 			return err
 		}
@@ -374,7 +374,7 @@ func (tx *Tx) ForEachBucket(fn func(name []byte, b *Bucket) error) error {
 		bucket.tx = tx
 		bucket.writable = tx.writable
 		bucket.name = k
-		bucket.root, err = tx.loadNode(bucket.rootID)
+		bucket.root, err = tx.load(bucket.rootID)
 		if err != nil {
 			continue
 		}
@@ -622,9 +622,9 @@ func (tx *Tx) check() error {
 // clone ensures a Node is safe to modify in this transaction. Performs COW only
 // if the Node doesn't already belong to this transaction. Returns a writable
 // Node (either the original if already owned, or a Clone).
-func (tx *Tx) clone(node *base.Node) (*base.Node, error) {
+func (tx *Tx) clone(node *base.Node) *base.Node {
 	if cloned, exists := tx.pages.Get(node); exists {
-		return cloned, nil
+		return cloned
 	}
 
 	cloned := node.Clone()
@@ -634,34 +634,34 @@ func (tx *Tx) clone(node *base.Node) (*base.Node, error) {
 	cloned.Dirty = true
 
 	// Free the node page itself
-	tx.addFreed(node.PageID)
+	tx.freed[node.PageID] = struct{}{}
 
 	// Store in TX-LOCAL cache (NOT global cache yet)
 	// Will be flushed to global cache on Commit()
 	tx.pages.ReplaceOrInsert(cloned)
 
-	return cloned, nil
+	return cloned
 }
 
-// AddFreed adds a Page to the freed list, checking for duplicates first.
-// This prevents the same Page from being freed multiple times in a transaction.
-func (tx *Tx) addFreed(pageID base.PageID) {
-	if pageID == 0 {
-		return
+// load loads a node using the pager: tx.pages → Pager → Storage
+func (tx *Tx) load(pageID base.PageID) (*base.Node, error) {
+	// Check TX-local cache first (if writable tx with uncommitted changes)
+	if tx.writable && tx.pages != nil {
+		if node, exists := tx.pages.Get(&base.Node{PageID: pageID}); exists {
+			return node, nil
+		}
 	}
 
-	// Page is from a previous transaction - safe to free
-	tx.freed[pageID] = struct{}{}
+	node, err := tx.db.pager.LoadNode(pageID)
+	if err != nil {
+		return nil, err
+	}
+
+	return node, nil
 }
 
 // splitChild performs COW on the child being split and allocates the new sibling
 func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.Node, []byte, []byte, error) {
-	// I/O: COW BEFORE any computation
-	child, err := tx.clone(child)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
 	// Pure: calculate split point with adaptive hint
 	sp := algo.CalculateSplitPointWithHint(child, insertKey, algo.SplitBalanced)
 
@@ -681,30 +681,13 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 		Children: rightChildren,
 	}
 
-	// State: truncate left (child already COW'd, safe to mutate)
-	algo.TruncateLeft(child, sp)
+	cloned := tx.clone(child)
+	algo.TruncateLeft(cloned, sp)
 
 	// I/O: store right node in tx cache
 	tx.pages.ReplaceOrInsert(node)
 
-	return child, node, sp.SeparatorKey, []byte{}, nil
-}
-
-// loadNode loads a node using the pager: tx.pages → Pager → Storage
-func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
-	// Check TX-local cache first (if writable tx with uncommitted changes)
-	if tx.writable && tx.pages != nil {
-		if node, exists := tx.pages.Get(&base.Node{PageID: pageID}); exists {
-			return node, nil
-		}
-	}
-
-	node, err := tx.db.pager.LoadNode(pageID)
-	if err != nil {
-		return nil, err
-	}
-
-	return node, nil
+	return cloned, node, sp.SeparatorKey, []byte{}, nil
 }
 
 // insertNonFull inserts into a non-full node with COW
@@ -712,45 +695,41 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
 	if node.IsLeaf() {
 		// COW before modifying leaf
-		n, err := tx.clone(node)
-		if err != nil {
-			return nil, err
-		}
+		cloned := tx.clone(node)
 
-		// Pure: find insert position
-		pos := algo.FindInsertPosition(n, key)
+		pos := algo.FindInsertPosition(cloned, key)
 
 		// Check for update
-		if pos < int(n.NumKeys) && bytes.Equal(n.Keys[pos], key) {
+		if pos < int(cloned.NumKeys) && bytes.Equal(cloned.Keys[pos], key) {
 			// Make a copy of old value for rollback
-			oldValue := n.Values[pos]
+			oldValue := cloned.Values[pos]
 			oldValueCopy := make([]byte, len(oldValue))
 			copy(oldValueCopy, oldValue)
 
-			algo.ApplyLeafUpdate(n, pos, value)
+			algo.ApplyLeafUpdate(cloned, pos, value)
 
 			// Check size after update
-			if err := n.CheckOverflow(); err != nil {
+			if err := cloned.CheckOverflow(); err != nil {
 				// Rollback: restore old value
-				n.Values[pos] = oldValueCopy
+				cloned.Values[pos] = oldValueCopy
 				return nil, err
 			}
-			return n, nil
+			return cloned, nil
 		}
 
 		// Insert new key-value using algo
-		algo.ApplyLeafInsert(n, pos, key, value)
+		algo.ApplyLeafInsert(cloned, pos, key, value)
 
 		// Check size after insertion
-		if err := n.CheckOverflow(); err != nil {
+		if err := cloned.CheckOverflow(); err != nil {
 			// Rollback: remove the inserted key/value
-			n.Keys = algo.RemoveAt(n.Keys, pos)
-			n.Values = algo.RemoveAt(n.Values, pos)
-			n.NumKeys--
+			cloned.Keys = algo.RemoveAt(cloned.Keys, pos)
+			cloned.Values = algo.RemoveAt(cloned.Values, pos)
+			cloned.NumKeys--
 			return nil, err
 		}
 
-		return n, nil
+		return cloned, nil
 	}
 
 	// Branch node - recursive COW
@@ -758,7 +737,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	i := algo.FindChildIndex(node, key)
 
 	// Load child
-	child, err := tx.loadNode(node.Children[i])
+	child, err := tx.load(node.Children[i])
 	if err != nil {
 		return nil, err
 	}
@@ -772,10 +751,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		}
 
 		// COW parent to insert middle key and update pointers
-		node, err = tx.clone(node)
-		if err != nil {
-			return nil, err
-		}
+		node = tx.clone(node)
 
 		// Save old state for rollback
 		oldKeys := node.Keys
@@ -787,7 +763,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
 
 		// Check size after modification
-		if err := node.CheckOverflow(); err != nil {
+		if err = node.CheckOverflow(); err != nil {
 			// Rollback: restore old state
 			node.Keys = oldKeys
 			node.Values = oldValues
@@ -818,10 +794,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		}
 
 		// COW parent to insert middle key and update pointers
-		node, err = tx.clone(node)
-		if err != nil {
-			return nil, err
-		}
+		node = tx.clone(node)
 
 		// Save old state for rollback
 		oldKeys := node.Keys
@@ -864,10 +837,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	// If child was COW'd, update parent pointer
 	if child.PageID != oldChildID {
 		// COW parent to update child pointer
-		node, err = tx.clone(node)
-		if err != nil {
-			return nil, err
-		}
+		node = tx.clone(node)
 
 		node.Children[i] = child.PageID
 		node.Dirty = true
@@ -886,7 +856,12 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	if node.IsLeaf() {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
-			return tx.deleteFromLeaf(node, idx)
+			node = tx.clone(node)
+
+			// Remove key and value using algo
+			algo.ApplyLeafDelete(node, idx)
+
+			return node, nil
 		}
 		return nil, ErrKeyNotFound
 	}
@@ -895,7 +870,7 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	// Find child where key might be using algo
 	childIdx := algo.FindDeleteChildIndex(node, key)
 
-	child, err := tx.loadNode(node.Children[childIdx])
+	child, err := tx.load(node.Children[childIdx])
 	if err != nil {
 		return nil, err
 	}
@@ -907,10 +882,7 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	}
 
 	// COW parent to update child pointer
-	node, err = tx.clone(node)
-	if err != nil {
-		return nil, err
-	}
+	node = tx.clone(node)
 
 	// Update child pointer (child may have been COW'd)
 	node.Children[childIdx] = child.PageID
@@ -928,26 +900,12 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	return node, nil
 }
 
-// deleteFromLeaf performs COW on the leaf before deleting
-func (tx *Tx) deleteFromLeaf(node *base.Node, idx int) (*base.Node, error) {
-	// COW before modifying leaf
-	node, err := tx.clone(node)
-	if err != nil {
-		return nil, err
-	}
-
-	// Remove key and value using algo
-	algo.ApplyLeafDelete(node, idx)
-
-	return node, nil
-}
-
 // fixUnderflow fixes underflow in child at childIdx with COW semantics
 // Returns (updatedParent, updatedChild, error)
 func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*base.Node, *base.Node, error) {
 	// Try to borrow from left sibling
 	if childIdx > 0 {
-		leftSibling, err := tx.loadNode(parent.Children[childIdx-1])
+		leftSibling, err := tx.load(parent.Children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -965,7 +923,7 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 
 	// Try to borrow from right sibling
 	if childIdx < len(parent.Children)-1 {
-		rightSibling, err := tx.loadNode(parent.Children[childIdx+1])
+		rightSibling, err := tx.load(parent.Children[childIdx+1])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -984,10 +942,11 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 	// Merge with a sibling
 	if childIdx > 0 {
 		// Merge with left sibling
-		leftSibling, err := tx.loadNode(parent.Children[childIdx-1])
+		leftSibling, err := tx.load(parent.Children[childIdx-1])
 		if err != nil {
 			return nil, nil, err
 		}
+
 		parent, _, err = tx.mergeNodes(leftSibling, child, parent, childIdx-1)
 		if err != nil {
 			return nil, nil, err
@@ -997,7 +956,7 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 	}
 
 	// Merge with right sibling
-	rightSibling, err := tx.loadNode(parent.Children[childIdx+1])
+	rightSibling, err := tx.load(parent.Children[childIdx+1])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1012,20 +971,11 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 // borrowFromLeft borrows a key from left sibling through parent (COW)
 func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
-	node, err := tx.clone(node)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	node = tx.clone(node)
 
-	leftSibling, err = tx.clone(leftSibling)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	leftSibling = tx.clone(leftSibling)
 
-	parent, err = tx.clone(parent)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	parent = tx.clone(parent)
 
 	algo.BorrowFromLeft(node, leftSibling, parent, parentKeyIdx)
 
@@ -1039,20 +989,11 @@ func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx 
 // borrowFromRight borrows a key from right sibling through parent (COW)
 func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
-	node, err := tx.clone(node)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	node = tx.clone(node)
 
-	rightSibling, err = tx.clone(rightSibling)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	rightSibling = tx.clone(rightSibling)
 
-	parent, err = tx.clone(parent)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	parent = tx.clone(parent)
 
 	algo.BorrowFromRight(node, rightSibling, parent, parentKeyIdx)
 
@@ -1067,22 +1008,13 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 // Returns (parent, merged, error) where merged=true if nodes were actually merged, false if redistributed
 func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, bool, error) {
 	// COW left node (will receive merged content)
-	leftNode, err := tx.clone(leftNode)
-	if err != nil {
-		return nil, false, err
-	}
+	leftNode = tx.clone(leftNode)
 
 	// COW right node (may need it for redistribution)
-	rightNode, err = tx.clone(rightNode)
-	if err != nil {
-		return nil, false, err
-	}
+	rightNode = tx.clone(rightNode)
 
 	// COW parent (will have separator removed or updated)
-	parent, err = tx.clone(parent)
-	if err != nil {
-		return nil, false, err
-	}
+	parent = tx.clone(parent)
 
 	// Try merging - check if result would overflow
 	// For large keys/values, two underflow nodes might be nearly full in bytes
@@ -1097,7 +1029,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 		// Merge would overflow - redistribute keys to balance nodes instead
 		// This keeps both nodes valid (above MinKeysPerNode if possible)
 		// without violating page size constraints
-		err = algo.RedistributeNodes(leftNode, rightNode, parent, parentKeyIdx)
+		err := algo.RedistributeNodes(leftNode, rightNode, parent, parentKeyIdx)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1113,7 +1045,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	parent.Children[parentKeyIdx] = leftNode.PageID
 
 	// Track right node as freed
-	tx.addFreed(rightNode.PageID)
+	tx.freed[rightNode.PageID] = struct{}{}
 
 	return parent, true, nil // true = actually merged
 }

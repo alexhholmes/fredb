@@ -2305,7 +2305,7 @@ func TestCloseFlush(t *testing.T) {
 }
 
 func TestLoadNode(t *testing.T) {
-	// Test loadNode caching behavior
+	// Test load caching behavior
 	// - Load same Node multiple times
 	// - Verify cache returns same instance
 	// - Verify no duplicate reads from PageManager
@@ -2381,7 +2381,7 @@ func TestSingleKey(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback()
 
-	child, err := tx.loadNode(db.pager.GetSnapshot().Root.Children[0])
+	child, err := tx.load(db.pager.GetSnapshot().Root.Children[0])
 	assert.NoError(t, err)
 	assert.True(t, child.IsLeaf(), "Child should be a leaf")
 	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
