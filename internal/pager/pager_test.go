@@ -39,11 +39,11 @@ func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	defer cleanup()
 
 	// Release on empty pending should do nothing
-	released := pm.ReleasePages(100)
+	released := pm.Release(100)
 	assert.Equal(t, 0, released, "Expected 0 pages released from empty pending")
 
 	// Should still be 0
-	released = pm.ReleasePages(100)
+	released = pm.Release(100)
 	assert.Equal(t, 0, released, "Expected 0 pages released after empty FreePending")
 }
 
@@ -57,9 +57,9 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		pm, cleanup := createTestPager(t, tmpFile)
 
 		// Add some free pages
-		pm.FreePage(10)
-		pm.FreePage(20)
-		pm.FreePage(30)
+		pm.Free(10)
+		pm.Free(20)
+		pm.Free(30)
 
 		cleanup()
 	}
@@ -72,7 +72,7 @@ func TestPageManagerFreeListPersistence(t *testing.T) {
 		// Try to allocate - should get freed pages first
 		allocated := make(map[base.PageID]bool)
 		for i := 0; i < 3; i++ {
-			id := pm.AssignPageID()
+			id := pm.Allocate()
 			allocated[id] = true
 		}
 
@@ -89,19 +89,19 @@ func TestPageManagerAllocateAndFree(t *testing.T) {
 	defer cleanup()
 
 	// Allocate some pages
-	id1 := pm.AssignPageID()
-	id2 := pm.AssignPageID()
-	id3 := pm.AssignPageID()
+	id1 := pm.Allocate()
+	id2 := pm.Allocate()
+	id3 := pm.Allocate()
 
 	// Free them
-	pm.FreePage(id1)
-	pm.FreePage(id2)
-	pm.FreePage(id3)
+	pm.Free(id1)
+	pm.Free(id2)
+	pm.Free(id3)
 
 	// Allocate again - should reuse freed pages
-	reused1 := pm.AssignPageID()
-	reused2 := pm.AssignPageID()
-	reused3 := pm.AssignPageID()
+	reused1 := pm.Allocate()
+	reused2 := pm.Allocate()
+	reused3 := pm.Allocate()
 
 	// Verify reused pages match freed pages
 	reused := map[base.PageID]bool{reused1: true, reused2: true, reused3: true}

@@ -227,8 +227,8 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, errors.New("bucket already exists")
 	}
 
-	bucketRootID := tx.db.pager.AssignPageID()
-	bucketLeafID := tx.db.pager.AssignPageID()
+	bucketRootID := tx.db.pager.Allocate()
+	bucketLeafID := tx.db.pager.Allocate()
 
 	// Create bucket's leaf node (empty)
 	bucketLeaf := &base.Node{
@@ -487,7 +487,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root using tx.allocatePage()
-				newRootID := tx.db.pager.AssignPageID()
+				newRootID := tx.db.pager.Allocate()
 				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -517,7 +517,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root
-				newRootID := tx.db.pager.AssignPageID()
+				newRootID := tx.db.pager.Allocate()
 				newRoot2 := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -599,7 +599,7 @@ func (tx *Tx) Rollback() error {
 
 		// Free all allocated pages
 		tx.pages.Ascend(func(node *base.Node) bool {
-			tx.db.pager.FreePage(node.PageID)
+			tx.db.pager.Free(node.PageID)
 			return true
 		})
 	} else {
@@ -630,7 +630,7 @@ func (tx *Tx) clone(node *base.Node) (*base.Node, error) {
 	cloned := node.Clone()
 
 	// Put up cloned Node with new Page
-	cloned.PageID = tx.db.pager.AssignPageID()
+	cloned.PageID = tx.db.pager.Allocate()
 	cloned.Dirty = true
 
 	// Free the node page itself
@@ -669,7 +669,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
-	nodeID := tx.db.pager.AssignPageID()
+	nodeID := tx.db.pager.Allocate()
 
 	// State: construct right node
 	node := &base.Node{
@@ -699,7 +699,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 		}
 	}
 
-	node, err := tx.db.pager.GetNode(pageID)
+	node, err := tx.db.pager.LoadNode(pageID)
 	if err != nil {
 		return nil, err
 	}
@@ -1279,7 +1279,7 @@ func (tx *Tx) tryReleasePages() {
 		minTxID = readerMinTxID
 	}
 
-	tx.db.pager.ReleasePages(minTxID)
+	tx.db.pager.Release(minTxID)
 }
 
 // freeTree frees all pages in a B+ tree (bucket) given its root page ID
@@ -1307,8 +1307,8 @@ func (tx *Tx) freeTree(rootID base.PageID) error {
 			pageIDs = append(pageIDs, item.pageID)
 			stack = stack[:len(stack)-1]
 		} else {
-			node, ok := tx.db.pager.LoadNode(item.pageID)
-			if !ok {
+			node, err := tx.db.pager.LoadNode(item.pageID)
+			if err != nil {
 				return ErrCorruption
 			}
 
@@ -1331,7 +1331,7 @@ func (tx *Tx) freeTree(rootID base.PageID) error {
 	defer tx.db.mu.Unlock()
 
 	for _, pageID := range pageIDs {
-		tx.db.pager.FreePage(pageID)
+		tx.db.pager.Free(pageID)
 	}
 
 	return nil

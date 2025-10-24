@@ -100,8 +100,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID := pg.AssignPageID()
-		rootLeafID := pg.AssignPageID()
+		rootPageID := pg.Allocate()
+		rootLeafID := pg.Allocate()
 
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
@@ -122,8 +122,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID := pg.AssignPageID()
-		rootBucketLeafID := pg.AssignPageID()
+		rootBucketRootID := pg.Allocate()
+		rootBucketLeafID := pg.Allocate()
 
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
@@ -214,7 +214,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		// 7. CRITICAL: Sync pg to persist the initial allocations
-		// This ensures root and leaf are not returned by future AssignPageID() calls
+		// This ensures root and leaf are not returned by future Allocate() calls
 		if err = store.Sync(); err != nil {
 			_ = pg.Close()
 			return nil, err
@@ -402,7 +402,7 @@ func (db *DB) Close() error {
 	db.mu.Lock()
 
 	// Release all pending pages
-	db.pager.ReleasePages(math.MaxUint64)
+	db.pager.Release(math.MaxUint64)
 
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.pager.GetSnapshot()

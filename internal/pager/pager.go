@@ -196,8 +196,8 @@ func NewPager(mode SyncMode, store *storage.Storage, cache *cache.Cache) (*Pager
 	return c, nil
 }
 
-// AssignPageID allocates a new Page (from freelist or grows file)
-func (p *Pager) AssignPageID() base.PageID {
+// Allocate allocates a new Page (from freelist or grows file)
+func (p *Pager) Allocate() base.PageID {
 	// Try freelist first
 	id := p.freelist.Allocate()
 	if id != 0 {
@@ -211,8 +211,8 @@ func (p *Pager) AssignPageID() base.PageID {
 	return id
 }
 
-// FreePage adds a Page to the freelist
-func (p *Pager) FreePage(id base.PageID) {
+// Free adds a Page to the freelist
+func (p *Pager) Free(id base.PageID) {
 	p.freelist.Free(id)
 }
 
@@ -229,9 +229,9 @@ func (p *Pager) TrackWrite(pageID base.PageID) {
 	}
 }
 
-// ReleasePages moves pages from pending to free for all transactions < minTxnID
+// Release moves pages from pending to free for all transactions < minTxnID
 // Invalidates cache entries atomically (under freelist lock) to prevent races.
-func (p *Pager) ReleasePages(minTxnID uint64) int {
+func (p *Pager) Release(minTxnID uint64) int {
 	// Pass cache invalidation callback - runs atomically under freelist lock
 	return p.freelist.Release(minTxnID, func(pageID base.PageID) {
 		p.cache.Remove(pageID)
@@ -295,8 +295,8 @@ func (p *Pager) CommitSnapshot() {
 	}
 }
 
-// GetNode retrieves a node, checking cache first then loading from disk.
-func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
+// LoadNode retrieves a node, checking cache first then loading from disk.
+func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, error) {
 	// Check cache first
 	if node, hit := p.cache.Get(pageID); hit {
 		return node, nil
@@ -320,16 +320,6 @@ func (p *Pager) GetNode(pageID base.PageID) (*base.Node, error) {
 	// Cache and return
 	p.cache.Put(pageID, node)
 	return node, nil
-}
-
-// LoadNode loads a node, coordinating cache and disk I/O.
-// Routes TX calls through Pager instead of direct cache access.
-func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, bool) {
-	node, err := p.GetNode(pageID)
-	if err != nil {
-		return nil, false
-	}
-	return node, true
 }
 
 // Commit writes all pages to disk, handles freed pages, updates metadata, and syncs.

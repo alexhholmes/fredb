@@ -65,7 +65,7 @@ func (b *Bucket) Put(key, value []byte) error {
 			return err
 		}
 
-		newRootID := b.tx.db.pager.AssignPageID()
+		newRootID := b.tx.db.pager.Allocate()
 		if err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func (b *Bucket) Put(key, value []byte) error {
 			return err
 		}
 
-		newRootID := b.tx.db.pager.AssignPageID()
+		newRootID := b.tx.db.pager.Allocate()
 		if err != nil {
 			return err
 		}
