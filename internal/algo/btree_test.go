@@ -398,13 +398,13 @@ func TestCalculateSplitPoint(t *testing.T) {
 			}
 
 			// Verify separator is a copy, not shared
-			if tt.node.IsLeaf() && sp.Mid+1 < len(tt.node.Keys) {
+			if tt.node.Type() == base.LeafType && sp.Mid+1 < len(tt.node.Keys) {
 				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid+1]) > 0 {
 					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid+1][0] {
 						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
 					}
 				}
-			} else if !tt.node.IsLeaf() && sp.Mid < len(tt.node.Keys) {
+			} else if tt.node.Type() == base.BranchType && sp.Mid < len(tt.node.Keys) {
 				if len(sp.SeparatorKey) > 0 && len(tt.node.Keys[sp.Mid]) > 0 {
 					if &sp.SeparatorKey[0] == &tt.node.Keys[sp.Mid][0] {
 						t.Error("SeparatorKey shares backing array with original (not CoW safe)")
@@ -487,7 +487,7 @@ func TestExtractRightPortion(t *testing.T) {
 			}
 
 			// Verify vals are copied for leaf nodes
-			if tt.node.IsLeaf() && len(vals) > 0 && len(vals[0]) > 0 {
+			if tt.node.Type() == base.LeafType && len(vals) > 0 && len(vals[0]) > 0 {
 				originalIdx := tt.sp.Mid + 1
 				if len(tt.node.Values[originalIdx]) > 0 {
 					if &vals[0][0] == &tt.node.Values[originalIdx][0] {

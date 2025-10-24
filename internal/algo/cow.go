@@ -37,7 +37,7 @@ func ApplyLeafDelete(node *base.Node, idx int) {
 // Assumes node is already writable
 func ApplyBranchRemoveSeparator(node *base.Node, sepIdx int) {
 	node.Keys = RemoveAt(node.Keys, sepIdx)
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		node.Values = RemoveAt(node.Values, sepIdx)
 	}
 	node.Children = RemoveChildAt(node.Children, sepIdx+1)
@@ -50,7 +50,7 @@ func ApplyBranchRemoveSeparator(node *base.Node, sepIdx int) {
 // Assumes all nodes are already writable
 // Returns updated parent
 func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		// Extract last from left sibling
 		borrowed := ExtractLastFromSibling(leftSibling)
 
@@ -96,7 +96,7 @@ func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
 // Updates parent separator key
 // Assumes all nodes are already writable
 func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		// Extract first from right sibling
 		borrowed := ExtractFirstFromSibling(rightSibling)
 
@@ -147,7 +147,7 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 // Assumes left node is already writable
 // Does NOT update parent - caller must call ApplyBranchRemoveSeparator
 func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
-	// Determine node type by checking for children (more reliable than IsLeaf())
+	// Determine node type by checking for children (more reliable than Type())
 	// This handles corrupted nodes where Values might be incorrectly set
 	hasChildren := len(leftNode.Children) > 0
 
@@ -206,7 +206,7 @@ func NewBranchRoot(leftChild, rightChild *base.Node, midKey []byte, pageID base.
 func ApplyChildSplit(parent *base.Node, childIdx int, leftChild, rightChild *base.Node, midKey, midVal []byte) {
 	// Insert middle key into parent
 	parent.Keys = InsertAt(parent.Keys, childIdx, midKey)
-	if parent.IsLeaf() {
+	if parent.Type() == base.LeafType {
 		parent.Values = InsertAt(parent.Values, childIdx, midVal)
 	}
 
@@ -228,7 +228,7 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 	// Handle special case: Mid=-1 means left gets nothing (sp.LeftCount=0)
 	if sp.Mid == -1 {
 		node.Keys = [][]byte{}
-		if node.IsLeaf() {
+		if node.Type() == base.LeafType {
 			node.Values = [][]byte{}
 		} else {
 			node.Values = nil
@@ -248,7 +248,7 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 	}
 	node.Keys = leftKeys
 
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		// Deep copy values to prevent aliasing with split sibling
 		leftVals := make([][]byte, sp.LeftCount)
 		for i := 0; i < sp.LeftCount; i++ {
@@ -271,7 +271,7 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 // RedistributeNodes redistributes keys evenly between two siblings when merge would overflow
 // This is called when both nodes are underflow but merging them would exceed page size
 func RedistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) error {
-	if leftNode.IsLeaf() {
+	if leftNode.Type() == base.LeafType {
 		// Combine all keys and values
 		totalKeys := int(leftNode.NumKeys) + int(rightNode.NumKeys)
 		allKeys := make([][]byte, 0, totalKeys)

@@ -27,7 +27,7 @@ func FindChildIndex(node *base.Node, key []byte) int {
 
 // FindKeyInLeaf returns index of key in leaf, or -1 if not found
 func FindKeyInLeaf(node *base.Node, key []byte) int {
-	if !node.IsLeaf() {
+	if node.Type() == base.BranchType {
 		return -1
 	}
 
@@ -158,7 +158,7 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 		// For leaves: need mid+1 < len(keys) to access separator
 		// For branches: need mid < len(keys)
 		minMid := 0
-		if !node.IsLeaf() && mid < 1 {
+		if node.Type() == base.BranchType && mid < 1 {
 			minMid = 1
 		}
 		if mid < minMid {
@@ -173,7 +173,7 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 	}
 
 	// Final bounds check for leaf separator access
-	if node.IsLeaf() && mid+1 >= len(node.Keys) {
+	if node.Type() == base.LeafType && mid+1 >= len(node.Keys) {
 		mid = len(node.Keys) - 2
 		if mid < 0 {
 			mid = 0
@@ -183,7 +183,7 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 	var sep []byte
 	var leftCnt, rightCnt int
 
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		sep = make([]byte, len(node.Keys[mid+1]))
 		copy(sep, node.Keys[mid+1])
 		leftCnt = mid + 1
@@ -218,7 +218,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 		keys = append(keys, keyCopy)
 	}
 
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		vals = make([][]byte, 0, sp.RightCount)
 		for i := startIdx; i < len(node.Values); i++ {
 			valCopy := make([]byte, len(node.Values[i]))
@@ -227,7 +227,7 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 		}
 	}
 
-	if !node.IsLeaf() {
+	if node.Type() == base.BranchType {
 		children = make([]base.PageID, 0)
 		for i := startIdx; i < len(node.Children); i++ {
 			children = append(children, node.Children[i])
@@ -256,7 +256,7 @@ func ExtractLastFromSibling(sibling *base.Node) BorrowData {
 	data := BorrowData{
 		Key: sibling.Keys[lastIdx],
 	}
-	if sibling.IsLeaf() {
+	if sibling.Type() == base.LeafType {
 		data.Value = sibling.Values[lastIdx]
 	} else {
 		data.Child = sibling.Children[len(sibling.Children)-1]
@@ -269,7 +269,7 @@ func ExtractFirstFromSibling(sibling *base.Node) BorrowData {
 	data := BorrowData{
 		Key: sibling.Keys[0],
 	}
-	if sibling.IsLeaf() {
+	if sibling.Type() == base.LeafType {
 		data.Value = sibling.Values[0]
 	} else {
 		data.Child = sibling.Children[0]

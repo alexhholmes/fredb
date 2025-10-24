@@ -1806,7 +1806,7 @@ func TestBTreeSplitting(t *testing.T) {
 	}
 
 	// Verify root splits (root should no longer be a leaf)
-	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Root should not be a leaf after splitting")
+	assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Root should be a branch node after splitting")
 
 	// Check tree height increases (root should have Children)
 	assert.NotEmpty(t, db.pager.GetSnapshot().Root.Children, "Root should have Children after splitting")
@@ -1846,7 +1846,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	rootBucket := tx.Bucket([]byte("__root__"))
 	require.NotNil(t, rootBucket, "__root__ bucket should exist")
 
-	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should not be a leaf after multiple splits")
+	assert.Equal(t, base.BranchType, rootBucket.root.Type(), "Bucket root should be a branch node after multiple splits")
 	// Verify root has multiple Children
 	assert.GreaterOrEqual(t, len(rootBucket.root.Children), 2, "Bucket root should have multiple Children after multiple splits")
 	tx.Rollback()
@@ -1900,7 +1900,7 @@ func TestSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely right-heavy due to sequential insert)
-	if db.pager.GetSnapshot().Root.IsLeaf() {
+	if db.pager.GetSnapshot().Root.Type() == base.LeafType {
 		t.Logf("Tree has single leaf root after %d sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d sequential inserts",
@@ -1949,7 +1949,7 @@ func TestRandomInsert(t *testing.T) {
 	}
 
 	// Check tree balance (random insertion typically produces more balanced trees)
-	if !db.pager.GetSnapshot().Root.IsLeaf() {
+	if db.pager.GetSnapshot().Root.Type() == base.BranchType {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d random inserts",
 			db.pager.GetSnapshot().Root.NumKeys, len(db.pager.GetSnapshot().Root.Children), numKeys)
 
@@ -1988,7 +1988,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 	}
 
 	// Check tree structure (likely left-heavy due to reverse sequential insert)
-	if db.pager.GetSnapshot().Root.IsLeaf() {
+	if db.pager.GetSnapshot().Root.Type() == base.LeafType {
 		t.Logf("Tree has single leaf root after %d reverse sequential inserts", numKeys)
 	} else {
 		t.Logf("Tree has internal root with %d Keys and %d Children after %d reverse sequential inserts",
@@ -2116,9 +2116,9 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	initialIsLeaf := db.pager.GetSnapshot().Root.IsLeaf()
+	initialIsLeaf := db.pager.GetSnapshot().Root.Type()
 	initialRootKeys := int(db.pager.GetSnapshot().Root.NumKeys)
-	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
+	t.Logf("Initial tree: root Type=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 	// Delete Keys sequentially and monitor tree structure
 	for i := 0; i < numKeys; i++ {
@@ -2128,8 +2128,8 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 		// Log tree structure changes at key points
 		if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
-			t.Logf("After %d deletions: root IsLeaf=%v, NumKeys=%d",
-				i+1, db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
+			t.Logf("After %d deletions: root Type=%v, NumKeys=%d",
+				i+1, db.pager.GetSnapshot().Root.Type(), db.pager.GetSnapshot().Root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -2140,7 +2140,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 
 	// Final tree should be empty
 	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
-	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Empty tree root should be branch")
+	assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Empty tree root should be branch")
 }
 
 func TestBTreeRandomDelete(t *testing.T) {
@@ -2166,9 +2166,9 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Check initial tree structure
-		initialIsLeaf := db.pager.GetSnapshot().Root.IsLeaf()
+		initialIsLeaf := db.pager.GetSnapshot().Root.Type()
 		initialRootKeys := int(db.pager.GetSnapshot().Root.NumKeys)
-		t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
+		t.Logf("Initial tree: root Type=%v, NumKeys=%d", initialIsLeaf, initialRootKeys)
 
 		// Create random deletion order
 		deleteOrder := make([]int, numKeys)
@@ -2193,8 +2193,8 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 			// Log tree structure changes at key points
 			if i == numKeys/4 || i == numKeys/2 || i == 3*numKeys/4 {
-				t.Logf("After %d random deletions: root IsLeaf=%v, NumKeys=%d",
-					i+1, db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
+				t.Logf("After %d random deletions: root Type=%v, NumKeys=%d",
+					i+1, db.pager.GetSnapshot().Root.Type(), db.pager.GetSnapshot().Root.NumKeys)
 			}
 
 			// Verify deleted key is gone
@@ -2218,7 +2218,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 
 		// Final tree should be empty
 		assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
-		assert.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Empty tree root should be branch")
+		assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Empty tree root should be branch")
 
 		// close database after each iteration
 		db.Close()
@@ -2241,7 +2241,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Check initial tree structure
-	t.Logf("Initial tree: root IsLeaf=%v, NumKeys=%d", db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
+	t.Logf("Initial tree: root Type=%v, NumKeys=%d", db.pager.GetSnapshot().Root.Type(), db.pager.GetSnapshot().Root.NumKeys)
 
 	// Delete Keys in reverse order
 	for i := numKeys - 1; i >= 0; i-- {
@@ -2252,8 +2252,8 @@ func TestBTreeReverseDelete(t *testing.T) {
 		// Log tree structure at key points
 		deletedCount := numKeys - i
 		if deletedCount == numKeys/4 || deletedCount == numKeys/2 || deletedCount == 3*numKeys/4 {
-			t.Logf("After %d reverse deletions: root IsLeaf=%v, NumKeys=%d",
-				deletedCount, db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
+			t.Logf("After %d reverse deletions: root Type=%v, NumKeys=%d",
+				deletedCount, db.pager.GetSnapshot().Root.Type(), db.pager.GetSnapshot().Root.NumKeys)
 		}
 
 		// Verify key is deleted
@@ -2373,7 +2373,7 @@ func TestSingleKey(t *testing.T) {
 	assert.Equal(t, string(newValue), string(val))
 
 	// Verify tree structure: root is always a branch (never leaf)
-	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Root should always be a branch node")
+	assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Root should always be a branch node")
 	assert.Equal(t, 1, len(db.pager.GetSnapshot().Root.Children), "Root should have 1 child")
 
 	// Load the child and verify it has the key
@@ -2383,7 +2383,7 @@ func TestSingleKey(t *testing.T) {
 
 	child, err := tx.load(db.pager.GetSnapshot().Root.Children[0])
 	assert.NoError(t, err)
-	assert.True(t, child.IsLeaf(), "Child should be a leaf")
+	assert.Equal(t, base.LeafType, child.Type(), "Child should be a leaf")
 	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
 }
 
@@ -2727,8 +2727,8 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	rootBucket := tx.Bucket([]byte("__root__"))
 	require.NotNil(t, rootBucket, "__root__ bucket should exist")
 
-	t.Logf("Root: IsLeaf=%v, NumKeys=%d, Children=%d", rootBucket.root.IsLeaf(), rootBucket.root.NumKeys, len(rootBucket.root.Children))
-	assert.False(t, rootBucket.root.IsLeaf(), "Bucket root should always be a branch node")
+	t.Logf("Root: Type=%v, NumKeys=%d, Children=%d", rootBucket.root.Type(), rootBucket.root.NumKeys, len(rootBucket.root.Children))
+	assert.Equal(t, base.BranchType, rootBucket.root.Type(), "Bucket root should always be a branch node")
 	assert.GreaterOrEqual(t, len(rootBucket.root.Children), 2, "Bucket root should have at least 2 children after split")
 	tx.Rollback()
 
@@ -2753,7 +2753,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Root should be branch Node")
+	require.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Root should be branch Node")
 
 	initialRootKeys := db.pager.GetSnapshot().Root.NumKeys
 	t.Logf("Initial root Keys: %d", initialRootKeys)
@@ -2764,12 +2764,12 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 		require.NoError(t, err)
 
 		if i%(numKeys/4) == 0 {
-			t.Logf("After %d deletions: root.IsLeaf()=%v, root.NumKeys=%d",
-				i+1, db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
+			t.Logf("After %d deletions: root.Type()=%v, root.NumKeys=%d",
+				i+1, db.pager.GetSnapshot().Root.Type(), db.pager.GetSnapshot().Root.NumKeys)
 		}
 	}
 
-	assert.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Final root should be branch")
+	assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Final root should be branch")
 	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Final root should have 0 Keys")
 }
 
@@ -2786,7 +2786,7 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.False(t, db.pager.GetSnapshot().Root.IsLeaf(), "Root should not be leaf for this test")
+	require.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Root should not be leaf for this test")
 
 	t.Logf("Tree structure: root.NumKeys=%d, root.Children=%d",
 		db.pager.GetSnapshot().Root.NumKeys, len(db.pager.GetSnapshot().Root.Children))
@@ -2804,8 +2804,8 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	t.Logf("After deletions: root.IsLeaf()=%v, root.NumKeys=%d",
-		db.pager.GetSnapshot().Root.IsLeaf(), db.pager.GetSnapshot().Root.NumKeys)
+	t.Logf("After deletions: root.Type()=%v, root.NumKeys=%d",
+		db.pager.GetSnapshot().Root.Type(), db.pager.GetSnapshot().Root.NumKeys)
 }
 
 func TestDBRestartPersistence(t *testing.T) {

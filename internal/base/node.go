@@ -9,6 +9,13 @@ const (
 	MinFillRatio = 0.25
 )
 
+type NodeType int
+
+const (
+	BranchType NodeType = iota
+	LeafType
+)
+
 // Node represents a B-tree Node with decoded Page data
 type Node struct {
 	PageID PageID
@@ -33,14 +40,14 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 		NumKeys: n.NumKeys,
 		TxnID:   txID,
 	}
-	if n.IsLeaf() {
+	if n.Type() == LeafType {
 		header.Flags = LeafPageFlag
 	} else {
 		header.Flags = BranchPageFlag
 	}
 	page.WriteHeader(header)
 
-	if n.IsLeaf() {
+	if n.Type() == LeafType {
 		// serialize leaf Node - pack from end backward
 		dataOffset := uint16(PageSize)
 		// Process in reverse order to pack from end
@@ -175,13 +182,13 @@ func (n *Node) Clone() *Node {
 	copy(cloned.Keys, n.Keys)
 
 	// Shallow copy Values (leaf nodes only)
-	if n.IsLeaf() && len(n.Values) > 0 {
+	if n.Type() == LeafType && len(n.Values) > 0 {
 		cloned.Values = make([][]byte, len(n.Values))
 		copy(cloned.Values, n.Values)
 	}
 
 	// Shallow copy Children (branch nodes only) - PageIDs are copy-by-value
-	if !n.IsLeaf() {
+	if n.Type() == BranchType {
 		cloned.Children = make([]PageID, len(n.Children))
 		copy(cloned.Children, n.Children)
 	}
@@ -205,7 +212,7 @@ func (n *Node) CheckOverflow() error {
 
 // IsFull checks if a Node is full
 func (n *Node) IsFull(key, value []byte) bool {
-	if n.IsLeaf() {
+	if n.Type() == LeafType {
 		currentSize := n.Size()
 		projectedSize := currentSize + LeafElementSize + len(key) + len(value)
 		isFull := projectedSize > PageSize
@@ -219,7 +226,7 @@ func (n *Node) IsFull(key, value []byte) bool {
 func (n *Node) Size() int {
 	size := PageHeaderSize
 
-	if n.IsLeaf() {
+	if n.Type() == LeafType {
 		size += int(n.NumKeys) * LeafElementSize
 		for i := 0; i < int(n.NumKeys); i++ {
 			size += len(n.Keys[i])
@@ -237,7 +244,10 @@ func (n *Node) Size() int {
 	return size
 }
 
-// IsLeaf returns true if this is a leaf Node
-func (n *Node) IsLeaf() bool {
-	return n.Values != nil
+// Type returns the node type (LeafType or BranchType)
+func (n *Node) Type() NodeType {
+	if n.Values != nil {
+		return LeafType
+	}
+	return BranchType
 }

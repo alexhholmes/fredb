@@ -59,25 +59,16 @@ func (tx *Tx) Get(key []byte) ([]byte, error) {
 
 // search recursively searches for a key using algo functions
 func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
-	// Find position in current node
-	i := 0
-	for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
-		i++
-	}
-	// After loop: i points to first key > search_key (or NumKeys if all keys <= search_key)
-
-	// If leaf node, check if key found
-	if node.IsLeaf() {
-		// In leaf, we need to check the previous position (since loop went past equal keys)
-		if i > 0 && bytes.Equal(key, node.Keys[i-1]) {
-			return node.Values[i-1], nil
+	if node.Type() == base.LeafType {
+		idx := algo.FindKeyInLeaf(node, key)
+		if idx >= 0 {
+			return node.Values[idx], nil
 		}
-		// Not found in leaf
 		return nil, ErrKeyNotFound
 	}
 
 	// Branch node: continue descending
-	// `i` is the correct child index (first child with keys >= search_key)
+	i := algo.FindChildIndex(node, key)
 	child, err := tx.load(node.Children[i])
 	if err != nil {
 		return nil, err
@@ -325,7 +316,7 @@ func (tx *Tx) DeleteBucket(name []byte) error {
 	tx.root = root
 
 	// Shrink tree: if root is internal with single child, make child the new root
-	if !tx.root.IsLeaf() && len(tx.root.Children) == 1 {
+	if tx.root.Type() == base.BranchType && len(tx.root.Children) == 1 {
 		child, err := tx.load(tx.root.Children[0])
 		if err != nil {
 			return err
@@ -693,7 +684,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 // insertNonFull inserts into a non-full node with COW
 // Returns the (possibly new) root node after COW
 func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		// COW before modifying leaf
 		cloned := tx.clone(node)
 
@@ -853,7 +844,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 // Returns the (possibly new) node after COW
 func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	// B+ tree: if this is a leaf, check if key exists and delete
-	if node.IsLeaf() {
+	if node.Type() == base.LeafType {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
 			node = tx.clone(node)
@@ -1020,7 +1011,7 @@ func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx in
 	// For large keys/values, two underflow nodes might be nearly full in bytes
 	// Calculate merged size before actually merging
 	mergedSize := leftNode.Size() + rightNode.Size()
-	if !leftNode.IsLeaf() {
+	if leftNode.Type() == base.BranchType {
 		// Branch nodes: add separator key size
 		mergedSize += len(parent.Keys[parentKeyIdx])
 	}
@@ -1104,7 +1095,7 @@ func (tx *Tx) freeTree(rootID base.PageID) error {
 			stack[len(stack)-1].childrenProcessed = true
 
 			// Push children in reverse for correct post-order
-			if !node.IsLeaf() {
+			if node.Type() == base.BranchType {
 				for i := len(node.Children) - 1; i >= 0; i-- {
 					stack = append(stack, stackItem{
 						pageID:            node.Children[i],
