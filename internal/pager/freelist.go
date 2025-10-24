@@ -6,6 +6,7 @@ import (
 	"unsafe"
 
 	"github.com/alexhholmes/fredb/internal/base"
+	"github.com/alexhholmes/fredb/internal/directio"
 )
 
 // Freelist manages Free and pending pages for MVCC transaction isolation.
@@ -111,7 +112,7 @@ func (f *Freelist) Serialize(pages []*base.Page) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	buf := make([]byte, 0, base.PageSize*len(pages))
+	buf := directio.AlignedBlock(base.PageSize * len(pages))
 
 	// Write Free count
 	countBytes := make([]byte, 8)
