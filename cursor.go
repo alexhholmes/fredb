@@ -52,7 +52,7 @@ func (c *Cursor) First() ([]byte, []byte) {
 	c.stack = nil
 	c.valid = false
 
-	root := c.getRoot()
+	root := c.bucketRoot
 	if root == nil {
 		return nil, nil
 	}
@@ -98,7 +98,7 @@ func (c *Cursor) Last() ([]byte, []byte) {
 	c.stack = nil
 	c.valid = false
 
-	root := c.getRoot()
+	root := c.bucketRoot
 	if root == nil {
 		return nil, nil
 	}
@@ -158,7 +158,7 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 	c.stack = nil
 	c.valid = false
 
-	root := c.getRoot()
+	root := c.bucketRoot
 	if root == nil {
 		return nil, nil
 	}
@@ -433,18 +433,10 @@ func (c *Cursor) prevLeaf() error {
 	return nil
 }
 
-// getRoot returns the root to use for this cursor
-func (c *Cursor) getRoot() *base.Node {
-	if c.bucketRoot != nil {
-		return c.bucketRoot
-	}
-	return c.tx.root
-}
-
 // shouldSkip returns true if the key should be skipped (internal keys like __root__)
 func (c *Cursor) shouldSkip(key []byte) bool {
 	// If iterating root tree (bucket directory), skip __root__ internal bucket
-	root := c.getRoot()
+	root := c.bucketRoot
 	if root == c.tx.root {
 		return string(key) == "__root__"
 	}
