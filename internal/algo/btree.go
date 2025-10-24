@@ -277,17 +277,9 @@ func ExtractFirstFromSibling(sibling *base.Node) BorrowData {
 	return data
 }
 
-// InsertAt inserts value at index in slice with deep copy
-func InsertAt(slice [][]byte, index int, value []byte) [][]byte {
-	// Deep copy the value to prevent aliasing
-	valueCopy := make([]byte, len(value))
-	copy(valueCopy, value)
-	return append(slice[:index], append([][]byte{valueCopy}, slice[index:]...)...)
-}
-
-// InsertAtNoCopy inserts value at index in slice without deep copy
+// InsertAt inserts value at index in slice without deep copy
 // Caller must ensure value won't be modified externally
-func InsertAtNoCopy(slice [][]byte, index int, value []byte) [][]byte {
+func InsertAt(slice [][]byte, index int, value []byte) [][]byte {
 	return append(slice[:index], append([][]byte{value}, slice[index:]...)...)
 }
 

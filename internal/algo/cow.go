@@ -53,8 +53,8 @@ func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
 		borrowed := ExtractLastFromSibling(leftSibling)
 
 		// Insert at beginning of node (no copy needed - moving between COW'd nodes)
-		node.Keys = InsertAtNoCopy(node.Keys, 0, borrowed.Key)
-		node.Values = InsertAtNoCopy(node.Values, 0, borrowed.Value)
+		node.Keys = InsertAt(node.Keys, 0, borrowed.Key)
+		node.Values = InsertAt(node.Values, 0, borrowed.Value)
 		node.NumKeys++
 
 		// Remove borrowed key from left sibling
@@ -70,7 +70,7 @@ func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
 		borrowed := ExtractLastFromSibling(leftSibling)
 
 		// Move parent key to node (no copy needed - moving between COW'd nodes)
-		node.Keys = InsertAtNoCopy(node.Keys, 0, parent.Keys[parentKeyIdx])
+		node.Keys = InsertAt(node.Keys, 0, parent.Keys[parentKeyIdx])
 		node.Children = append([]base.PageID{borrowed.Child}, node.Children...)
 		node.NumKeys++
 
