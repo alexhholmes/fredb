@@ -8,7 +8,6 @@ import (
 
 	"github.com/alexhholmes/fredb/internal/algo"
 	"github.com/alexhholmes/fredb/internal/base"
-	"github.com/alexhholmes/fredb/internal/pager"
 )
 
 // Tx represents a transaction on the database.
@@ -33,9 +32,8 @@ type Tx struct {
 	deletes  map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	// Page tracking
-	pages     *btree.BTreeG[*base.Node]        // TX-LOCAL: uncommitted COW pages (write transactions only)
-	freed     map[base.PageID]struct{}         // Pages freed in this transaction (for freelist)
-	allocated map[base.PageID]pager.Allocation // Pages allocated in this transaction (false for freelist allocation, true for increment allocation)
+	pages *btree.BTreeG[*base.Node] // TX-LOCAL: uncommitted COW pages (write transactions only)
+	freed map[base.PageID]struct{}  // Pages freed in this transaction (for freelist)
 
 	// Reader tracking
 	unregister func() // Slot unregister function in readerSlots array (only for read-only transactions)
@@ -229,8 +227,8 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, errors.New("bucket already exists")
 	}
 
-	bucketRootID := tx.allocatePage()
-	bucketLeafID := tx.allocatePage()
+	bucketRootID := tx.db.pager.AssignPageID()
+	bucketLeafID := tx.db.pager.AssignPageID()
 
 	// Create bucket's leaf node (empty)
 	bucketLeaf := &base.Node{
@@ -489,7 +487,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root using tx.allocatePage()
-				newRootID := tx.allocatePage()
+				newRootID := tx.db.pager.AssignPageID()
 				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -519,7 +517,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root
-				newRootID := tx.allocatePage()
+				newRootID := tx.db.pager.AssignPageID()
 				newRoot2 := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -599,12 +597,11 @@ func (tx *Tx) Rollback() error {
 
 		tx.tryReleasePages()
 
-		// Return freelist pages back to freelist (fresh pages become holes)
-		for pageID, allocated := range tx.allocated {
-			if allocated == pager.FromIncrement {
-				tx.db.pager.FreePage(pageID)
-			}
-		}
+		// Free all allocated pages
+		tx.pages.Ascend(func(node *base.Node) bool {
+			tx.db.pager.FreePage(node.PageID)
+			return true
+		})
 	} else {
 		tx.unregister()
 		// Page release is lazy - next writer will handle it
@@ -622,10 +619,10 @@ func (tx *Tx) check() error {
 	return nil
 }
 
-// EnsureWritable ensures a Node is safe to modify in this transaction.
-// Performs COW only if the Node doesn't already belong to this transaction.
-// Returns a writable Node (either the original if already owned, or a Clone).
-func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
+// clone ensures a Node is safe to modify in this transaction. Performs COW only
+// if the Node doesn't already belong to this transaction. Returns a writable
+// Node (either the original if already owned, or a Clone).
+func (tx *Tx) clone(node *base.Node) (*base.Node, error) {
 	if cloned, exists := tx.pages.Get(node); exists {
 		return cloned, nil
 	}
@@ -633,7 +630,7 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	cloned := node.Clone()
 
 	// Put up cloned Node with new Page
-	cloned.PageID = tx.allocatePage()
+	cloned.PageID = tx.db.pager.AssignPageID()
 	cloned.Dirty = true
 
 	// Free the node page itself
@@ -644,13 +641,6 @@ func (tx *Tx) ensureWritable(node *base.Node) (*base.Node, error) {
 	tx.pages.ReplaceOrInsert(cloned)
 
 	return cloned, nil
-}
-
-// Allocates a new Page for this transaction.
-func (tx *Tx) allocatePage() base.PageID {
-	id, allocated := tx.db.pager.AssignPageID()
-	tx.allocated[id] = allocated
-	return id
 }
 
 // AddFreed adds a Page to the freed list, checking for duplicates first.
@@ -667,7 +657,7 @@ func (tx *Tx) addFreed(pageID base.PageID) {
 // splitChild performs COW on the child being split and allocates the new sibling
 func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.Node, []byte, []byte, error) {
 	// I/O: COW BEFORE any computation
-	child, err := tx.ensureWritable(child)
+	child, err := tx.clone(child)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -679,7 +669,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
-	nodeID := tx.allocatePage()
+	nodeID := tx.db.pager.AssignPageID()
 
 	// State: construct right node
 	node := &base.Node{
@@ -722,7 +712,7 @@ func (tx *Tx) loadNode(pageID base.PageID) (*base.Node, error) {
 func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, error) {
 	if node.IsLeaf() {
 		// COW before modifying leaf
-		n, err := tx.ensureWritable(node)
+		n, err := tx.clone(node)
 		if err != nil {
 			return nil, err
 		}
@@ -782,7 +772,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		}
 
 		// COW parent to insert middle key and update pointers
-		node, err = tx.ensureWritable(node)
+		node, err = tx.clone(node)
 		if err != nil {
 			return nil, err
 		}
@@ -828,7 +818,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		}
 
 		// COW parent to insert middle key and update pointers
-		node, err = tx.ensureWritable(node)
+		node, err = tx.clone(node)
 		if err != nil {
 			return nil, err
 		}
@@ -874,7 +864,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 	// If child was COW'd, update parent pointer
 	if child.PageID != oldChildID {
 		// COW parent to update child pointer
-		node, err = tx.ensureWritable(node)
+		node, err = tx.clone(node)
 		if err != nil {
 			return nil, err
 		}
@@ -917,7 +907,7 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	}
 
 	// COW parent to update child pointer
-	node, err = tx.ensureWritable(node)
+	node, err = tx.clone(node)
 	if err != nil {
 		return nil, err
 	}
@@ -941,7 +931,7 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 // deleteFromLeaf performs COW on the leaf before deleting
 func (tx *Tx) deleteFromLeaf(node *base.Node, idx int) (*base.Node, error) {
 	// COW before modifying leaf
-	node, err := tx.ensureWritable(node)
+	node, err := tx.clone(node)
 	if err != nil {
 		return nil, err
 	}
@@ -1022,17 +1012,17 @@ func (tx *Tx) fixUnderflow(parent *base.Node, childIdx int, child *base.Node) (*
 // borrowFromLeft borrows a key from left sibling through parent (COW)
 func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
-	node, err := tx.ensureWritable(node)
+	node, err := tx.clone(node)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	leftSibling, err = tx.ensureWritable(leftSibling)
+	leftSibling, err = tx.clone(leftSibling)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	parent, err = tx.ensureWritable(parent)
+	parent, err = tx.clone(parent)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1049,17 +1039,17 @@ func (tx *Tx) borrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx 
 // borrowFromRight borrows a key from right sibling through parent (COW)
 func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) (*base.Node, *base.Node, *base.Node, error) {
 	// COW all three nodes being modified
-	node, err := tx.ensureWritable(node)
+	node, err := tx.clone(node)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	rightSibling, err = tx.ensureWritable(rightSibling)
+	rightSibling, err = tx.clone(rightSibling)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	parent, err = tx.ensureWritable(parent)
+	parent, err = tx.clone(parent)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1077,19 +1067,19 @@ func (tx *Tx) borrowFromRight(node, rightSibling, parent *base.Node, parentKeyId
 // Returns (parent, merged, error) where merged=true if nodes were actually merged, false if redistributed
 func (tx *Tx) mergeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int) (*base.Node, bool, error) {
 	// COW left node (will receive merged content)
-	leftNode, err := tx.ensureWritable(leftNode)
+	leftNode, err := tx.clone(leftNode)
 	if err != nil {
 		return nil, false, err
 	}
 
 	// COW right node (may need it for redistribution)
-	rightNode, err = tx.ensureWritable(rightNode)
+	rightNode, err = tx.clone(rightNode)
 	if err != nil {
 		return nil, false, err
 	}
 
 	// COW parent (will have separator removed or updated)
-	parent, err = tx.ensureWritable(parent)
+	parent, err = tx.clone(parent)
 	if err != nil {
 		return nil, false, err
 	}

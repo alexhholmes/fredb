@@ -100,8 +100,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID, _ := pg.AssignPageID()
-		rootLeafID, _ := pg.AssignPageID()
+		rootPageID := pg.AssignPageID()
+		rootLeafID := pg.AssignPageID()
 
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
@@ -122,8 +122,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID, _ := pg.AssignPageID()
-		rootBucketLeafID, _ := pg.AssignPageID()
+		rootBucketRootID := pg.AssignPageID()
+		rootBucketLeafID := pg.AssignPageID()
 
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
@@ -305,12 +305,11 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			pages: btree.NewG[*base.Node](2, func(a, b *base.Node) bool {
 				return a.PageID < b.PageID
 			}),
-			acquired:  make(map[base.PageID]struct{}),
-			freed:     make(map[base.PageID]struct{}),
-			allocated: make(map[base.PageID]pager.Allocation),
-			deletes:   make(map[string]base.PageID),
-			done:      false,
-			buckets:   make(map[string]*Bucket),
+			acquired: make(map[base.PageID]struct{}),
+			freed:    make(map[base.PageID]struct{}),
+			deletes:  make(map[string]base.PageID),
+			done:     false,
+			buckets:  make(map[string]*Bucket),
 		}
 
 		// Register writer (atomic store)

@@ -23,13 +23,6 @@ const (
 	SyncOff
 )
 
-type Allocation int
-
-const (
-	FromFreelist Allocation = iota
-	FromIncrement
-)
-
 // Pager coordinates store, cache, meta, and freelist
 type Pager struct {
 	cache *cache.Cache     // Simple LRU cache
@@ -204,18 +197,18 @@ func NewPager(mode SyncMode, store *storage.Storage, cache *cache.Cache) (*Pager
 }
 
 // AssignPageID allocates a new Page (from freelist or grows file)
-func (p *Pager) AssignPageID() (base.PageID, Allocation) {
+func (p *Pager) AssignPageID() base.PageID {
 	// Try freelist first
 	id := p.freelist.Allocate()
 	if id != 0 {
-		return id, FromFreelist
+		return id
 	}
 
 	// Grow file - use atomic pages counter (includes uncommitted allocations)
 	// Atomically increment and get the new page ID
 	id = base.PageID(p.pages.Add(1) - 1)
 
-	return id, FromIncrement
+	return id
 }
 
 // FreePage adds a Page to the freelist

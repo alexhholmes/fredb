@@ -65,13 +65,13 @@ func (b *Bucket) Put(key, value []byte) error {
 			return err
 		}
 
-		newRootID := b.tx.allocatePage()
+		newRootID := b.tx.db.pager.AssignPageID()
 		if err != nil {
 			return err
 		}
 
 		b.root = algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
-		// Add new root to tx.pages immediately so ensureWritable can find it
+		// Add new root to tx.pages immediately so clone can find it
 		b.tx.pages.ReplaceOrInsert(b.root)
 	}
 
@@ -93,7 +93,7 @@ func (b *Bucket) Put(key, value []byte) error {
 			return err
 		}
 
-		newRootID := b.tx.allocatePage()
+		newRootID := b.tx.db.pager.AssignPageID()
 		if err != nil {
 			return err
 		}
