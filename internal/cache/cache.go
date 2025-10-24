@@ -2,7 +2,6 @@ package cache
 
 import (
 	"encoding/binary"
-	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/elastic/go-freelru"
@@ -43,13 +42,13 @@ func NewCache(size int, _ func(base.PageID, *base.Node)) *Cache {
 
 // Put adds a node to the cache, replacing any existing entry for the id.
 func (c *Cache) Put(pageID base.PageID, node *base.Node) {
-	c.lru.AddWithLifetime(pageID, node, 10000*time.Millisecond)
+	c.lru.Add(pageID, node)
 }
 
 // Get retrieves a node from the cache.
 // Returns (Node, true) on cache hit, (nil, false) on miss.
 func (c *Cache) Get(pageID base.PageID) (*base.Node, bool) {
-	if val, ok := c.lru.GetAndRefresh(pageID, 20000*time.Millisecond); ok {
+	if val, ok := c.lru.Get(pageID); ok {
 		return val, true
 	}
 	return nil, false
