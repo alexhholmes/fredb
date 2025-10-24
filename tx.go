@@ -692,33 +692,29 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 		// Check for update
 		if pos < int(cloned.NumKeys) && bytes.Equal(cloned.Keys[pos], key) {
-			// Make a copy of old value for rollback
+			// Check size before update (avoid preemptive rollback allocation)
 			oldValue := cloned.Values[pos]
-			oldValueCopy := make([]byte, len(oldValue))
-			copy(oldValueCopy, oldValue)
+			sizeDelta := len(value) - len(oldValue)
+			estimatedSize := cloned.Size() + sizeDelta
+
+			if estimatedSize > base.PageSize {
+				return nil, base.ErrPageOverflow
+			}
 
 			algo.ApplyLeafUpdate(cloned, pos, value)
-
-			// Check size after update
-			if err := cloned.CheckOverflow(); err != nil {
-				// Rollback: restore old value
-				cloned.Values[pos] = oldValueCopy
-				return nil, err
-			}
 			return cloned, nil
+		}
+
+		// Check size before insert (avoid preemptive rollback)
+		insertSize := base.LeafElementSize + len(key) + len(value)
+		estimatedSize := cloned.Size() + insertSize
+
+		if estimatedSize > base.PageSize {
+			return nil, base.ErrPageOverflow
 		}
 
 		// Insert new key-value using algo
 		algo.ApplyLeafInsert(cloned, pos, key, value)
-
-		// Check size after insertion
-		if err := cloned.CheckOverflow(); err != nil {
-			// Rollback: remove the inserted key/value
-			cloned.Keys = algo.RemoveAt(cloned.Keys, pos)
-			cloned.Values = algo.RemoveAt(cloned.Values, pos)
-			cloned.NumKeys--
-			return nil, err
-		}
 
 		return cloned, nil
 	}
@@ -744,24 +740,16 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		// COW parent to insert middle key and update pointers
 		node = tx.clone(node)
 
-		// Save old state for rollback
-		oldKeys := node.Keys
-		oldValues := node.Values
-		oldChildren := node.Children
-		oldNumKeys := node.NumKeys
+		// Check size before split (avoid preemptive rollback)
+		splitSize := base.BranchElementSize + len(midKey)
+		estimatedSize := node.Size() + splitSize
+
+		if estimatedSize > base.PageSize {
+			return nil, base.ErrPageOverflow
+		}
 
 		// Apply split to parent using algo
 		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
-
-		// Check size after modification
-		if err = node.CheckOverflow(); err != nil {
-			// Rollback: restore old state
-			node.Keys = oldKeys
-			node.Values = oldValues
-			node.Children = oldChildren
-			node.NumKeys = oldNumKeys
-			return nil, err
-		}
 
 		// Determine which child to use after split
 		if bytes.Compare(key, midKey) >= 0 {
@@ -787,24 +775,16 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		// COW parent to insert middle key and update pointers
 		node = tx.clone(node)
 
-		// Save old state for rollback
-		oldKeys := node.Keys
-		oldValues := node.Values
-		oldChildren := node.Children
-		oldNumKeys := node.NumKeys
+		// Check size before split (avoid preemptive rollback)
+		splitSize := base.BranchElementSize + len(midKey)
+		estimatedSize := node.Size() + splitSize
+
+		if estimatedSize > base.PageSize {
+			return nil, base.ErrPageOverflow
+		}
 
 		// Apply split to parent using algo
 		algo.ApplyChildSplit(node, i, leftChild, rightChild, midKey, midVal)
-
-		// Check size after modification
-		if err := node.CheckOverflow(); err != nil {
-			// Rollback: restore old state
-			node.Keys = oldKeys
-			node.Values = oldValues
-			node.Children = oldChildren
-			node.NumKeys = oldNumKeys
-			return nil, err
-		}
 
 		// Retry insert into correct child
 		if bytes.Compare(key, midKey) >= 0 {

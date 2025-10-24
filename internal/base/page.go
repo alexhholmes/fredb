@@ -71,7 +71,7 @@ type PageID uint64
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ Data Area (variable, packed from end backward, reserve last 8):     │
 // │   ← key[0] | key[1] | ... | key[N-1]        Children[0] (8 bytes)→  │
-// │   Elements grow forward →   Data grows backward ← (reserve end 8)   │
+// │   Elements grow forward →   Data grows backward ←                   │
 // │   BranchElement[0..N-1].ChildID stores Children[1..N]               │
 // └─────────────────────────────────────────────────────────────────────┘
 type Page struct {

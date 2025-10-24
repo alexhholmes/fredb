@@ -52,9 +52,9 @@ func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
 		// Extract last from left sibling
 		borrowed := ExtractLastFromSibling(leftSibling)
 
-		// Insert at beginning of node
-		node.Keys = InsertAt(node.Keys, 0, borrowed.Key)
-		node.Values = InsertAt(node.Values, 0, borrowed.Value)
+		// Insert at beginning of node (no copy needed - moving between COW'd nodes)
+		node.Keys = InsertAtNoCopy(node.Keys, 0, borrowed.Key)
+		node.Values = InsertAtNoCopy(node.Values, 0, borrowed.Value)
 		node.NumKeys++
 
 		// Remove borrowed key from left sibling
@@ -69,8 +69,8 @@ func BorrowFromLeft(node, leftSibling, parent *base.Node, parentKeyIdx int) {
 		// Branch borrow: traditional B-tree style
 		borrowed := ExtractLastFromSibling(leftSibling)
 
-		// Move parent key to node (at beginning)
-		node.Keys = InsertAt(node.Keys, 0, parent.Keys[parentKeyIdx])
+		// Move parent key to node (no copy needed - moving between COW'd nodes)
+		node.Keys = InsertAtNoCopy(node.Keys, 0, parent.Keys[parentKeyIdx])
 		node.Children = append([]base.PageID{borrowed.Child}, node.Children...)
 		node.NumKeys++
 
@@ -98,13 +98,9 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 		// Extract first from right sibling
 		borrowed := ExtractFirstFromSibling(rightSibling)
 
-		// Deep copy and append to end of node
-		keyCopy := make([]byte, len(borrowed.Key))
-		copy(keyCopy, borrowed.Key)
-		valCopy := make([]byte, len(borrowed.Value))
-		copy(valCopy, borrowed.Value)
-		node.Keys = append(node.Keys, keyCopy)
-		node.Values = append(node.Values, valCopy)
+		// Append to end of node (no copy needed - moving between COW'd nodes)
+		node.Keys = append(node.Keys, borrowed.Key)
+		node.Values = append(node.Values, borrowed.Value)
 		node.NumKeys++
 
 		// Remove borrowed key from right sibling
@@ -118,10 +114,8 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 		// Branch borrow: traditional B-tree style
 		borrowed := ExtractFirstFromSibling(rightSibling)
 
-		// Deep copy parent key and append to node
-		keyCopy := make([]byte, len(parent.Keys[parentKeyIdx]))
-		copy(keyCopy, parent.Keys[parentKeyIdx])
-		node.Keys = append(node.Keys, keyCopy)
+		// Append parent key to node (no copy needed - moving between COW'd nodes)
+		node.Keys = append(node.Keys, parent.Keys[parentKeyIdx])
 		node.Children = append(node.Children, borrowed.Child)
 		node.NumKeys++
 

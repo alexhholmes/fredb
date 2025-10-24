@@ -285,6 +285,12 @@ func InsertAt(slice [][]byte, index int, value []byte) [][]byte {
 	return append(slice[:index], append([][]byte{valueCopy}, slice[index:]...)...)
 }
 
+// InsertAtNoCopy inserts value at index in slice without deep copy
+// Caller must ensure value won't be modified externally
+func InsertAtNoCopy(slice [][]byte, index int, value []byte) [][]byte {
+	return append(slice[:index], append([][]byte{value}, slice[index:]...)...)
+}
+
 // RemoveAt removes element at index from slice
 func RemoveAt(slice [][]byte, index int) [][]byte {
 	return append(slice[:index], slice[index+1:]...)
