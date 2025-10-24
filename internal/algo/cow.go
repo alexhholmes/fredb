@@ -6,11 +6,9 @@ import (
 
 // ApplyLeafUpdate updates a key's value in leaf node
 // Assumes node is already writable (COW'd by caller)
-func ApplyLeafUpdate(node *base.Node, pos int, newValue []byte) {
+func ApplyLeafUpdate(node *base.Node, pos int, value []byte) {
 	// Deep copy the new value to prevent aliasing
-	valCopy := make([]byte, len(newValue))
-	copy(valCopy, newValue)
-	node.Values[pos] = valCopy
+	node.Values[pos] = value
 	node.Dirty = true
 }
 
