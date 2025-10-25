@@ -1,4 +1,4 @@
-package bench
+package main
 
 import (
 	"encoding/binary"
@@ -11,7 +11,7 @@ import (
 
 const (
 	BatchSize   = 10_000
-	TargetBytes = 100 * 1024 * 1024 * 1024 // 100GB
+	TargetBytes = 100 * 1024 * 1024 * 1024 // 10GB
 	ValueSize   = 1024                     // 1KB values
 )
 
