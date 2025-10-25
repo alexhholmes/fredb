@@ -80,18 +80,14 @@ func Open(path string, options ...Option) (*DB, error) {
 			return nil, err
 		}
 
-		root = &base.Node{
-			PageID: meta.RootPageID,
-			Dirty:  false,
-		}
-
-		if err := root.Deserialize(rootPage); err != nil {
+		root = &base.Node{}
+		if err = root.Deserialize(rootPage); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
 
 		// Bundle root with metadata and make visible atomically
-		if err := pg.PutSnapshot(meta, root); err != nil {
+		if err = pg.PutSnapshot(meta, root); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}

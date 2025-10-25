@@ -1,6 +1,7 @@
 package pager
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -308,11 +309,7 @@ func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, error) {
 		return nil, err
 	}
 
-	node := &base.Node{
-		PageID: pageID,
-		Dirty:  false,
-	}
-
+	node := &base.Node{}
 	if err = node.Deserialize(page); err != nil {
 		return nil, err
 	}
@@ -332,54 +329,66 @@ func (p *Pager) Commit(
 	txID uint64,
 ) error {
 	// Write all pages to disk
-	buf := p.store.GetBuffer()
-	defer p.store.PutBuffer(buf)
-
 	if pages.Len() == 1 {
+		buf := p.store.GetBuffer()
+		defer p.store.PutBuffer(buf)
+
 		// Special case: single page - avoid run logic
 		single, _ := pages.Min()
-		if err := p.WriteRun([]*base.Node{single}, buf, txID); err != nil {
+		if err := p.WriteRun([]*base.Node{single}, txID); err != nil {
 			return err
 		}
 	} else {
 		// Ascend the btree, forming contiguous runs of nodes to write at once
+		var wg sync.WaitGroup
 		var err error
+		errFunc := sync.OnceFunc(func() {
+			err = errors.New("write failed")
+		})
 		run := make([]*base.Node, 0, pages.Len())
 		pages.Ascend(func(item *base.Node) bool {
-			if len(run) == 0 {
-				run = append(run, item)
-				return true
-			}
-
 			// Check if current item is contiguous with last in run
-			last := run[len(run)-1]
-			if item.PageID == last.PageID+1 {
+			var last base.PageID
+			if len(run) > 0 {
+				last = run[len(run)-1].PageID
+			} else {
 				run = append(run, item)
-				return true
 			}
 
-			// Write current run to disk
-			err = p.WriteRun(run, buf, txID)
-			if err != nil {
-				return false
+			if item.PageID == last+1 {
+				run = append(run, item)
+			} else {
+				// Write current run to disk
+				runner := run
+				wg.Add(1)
+
+				go func() {
+					defer wg.Done()
+
+					err2 := p.WriteRun(runner, txID)
+					if err2 != nil {
+						errFunc()
+					}
+				}()
+
+				run = make([]*base.Node, 0, pages.Len()-len(run))
+				run = append(run, item)
+
+				run = run[:0]
 			}
 
-			// Start new run with current item
-			run = run[:0]
-			run = append(run, item)
 			return true
 		})
+
+		wg.Wait()
+
 		if err != nil {
 			return err
 		}
-
-		// Write any remaining run
-		if len(run) > 0 {
-			if err = p.WriteRun(run, buf, txID); err != nil {
-				return err
-			}
-		}
 	}
+
+	buf := p.store.GetBuffer()
+	defer p.store.PutBuffer(buf)
 
 	// Write root separately if dirty
 	if root != nil && root.Dirty {
@@ -432,9 +441,12 @@ func (p *Pager) Commit(
 	return nil
 }
 
-func (p *Pager) WriteRun(run []*base.Node, buf []byte, txID uint64) error {
+func (p *Pager) WriteRun(run []*base.Node, txID uint64) error {
 	// Write current run to disk
 	if len(run) == 1 {
+		buf := p.store.GetBuffer()
+		defer p.store.PutBuffer(buf)
+
 		node := run[0]
 		page := (*base.Page)(unsafe.Pointer(&buf[0]))
 		if err := node.Serialize(txID, page); err != nil {
