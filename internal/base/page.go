@@ -23,7 +23,7 @@ const (
 	BranchPageFlag uint16 = 0x02
 
 	PageHeaderSize    = 24 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxID(8)
-	LeafElementSize   = 16
+	LeafElementSize   = 8
 	BranchElementSize = 16
 
 	// MagicNumber for file format identification ("frdb" in hex)
@@ -36,26 +36,26 @@ type PageID uint64
 
 // Page is raw disk Page (4096 bytes)
 //
-// LEAF PAGE LAYOUT:
+// LEAF PAGE LAYOUT (CoW: consecutive KV pairs, forward growth):
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (24 bytes)                                                   │
 // │ PageID, Flags, NumKeys, Padding, TxID                               │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ LeafElement[0] (12 bytes)                                           │
-// │ KeyOffset, KeySize, ValueOffset, ValueSize, Reserved                │
+// │ LeafElement[0] (8 bytes)                                            │
+// │ KVOffset, KeySize, ValueSize, Reserved                              │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ LeafElement[1] (12 bytes)                                           │
+// │ LeafElement[1] (8 bytes)                                            │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ ...                                                                 │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ LeafElement[N-1] (12 bytes)                                         │
+// │ LeafElement[N-1] (8 bytes)                                          │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ Data Area (variable, packed from end backward):                     │
-// │   ← key[0] | value[0] | key[1] | value[1] | ... | key[N-1] | val[N] │
-// │   Elements grow forward →              Data grows backward ←        │
+// │ Data Area (consecutive KV pairs, forward growth):                   │
+// │   Key[0] | Value[0] | Key[1] | Value[1] | ... | Key[N-1] | Val[N] → │
+// │   Everything grows forward →                                        │
 // └─────────────────────────────────────────────────────────────────────┘
 //
-// BRANCH PAGE LAYOUT:
+// BRANCH PAGE LAYOUT (CoW: forward growth):
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (24 bytes)                                                   │
 // │ PageID, Flags, NumKeys, Padding, TxID                               │
@@ -69,9 +69,10 @@ type PageID uint64
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[N-1] (16 bytes)                                       │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ Data Area (variable, packed from end backward, reserve last 8):     │
-// │   ← key[0] | key[1] | ... | key[N-1]        Children[0] (8 bytes)→  │
-// │   Elements grow forward →   Data grows backward ←                   │
+// │ FirstChild (8 bytes) - Children[0]                                  │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Data Area (consecutive keys, forward growth):                       │
+// │   Key[0] | Key[1] | ... | Key[N-1] →                                │
 // │   BranchElement[0..N-1].ChildID stores Children[1..N]               │
 // └─────────────────────────────────────────────────────────────────────┘
 type Page struct {
@@ -89,13 +90,13 @@ type PageHeader struct {
 }
 
 // LeafElement represents metadata for a key-value pair in a leaf Page
-// Layout: [KeyOffset: 2][KeySize: 2][ValueOffset: 2][ValueSize: 2][Reserved: 8]
+// CoW model: key and value stored consecutively, value follows key immediately
+// Layout: [KVOffset: 2][KeySize: 2][ValueSize: 2][Reserved: 2]
 type LeafElement struct {
-	KeyOffset   uint16 // 2 bytes: offset from data area start
-	KeySize     uint16 // 2 bytes
-	ValueOffset uint16 // 2 bytes: offset from data area start
-	ValueSize   uint16 // 2 bytes
-	Reserved    uint64 // 8 bytes: unused (for future use or alignment)
+	KVOffset  uint16 // 2 bytes: offset to key start, value at KVOffset+KeySize
+	KeySize   uint16 // 2 bytes
+	ValueSize uint16 // 2 bytes
+	Reserved  uint16 // 2 bytes: unused (for future flags/metadata)
 }
 
 // BranchElement represents metadata for a routing key and child pointer in a branch Page
@@ -180,15 +181,17 @@ func (p *Page) GetValue(offset, size uint16) ([]byte, error) {
 	return p.Data[start:end], nil
 }
 
-// WriteBranchFirstChild writes the first child PageID to a fixed location at the end of the Page
+// WriteBranchFirstChild writes the first child PageID right after branch elements
 func (p *Page) WriteBranchFirstChild(childID PageID) {
-	offset := PageSize - 8
+	h := p.Header()
+	offset := PageHeaderSize + int(h.NumKeys)*BranchElementSize
 	*(*PageID)(unsafe.Pointer(&p.Data[offset])) = childID
 }
 
-// ReadBranchFirstChild reads the first child PageID from a fixed location at the end of the Page
+// ReadBranchFirstChild reads the first child PageID from right after branch elements
 func (p *Page) ReadBranchFirstChild() PageID {
-	offset := PageSize - 8
+	h := p.Header()
+	offset := PageHeaderSize + int(h.NumKeys)*BranchElementSize
 	return *(*PageID)(unsafe.Pointer(&p.Data[offset]))
 }
 
@@ -198,7 +201,8 @@ func (p *Page) dataAreaStart() int {
 	if h.Flags&LeafPageFlag != 0 {
 		return PageHeaderSize + int(h.NumKeys)*LeafElementSize
 	}
-	return PageHeaderSize + int(h.NumKeys)*BranchElementSize
+	// Branch: Header + Elements + FirstChild (8 bytes)
+	return PageHeaderSize + int(h.NumKeys)*BranchElementSize + 8
 }
 
 // MetaPage represents database metadata stored in pages 0 and 1

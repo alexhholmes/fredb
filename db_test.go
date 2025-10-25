@@ -2709,10 +2709,9 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert enough keys to fill a page and trigger split
-	// With size-based splitting, we need to insert until page overflows
-	// Small keys (~13 bytes) + values (~15 bytes) = ~32 bytes per entry (with overhead)
-	// 4KB page holds ~120 entries, so insert 130 to ensure split occurs
-	numKeys := 130
+	// With 8-byte LeafElement: 24 + 8*N + (9+12)*N = 4096 → N ≈ 140 entries per page
+	// Insert 160 to ensure split occurs
+	numKeys := 160
 
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)

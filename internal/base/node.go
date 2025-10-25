@@ -48,53 +48,49 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 	page.WriteHeader(header)
 
 	if n.Type() == LeafType {
-		// serialize leaf Node - pack from end backward
-		dataOffset := uint16(PageSize)
-		// Process in reverse order to pack from end
-		for i := int(n.NumKeys) - 1; i >= 0; i-- {
+		// serialize leaf Node - pack forward from dataAreaStart
+		dataOffset := uint16(page.dataAreaStart())
+		for i := 0; i < int(n.NumKeys); i++ {
 			key := n.Keys[i]
 			value := n.Values[i]
 
-			// Write value inline (at end)
-			dataOffset -= uint16(len(value))
-			copy(page.Data[dataOffset:], value)
-			valueOffset := dataOffset
-
-			// Write key before value
-			dataOffset -= uint16(len(key))
+			// Write key and value consecutively
+			kvOffset := dataOffset
 			copy(page.Data[dataOffset:], key)
-			keyOffset := dataOffset
+			dataOffset += uint16(len(key))
+			copy(page.Data[dataOffset:], value)
+			dataOffset += uint16(len(value))
 
 			elem := &LeafElement{
-				KeyOffset:   keyOffset,
-				KeySize:     uint16(len(key)),
-				ValueOffset: valueOffset,
-				ValueSize:   uint16(len(value)),
+				KVOffset:  kvOffset,
+				KeySize:   uint16(len(key)),
+				ValueSize: uint16(len(value)),
+				Reserved:  0,
 			}
 
 			page.WriteLeafElement(i, elem)
 		}
 	} else {
 		// serialize branch Node (B+ tree: only Keys, no Values)
-		// Write Children[0] at fixed location (last 8 bytes)
+		// Write Children[0] right after elements
 		if len(n.Children) > 0 {
 			page.WriteBranchFirstChild(n.Children[0])
 		}
 
-		// Pack Keys from end backward (reserve last 8 bytes for Children[0])
-		dataOffset := uint16(PageSize - 8)
-		// Process in reverse order to pack from end
-		for i := int(n.NumKeys) - 1; i >= 0; i-- {
+		// Pack Keys forward from dataAreaStart
+		dataOffset := uint16(page.dataAreaStart())
+		for i := 0; i < int(n.NumKeys); i++ {
 			key := n.Keys[i]
 
 			// Write key
-			dataOffset -= uint16(len(key))
+			keyOffset := dataOffset
 			copy(page.Data[dataOffset:], key)
+			dataOffset += uint16(len(key))
 
 			elem := &BranchElement{
-				KeyOffset: dataOffset,
+				KeyOffset: keyOffset,
 				KeySize:   uint16(len(key)),
-				Reserved:  0, // No Values in B+ tree branches
+				Reserved:  0,
 				ChildID:   n.Children[i+1],
 			}
 			page.WriteBranchElement(i, elem)
@@ -121,13 +117,17 @@ func (n *Node) Deserialize(p *Page) error {
 		for i := 0; i < int(n.NumKeys); i++ {
 			elem := elements[i]
 
-			// Copy keys to independent allocations
+			// Key at KVOffset, value immediately after
+			keyStart := elem.KVOffset
+			keyEnd := keyStart + elem.KeySize
 			n.Keys[i] = make([]byte, elem.KeySize)
-			copy(n.Keys[i], p.Data[elem.KeyOffset:elem.KeyOffset+elem.KeySize])
+			copy(n.Keys[i], p.Data[keyStart:keyEnd])
 
-			// Value stored inline in leaf page
+			// Value follows key consecutively
+			valueStart := keyEnd
+			valueEnd := valueStart + elem.ValueSize
 			n.Values[i] = make([]byte, elem.ValueSize)
-			copy(n.Values[i], p.Data[elem.ValueOffset:elem.ValueOffset+elem.ValueSize])
+			copy(n.Values[i], p.Data[valueStart:valueEnd])
 		}
 	} else {
 		// deserialize branch Node (B+ tree: only Keys, no Values)

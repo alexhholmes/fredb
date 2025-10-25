@@ -89,7 +89,7 @@ func TestPageHeaderByteLayout(t *testing.T) {
 func TestLeafElementAlignment(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, uintptr(16), unsafe.Sizeof(LeafElement{}), "LeafElement Size")
+	assert.Equal(t, uintptr(8), unsafe.Sizeof(LeafElement{}), "LeafElement Size")
 }
 
 func TestLeafElementByteLayout(t *testing.T) {
@@ -107,27 +107,24 @@ func TestLeafElementByteLayout(t *testing.T) {
 
 	// Write leaf element with known Values
 	elem := LeafElement{
-		KeyOffset:   0x1234,             // 2 bytes
-		KeySize:     0x5678,             // 2 bytes
-		ValueOffset: 0x9ABC,             // 2 bytes
-		ValueSize:   0xDEF0,             // 2 bytes
-		Reserved:    0x1122334455667788, // 8 bytes
+		KVOffset:  0x1234, // 2 bytes
+		KeySize:   0x5678, // 2 bytes
+		ValueSize: 0xDEF0, // 2 bytes
+		Reserved:  0x9ABC, // 2 bytes
 	}
 	page.WriteLeafElement(0, &elem)
 
 	// Verify actual byte layout starting at PageHeaderSize (little-endian)
 	offset := PageHeaderSize
 	expected := []byte{
-		// KeyOffset (2 bytes, little-endian)
+		// KVOffset (2 bytes, little-endian)
 		0x34, 0x12,
 		// KeySize (2 bytes, little-endian)
 		0x78, 0x56,
-		// ValueOffset (2 bytes, little-endian)
-		0xBC, 0x9A,
 		// ValueSize (2 bytes, little-endian)
 		0xF0, 0xDE,
-		// Reserved (8 bytes, little-endian)
-		0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+		// Reserved (2 bytes, little-endian)
+		0xBC, 0x9A,
 	}
 
 	for i, expectedByte := range expected {
@@ -148,22 +145,20 @@ func TestLeafElementRoundTrip(t *testing.T) {
 	}
 	page.WriteHeader(&header)
 
-	// Write leaf elements
+	// Write leaf elements (consecutive KV pairs)
 	elem1 := LeafElement{
-		KeyOffset:   0,
-		KeySize:     5,
-		ValueOffset: 5,
-		ValueSize:   10,
-		Reserved:    0,
+		KVOffset:  0,
+		KeySize:   5,
+		ValueSize: 10,
+		Reserved:  0,
 	}
 	page.WriteLeafElement(0, &elem1)
 
 	elem2 := LeafElement{
-		KeyOffset:   15,
-		KeySize:     3,
-		ValueOffset: 18,
-		ValueSize:   7,
-		Reserved:    0,
+		KVOffset:  15, // After first key+value (5+10)
+		KeySize:   3,
+		ValueSize: 7,
+		Reserved:  0,
 	}
 	page.WriteLeafElement(1, &elem2)
 
@@ -172,12 +167,11 @@ func TestLeafElementRoundTrip(t *testing.T) {
 
 	require.Len(t, elements, 2)
 
-	assert.Equal(t, elem1.KeyOffset, elements[0].KeyOffset, "elem[0].KeyOffset")
+	assert.Equal(t, elem1.KVOffset, elements[0].KVOffset, "elem[0].KVOffset")
 	assert.Equal(t, elem1.KeySize, elements[0].KeySize, "elem[0].KeySize")
-	assert.Equal(t, elem1.ValueOffset, elements[0].ValueOffset, "elem[0].ValueOffset")
 	assert.Equal(t, elem1.ValueSize, elements[0].ValueSize, "elem[0].ValueSize")
 
-	assert.Equal(t, elem2.KeyOffset, elements[1].KeyOffset, "elem[1].KeyOffset")
+	assert.Equal(t, elem2.KVOffset, elements[1].KVOffset, "elem[1].KVOffset")
 	assert.Equal(t, elem2.KeySize, elements[1].KeySize, "elem[1].KeySize")
 }
 
@@ -360,25 +354,25 @@ func TestGetKeyValue(t *testing.T) {
 
 	dataStart := page.dataAreaStart()
 
-	// Write leaf element with absolute offsets
+	// Write leaf element (consecutive KV)
 	elem := LeafElement{
-		KeyOffset:   uint16(dataStart),
-		KeySize:     5,
-		ValueOffset: uint16(dataStart + 5),
-		ValueSize:   10,
+		KVOffset:  uint16(dataStart),
+		KeySize:   5,
+		ValueSize: 10,
 	}
 	page.WriteLeafElement(0, &elem)
 
-	// Write actual key/value data in data area
+	// Write actual key/value data consecutively in data area
 	key := []byte("hello")
 	value := []byte("world12345")
 	copy(page.Data[dataStart:], key)
 	copy(page.Data[dataStart+5:], value)
 
 	// Read back using getKey/getValue
-	readKey, err := page.GetKey(elem.KeyOffset, elem.KeySize)
+	readKey, err := page.GetKey(elem.KVOffset, elem.KeySize)
 	require.NoError(t, err, "getKey()")
-	readValue, err := page.GetValue(elem.ValueOffset, elem.ValueSize)
+	valueOffset := elem.KVOffset + elem.KeySize
+	readValue, err := page.GetValue(valueOffset, elem.ValueSize)
 	require.NoError(t, err, "getValue()")
 
 	assert.Equal(t, string(key), string(readKey), "getKey()")
