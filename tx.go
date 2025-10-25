@@ -27,9 +27,8 @@ type Tx struct {
 	root *base.Node // Root Node at transaction start (stores bucket metadata, different from the `__root__` bucket root)
 
 	// Bucket tracking
-	buckets  map[string]*Bucket       // Cache of loaded buckets
-	acquired map[base.PageID]struct{} // Buckets acquired from pager (need release)
-	deletes  map[string]base.PageID   // Root pages of buckets deleted in this transaction, for background cleanup upon commit
+	buckets map[string]*Bucket     // Cache of loaded buckets
+	deletes map[string]base.PageID // Root pages of buckets deleted in this transaction, for background cleanup upon commit
 
 	// Page tracking
 	pages *btree.BTreeG[*base.Node] // TX-LOCAL: uncommitted COW pages (write transactions only)
@@ -179,12 +178,10 @@ func (tx *Tx) Bucket(name []byte) *Bucket {
 	// This must be released on rollback or commit.
 	// Exception: __root__ bucket is never deleted, so no need to track it
 	if string(name) != "__root__" {
-		acquired := tx.db.pager.AcquireBucket(bucket.rootID)
-		if !acquired {
+		bucket.acquired = tx.db.pager.AcquireBucket(bucket.rootID)
+		if !bucket.acquired {
 			return nil
 		}
-		// Track that we acquired this bucket (for later release)
-		tx.acquired[bucket.rootID] = struct{}{}
 	}
 
 	tx.buckets[string(name)] = bucket
@@ -556,8 +553,10 @@ func (tx *Tx) Commit() error {
 	// This must happen AFTER releasing DeletedMu to avoid deadlock in ReleaseBucket()
 	// Only release buckets that were actually acquired (not newly created ones)
 	tx.tryReleasePages()
-	for pageID := range tx.acquired {
-		tx.db.pager.ReleaseBucket(pageID, tx.freeTree)
+	for _, bucket := range tx.buckets {
+		if bucket.acquired {
+			tx.db.pager.ReleaseBucket(bucket.rootID, tx.freeTree)
+		}
 	}
 
 	return nil
@@ -574,8 +573,10 @@ func (tx *Tx) Rollback() error {
 
 	// Release all acquired buckets (both read and write transactions)
 	// Only release buckets that were actually acquired (not newly created ones)
-	for pageID := range tx.acquired {
-		tx.db.pager.ReleaseBucket(pageID, tx.freeTree)
+	for _, bucket := range tx.buckets {
+		if bucket.acquired {
+			tx.db.pager.ReleaseBucket(bucket.rootID, tx.freeTree)
+		}
 	}
 
 	// Remove from DB tracking

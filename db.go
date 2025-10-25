@@ -305,11 +305,10 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 			pages: btree.NewG[*base.Node](2, func(a, b *base.Node) bool {
 				return a.PageID < b.PageID
 			}),
-			acquired: make(map[base.PageID]struct{}),
-			freed:    make(map[base.PageID]struct{}),
-			deletes:  make(map[string]base.PageID),
-			done:     false,
-			buckets:  make(map[string]*Bucket),
+			freed:   make(map[base.PageID]struct{}),
+			deletes: make(map[string]base.PageID),
+			done:    false,
+			buckets: make(map[string]*Bucket),
 		}
 
 		// Register writer (atomic store)
@@ -328,7 +327,6 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		txID:     snapshot.Meta.TxID, // Readers use committed txnID as snapshot
 		writable: false,
 		root:     snapshot.Root, // Atomic snapshot of root
-		acquired: make(map[base.PageID]struct{}),
 		buckets:  make(map[string]*Bucket),
 		done:     false,
 	}

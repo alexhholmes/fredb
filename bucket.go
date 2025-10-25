@@ -17,6 +17,7 @@ type Bucket struct {
 	name     []byte
 	sequence uint64
 	writable bool
+	acquired bool
 }
 
 // Get retrieves the value for a key from this bucket
