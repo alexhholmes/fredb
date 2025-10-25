@@ -42,7 +42,7 @@ func main() {
 	recCount := uint64(0)
 
 	for recCount < uint64(totalRecords) {
-		err := db.Update(func(tx *fredb.Tx) error {
+		err = db.Update(func(tx *fredb.Tx) error {
 			b := tx.Bucket([]byte("bench"))
 			if b == nil {
 				var err error
