@@ -135,7 +135,8 @@ func BorrowFromRight(node, rightSibling, parent *base.Node, parentKeyIdx int) {
 
 // MergeNodes combines right node into left node
 // For branch nodes, includes separator key from parent
-// Assumes left node is already writable
+// Assumes left node is already writable (CoW'd by caller)
+// Assumes right node is CoW'd ([]byte backing arrays are immutable)
 // Does NOT update parent - caller must call ApplyBranchRemoveSeparator
 func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 	// Determine node type by checking for children (more reliable than Type())
@@ -143,17 +144,11 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 	hasChildren := len(leftNode.Children) > 0
 
 	if hasChildren {
-		// Branch node: pull down separator key (deep copy)
-		sepCopy := make([]byte, len(separatorKey))
-		copy(sepCopy, separatorKey)
-		leftNode.Keys = append(leftNode.Keys, sepCopy)
+		// Branch node: pull down separator key (shallow copy - CoW'd parent)
+		leftNode.Keys = append(leftNode.Keys, separatorKey)
 
-		// Deep copy keys from right node
-		for _, key := range rightNode.Keys {
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			leftNode.Keys = append(leftNode.Keys, keyCopy)
-		}
+		// Shallow copy keys from right node (already CoW'd, immutable)
+		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
 
 		// Always clear Values for branch nodes (defense against corruption)
 		leftNode.Values = nil
@@ -161,17 +156,9 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 		// Merge children pointers (PageIDs are copy-by-value)
 		leftNode.Children = append(leftNode.Children, rightNode.Children...)
 	} else {
-		// Leaf node: no separator, deep copy keys and values from right
-		for _, key := range rightNode.Keys {
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			leftNode.Keys = append(leftNode.Keys, keyCopy)
-		}
-		for _, val := range rightNode.Values {
-			valCopy := make([]byte, len(val))
-			copy(valCopy, val)
-			leftNode.Values = append(leftNode.Values, valCopy)
-		}
+		// Leaf node: no separator, shallow copy keys and values (already CoW'd)
+		leftNode.Keys = append(leftNode.Keys, rightNode.Keys...)
+		leftNode.Values = append(leftNode.Values, rightNode.Values...)
 	}
 
 	// Update left node's key count
@@ -230,23 +217,15 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 		return
 	}
 
-	// Deep copy keys to prevent aliasing with split sibling
+	// Shallow copy keys (node is already CoW'd, []byte backing arrays are immutable)
 	leftKeys := make([][]byte, sp.LeftCount)
-	for i := 0; i < sp.LeftCount; i++ {
-		keyCopy := make([]byte, len(node.Keys[i]))
-		copy(keyCopy, node.Keys[i])
-		leftKeys[i] = keyCopy
-	}
+	copy(leftKeys, node.Keys[:sp.LeftCount])
 	node.Keys = leftKeys
 
 	if node.Type() == base.LeafType {
-		// Deep copy values to prevent aliasing with split sibling
+		// Shallow copy values (node is already CoW'd, []byte backing arrays are immutable)
 		leftVals := make([][]byte, sp.LeftCount)
-		for i := 0; i < sp.LeftCount; i++ {
-			valCopy := make([]byte, len(node.Values[i]))
-			copy(valCopy, node.Values[i])
-			leftVals[i] = valCopy
-		}
+		copy(leftVals, node.Values[:sp.LeftCount])
 		node.Values = leftVals
 	} else {
 		node.Values = nil
