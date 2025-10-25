@@ -7,7 +7,6 @@ import (
 // ApplyLeafUpdate updates a key's value in leaf node
 // Assumes node is already writable (COW'd by caller)
 func ApplyLeafUpdate(node *base.Node, pos int, value []byte) {
-	// Deep copy the new value to prevent aliasing
 	node.Values[pos] = value
 	node.Dirty = true
 }

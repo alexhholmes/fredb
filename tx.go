@@ -694,8 +694,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		// Check for update
 		if pos < int(cloned.NumKeys) && bytes.Equal(cloned.Keys[pos], key) {
 			// Check size before update (avoid preemptive rollback allocation)
-			oldValue := cloned.Values[pos]
-			sizeDelta := len(value) - len(oldValue)
+			sizeDelta := len(value) - len(cloned.Values[pos])
 			estimatedSize := cloned.Size() + sizeDelta
 
 			if estimatedSize > base.PageSize {
@@ -703,6 +702,7 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 			}
 
 			algo.ApplyLeafUpdate(cloned, pos, value)
+
 			return cloned, nil
 		}
 

@@ -8,11 +8,11 @@ import (
 	"github.com/alexhholmes/fredb/internal/base"
 )
 
-const searchThreshold = 32
+const SearchThreshold = 32
 
 // FindChildIndex returns the index of child pointer to follow for key
 func FindChildIndex(node *base.Node, key []byte) int {
-	if node.NumKeys < searchThreshold {
+	if node.NumKeys < SearchThreshold {
 		i := 0
 		for i < int(node.NumKeys) && bytes.Compare(key, node.Keys[i]) >= 0 {
 			i++
@@ -31,7 +31,7 @@ func FindKeyInLeaf(node *base.Node, key []byte) int {
 		return -1
 	}
 
-	if node.NumKeys < searchThreshold {
+	if node.NumKeys < SearchThreshold {
 		for i := 0; i < int(node.NumKeys); i++ {
 			if bytes.Equal(key, node.Keys[i]) {
 				return i
@@ -51,7 +51,7 @@ func FindKeyInLeaf(node *base.Node, key []byte) int {
 
 // FindInsertPosition returns position to insert key in leaf
 func FindInsertPosition(node *base.Node, key []byte) int {
-	if node.NumKeys < searchThreshold {
+	if node.NumKeys < SearchThreshold {
 		pos := 0
 		for pos < int(node.NumKeys) && bytes.Compare(key, node.Keys[pos]) > 0 {
 			pos++
@@ -66,7 +66,7 @@ func FindInsertPosition(node *base.Node, key []byte) int {
 
 // FindDeleteChildIndex returns child index for deletion in branch node
 func FindDeleteChildIndex(node *base.Node, key []byte) int {
-	if node.NumKeys < searchThreshold {
+	if node.NumKeys < SearchThreshold {
 		idx := 0
 		for idx < int(node.NumKeys) && bytes.Compare(key, node.Keys[idx]) >= 0 {
 			idx++
@@ -203,7 +203,7 @@ func CalculateSplitPointWithHint(node *base.Node, insertKey []byte, hint SplitHi
 	}
 }
 
-// ExtractRightPortion copies right portion data (read-only on input)
+// ExtractRightPortion extracts right portion data (shallow copy - shares []byte backing arrays)
 func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals [][]byte, children []base.PageID) {
 	// Handle special case: Mid=-1 means right gets everything (sp.RightCount=1 for single key)
 	startIdx := sp.Mid + 1
@@ -213,17 +213,13 @@ func ExtractRightPortion(node *base.Node, sp SplitPoint) (keys [][]byte, vals []
 
 	keys = make([][]byte, 0, sp.RightCount)
 	for i := startIdx; i < len(node.Keys); i++ {
-		keyCopy := make([]byte, len(node.Keys[i]))
-		copy(keyCopy, node.Keys[i])
-		keys = append(keys, keyCopy)
+		keys = append(keys, node.Keys[i])
 	}
 
 	if node.Type() == base.LeafType {
 		vals = make([][]byte, 0, sp.RightCount)
 		for i := startIdx; i < len(node.Values); i++ {
-			valCopy := make([]byte, len(node.Values[i]))
-			copy(valCopy, node.Values[i])
-			vals = append(vals, valCopy)
+			vals = append(vals, node.Values[i])
 		}
 	}
 
