@@ -313,13 +313,13 @@ func TestDataAreaStart(t *testing.T) {
 			name:     "branch with 0 Keys",
 			flags:    BranchPageFlag,
 			numKeys:  0,
-			expected: PageHeaderSize,
+			expected: PageHeaderSize + 8, // +8 for FirstChild
 		},
 		{
 			name:     "branch with 5 Keys",
 			flags:    BranchPageFlag,
 			numKeys:  5,
-			expected: PageHeaderSize + 5*BranchElementSize,
+			expected: PageHeaderSize + 5*BranchElementSize + 8, // +8 for FirstChild
 		},
 	}
 
