@@ -2139,7 +2139,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
+	assert.Equal(t, uint32(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
 	assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Empty tree root should be branch")
 }
 
@@ -2263,7 +2263,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	}
 
 	// Final tree should be empty
-	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
+	assert.Equal(t, uint32(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
 }
 
 // Stress Tests
@@ -2384,7 +2384,7 @@ func TestSingleKey(t *testing.T) {
 	child, err := tx.load(db.pager.GetSnapshot().Root.Children[0])
 	assert.NoError(t, err)
 	assert.Equal(t, base.LeafType, child.Type(), "Child should be a leaf")
-	assert.Equal(t, uint16(1), child.NumKeys, "Child should have exactly 1 key")
+	assert.Equal(t, uint32(1), child.NumKeys, "Child should have exactly 1 key")
 }
 
 func TestDuplicateKeys(t *testing.T) {
@@ -2769,7 +2769,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 	}
 
 	assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Final root should be branch")
-	assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Final root should have 0 Keys")
+	assert.Equal(t, uint32(0), db.pager.GetSnapshot().Root.NumKeys, "Final root should have 0 Keys")
 }
 
 func TestBoundarySiblingBorrowVsMerge(t *testing.T) {

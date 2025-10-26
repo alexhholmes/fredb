@@ -162,7 +162,7 @@ func MergeNodes(leftNode, rightNode *base.Node, separatorKey []byte) {
 	}
 
 	// Update left node's key count
-	leftNode.NumKeys = uint16(len(leftNode.Keys))
+	leftNode.NumKeys = uint32(len(leftNode.Keys))
 	leftNode.Dirty = true
 }
 
@@ -234,7 +234,7 @@ func TruncateLeft(node *base.Node, sp SplitPoint) {
 		node.Children = leftChildren
 	}
 
-	node.NumKeys = uint16(sp.LeftCount)
+	node.NumKeys = uint32(sp.LeftCount)
 	node.Dirty = true
 }
 
@@ -280,14 +280,14 @@ func RedistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int)
 		}
 
 		// Split at calculated point
-		leftNode.NumKeys = uint16(leftCount)
+		leftNode.NumKeys = uint32(leftCount)
 		leftNode.Keys = make([][]byte, leftCount)
 		leftNode.Values = make([][]byte, leftCount)
 		copy(leftNode.Keys, allKeys[:leftCount])
 		copy(leftNode.Values, allValues[:leftCount])
 
 		rightCount := totalKeys - leftCount
-		rightNode.NumKeys = uint16(rightCount)
+		rightNode.NumKeys = uint32(rightCount)
 		rightNode.Keys = make([][]byte, rightCount)
 		rightNode.Values = make([][]byte, rightCount)
 		copy(rightNode.Keys, allKeys[leftCount:])
@@ -350,14 +350,14 @@ func RedistributeNodes(leftNode, rightNode, parent *base.Node, parentKeyIdx int)
 		// Split keys (separator goes to parent)
 		newSeparator := allKeys[splitIdx]
 
-		leftNode.NumKeys = uint16(splitIdx)
+		leftNode.NumKeys = uint32(splitIdx)
 		leftNode.Keys = make([][]byte, splitIdx)
 		leftNode.Children = make([]base.PageID, splitIdx+1)
 		copy(leftNode.Keys, allKeys[:splitIdx])
 		copy(leftNode.Children, allChildren[:splitIdx+1])
 
 		rightCount := totalKeys - splitIdx - 1 // -1 because separator goes to parent
-		rightNode.NumKeys = uint16(rightCount)
+		rightNode.NumKeys = uint32(rightCount)
 		rightNode.Keys = make([][]byte, rightCount)
 		rightNode.Children = make([]base.PageID, rightCount+1)
 		copy(rightNode.Keys, allKeys[splitIdx+1:])

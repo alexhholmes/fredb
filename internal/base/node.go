@@ -22,7 +22,7 @@ type Node struct {
 	Dirty  bool
 
 	// Decoded Node data
-	NumKeys  uint16
+	NumKeys  uint32
 	Keys     [][]byte // Allocated copies
 	Values   [][]byte // If nil, this is a branch Node
 	Children []PageID

@@ -22,8 +22,7 @@ func TestPageHeaderAlignment(t *testing.T) {
 	var h PageHeader
 	assert.Equal(t, uintptr(0), unsafe.Offsetof(h.PageID), "PageID offset")
 	assert.Equal(t, uintptr(8), unsafe.Offsetof(h.Flags), "Flags offset")
-	assert.Equal(t, uintptr(10), unsafe.Offsetof(h.NumKeys), "NumKeys offset")
-	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.Padding), "Padding offset")
+	assert.Equal(t, uintptr(12), unsafe.Offsetof(h.NumKeys), "NumKeys offset")
 	assert.Equal(t, uintptr(16), unsafe.Offsetof(h.TxnID), "TxID offset")
 }
 
@@ -37,7 +36,6 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 		PageID:  42,
 		Flags:   LeafPageFlag,
 		NumKeys: 10,
-		Padding: 99,
 		TxnID:   123,
 	}
 	page.WriteHeader(&writeHdr)
@@ -48,7 +46,6 @@ func TestPageHeaderRoundTrip(t *testing.T) {
 	assert.Equal(t, writeHdr.PageID, readHdr.PageID, "PageID")
 	assert.Equal(t, writeHdr.Flags, readHdr.Flags, "Flags")
 	assert.Equal(t, writeHdr.NumKeys, readHdr.NumKeys, "NumKeys")
-	assert.Equal(t, writeHdr.Padding, readHdr.Padding, "Padding")
 	assert.Equal(t, writeHdr.TxnID, readHdr.TxnID, "TxID")
 }
 
@@ -60,9 +57,8 @@ func TestPageHeaderByteLayout(t *testing.T) {
 	// Write Header with known Values
 	hdr := PageHeader{
 		PageID:  0x0123456789ABCDEF, // 8 bytes
-		Flags:   0x1234,             // 2 bytes
-		NumKeys: 0x5678,             // 2 bytes
-		Padding: 0x9ABCDEF0,         // 4 bytes
+		Flags:   0x12345678,         // 4 bytes
+		NumKeys: 0x9ABCDEF0,         // 4 bytes
 		TxnID:   0x1122334455667788, // 8 bytes
 	}
 	page.WriteHeader(&hdr)
@@ -71,11 +67,9 @@ func TestPageHeaderByteLayout(t *testing.T) {
 	expected := []byte{
 		// PageID (8 bytes, little-endian)
 		0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
-		// Flags (2 bytes, little-endian)
-		0x34, 0x12,
-		// NumKeys (2 bytes, little-endian)
-		0x78, 0x56,
-		// Padding (4 bytes, little-endian)
+		// Flags (4 bytes, little-endian)
+		0x78, 0x56, 0x34, 0x12,
+		// NumKeys (4 bytes, little-endian)
 		0xF0, 0xDE, 0xBC, 0x9A,
 		// TxID (8 bytes, little-endian)
 		0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
@@ -293,8 +287,8 @@ func TestDataAreaStart(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		flags    uint16
-		numKeys  uint16
+		flags    uint32
+		numKeys  uint32
 		expected int
 	}{
 		{

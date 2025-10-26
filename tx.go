@@ -667,7 +667,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	node := &base.Node{
 		PageID:   nodeID,
 		Dirty:    true,
-		NumKeys:  uint16(sp.RightCount),
+		NumKeys:  uint32(sp.RightCount),
 		Keys:     rightKeys,
 		Values:   rightVals,
 		Children: rightChildren,

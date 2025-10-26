@@ -19,10 +19,11 @@ var (
 const (
 	PageSize = 4096
 
-	LeafPageFlag   uint16 = 0x01
-	BranchPageFlag uint16 = 0x02
+	LeafPageFlag     uint32 = 0x01
+	BranchPageFlag   uint32 = 0x02
+	OverflowPageFlag uint32 = 0x04
 
-	PageHeaderSize    = 24 // PageID(8) + Flags(2) + NumKeys(2) + Padding(4) + TxID(8)
+	PageHeaderSize    = 24 // PageID(8) + Flags(4) + NumKeys(4) + TxID(8)
 	LeafElementSize   = 8
 	BranchElementSize = 16
 
@@ -39,7 +40,7 @@ type PageID uint64
 // LEAF PAGE LAYOUT (CoW: consecutive KV pairs, forward growth):
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (24 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxID                               │
+// │ PageID, Flags, NumKeys, TxID                                        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ LeafElement[0] (8 bytes)                                            │
 // │ KVOffset, KeySize, ValueSize, Reserved                              │
@@ -58,7 +59,7 @@ type PageID uint64
 // BRANCH PAGE LAYOUT (CoW: forward growth):
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (24 bytes)                                                   │
-// │ PageID, Flags, NumKeys, Padding, TxID                               │
+// │ PageID, Flags, NumKeys, TxID                                        │
 // ├─────────────────────────────────────────────────────────────────────┤
 // │ BranchElement[0] (16 bytes)                                         │
 // │ KeyOffset, KeySize, Reserved, ChildID                               │
@@ -75,17 +76,26 @@ type PageID uint64
 // │   Key[0] | Key[1] | ... | Key[N-1] →                                │
 // │   BranchElement[0..N-1].ChildID stores Children[1..N]               │
 // └─────────────────────────────────────────────────────────────────────┘
+//
+// OVERFLOW PAGE LAYOUT:
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ Header (24 bytes)                                                   │
+// │ PageID, Flags (Overflow Page Flag Set), NumKeys (Always 0), TxID    │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Raw Data Payload for Large Value                                    │
+// ├─────────────────────────────────────────────────────────────────────┤
+// │ Fixed Size Next Overflow PageID (8 bytes)                           │
+// └─────────────────────────────────────────────────────────────────────┘
 type Page struct {
 	Data [PageSize]byte
 }
 
 // PageHeader represents the fixed-Size Header at the start of each Page
-// Layout: [PageID: 8][Flags: 2][NumKeys: 2][Padding: 4][TxID: 8]
+// Layout: [PageID: 8][Flags: 4][NumKeys: 4][TxID: 8]
 type PageHeader struct {
 	PageID  PageID // 8 bytes
-	Flags   uint16 // 2 bytes: leaf/branch
-	NumKeys uint16 // 2 bytes: number of key-value pairs or keys
-	Padding uint32 // 4 bytes: unused (for future use or alignment)
+	Flags   uint32 // 4 bytes: leaf/branch/overflow
+	NumKeys uint32 // 4 bytes: number of key-value pairs or keys
 	TxnID   uint64 // 8 bytes - transaction that committed this Page version
 }
 

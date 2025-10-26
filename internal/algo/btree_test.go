@@ -15,7 +15,7 @@ var _ = flag.Bool("slow", false, "run slow tests")
 // Helper to create a test node
 func makeLeafNode(keys, values [][]byte) *base.Node {
 	return &base.Node{
-		NumKeys: uint16(len(keys)),
+		NumKeys: uint32(len(keys)),
 		Keys:    keys,
 		Values:  values,
 	}
@@ -23,7 +23,7 @@ func makeLeafNode(keys, values [][]byte) *base.Node {
 
 func makeBranchNode(keys [][]byte, children []base.PageID) *base.Node {
 	return &base.Node{
-		NumKeys:  uint16(len(keys)),
+		NumKeys:  uint32(len(keys)),
 		Keys:     keys,
 		Children: children,
 	}

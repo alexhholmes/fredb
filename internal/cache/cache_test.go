@@ -62,7 +62,7 @@ func TestPageCacheReplacement(t *testing.T) {
 	// Should retrieve the first version
 	retrieved, hit := cache.Get(base.PageID(1))
 	assert.True(t, hit, "Expected cache hit")
-	assert.Equal(t, uint16(0), retrieved.NumKeys, "Expected NumKeys=0")
+	assert.Equal(t, uint32(0), retrieved.NumKeys, "Expected NumKeys=0")
 
 	// Replace Page 1 with new version
 	node2 := makeTestNode(base.PageID(1))
@@ -72,7 +72,7 @@ func TestPageCacheReplacement(t *testing.T) {
 	// Should now see the new version
 	retrieved, hit = cache.Get(base.PageID(1))
 	assert.True(t, hit, "Expected cache hit")
-	assert.Equal(t, uint16(5), retrieved.NumKeys, "Expected NumKeys=5")
+	assert.Equal(t, uint32(5), retrieved.NumKeys, "Expected NumKeys=5")
 
 	// Size should still be 1 (replaced, not added)
 	assert.Equal(t, 1, cache.Size())

@@ -217,7 +217,7 @@ func (p *Pager) Free(id base.PageID) {
 	p.freelist.Free(id)
 }
 
-// TrackWrite updates pagesOnDisk after writing a page externally (not via WriteRun)
+// TrackWrite updates pagesOnDisk after writing a page externally
 func (p *Pager) TrackWrite(pageID base.PageID) {
 	for {
 		old := p.pagesOnDisk.Load()
@@ -312,6 +312,11 @@ func (p *Pager) LoadNode(pageID base.PageID) (*base.Node, error) {
 	node := &base.Node{}
 	if err = node.Deserialize(page); err != nil {
 		return nil, err
+	}
+
+	// Sanity check
+	if pageID != node.PageID {
+		panic(fmt.Sprintf("invalid pageID: %d, expected %d", pageID, node.PageID))
 	}
 
 	// Cache and return

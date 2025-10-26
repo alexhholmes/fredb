@@ -32,7 +32,7 @@ func newLeafNode(keys, values [][]byte) *base.Node {
 	return &base.Node{
 		PageID:  1,
 		Dirty:   false,
-		NumKeys: uint16(len(keys)),
+		NumKeys: uint32(len(keys)),
 		Keys:    keys,
 		Values:  values,
 	}
@@ -41,7 +41,7 @@ func newLeafNode(keys, values [][]byte) *base.Node {
 // Helper: create branch node for testing
 func newBranchNode(keys [][]byte, children []base.PageID) *base.Node {
 	return &base.Node{
-		NumKeys:  uint16(len(keys)),
+		NumKeys:  uint32(len(keys)),
 		Keys:     keys,
 		Children: children,
 		Values:   nil,
@@ -63,7 +63,7 @@ func TestApplyLeafUpdate_BasicUpdate(t *testing.T) {
 	assert.Equal(t, []byte("v1"), node.Values[0], "Values[0] should remain unchanged")
 	assert.Equal(t, []byte("v3"), node.Values[2], "Values[2] should remain unchanged")
 	assert.True(t, node.Dirty, "node should be marked dirty")
-	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should remain 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "NumKeys should remain 3")
 	expectedKeys := [][]byte{[]byte("apple"), []byte("banana"), []byte("cherry")}
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should remain unchanged")
 }
@@ -79,7 +79,7 @@ func TestApplyLeafUpdate_FirstPosition(t *testing.T) {
 	assert.Equal(t, []byte("new-val1"), node.Values[0], "Values[0] should be updated")
 	assert.Equal(t, []byte("val2"), node.Values[1], "Values[1] should remain unchanged")
 	assert.True(t, node.Dirty, "node should be marked dirty")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should remain 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should remain 2")
 }
 
 func TestApplyLeafUpdate_LastPosition(t *testing.T) {
@@ -106,7 +106,7 @@ func TestApplyLeafUpdate_EmptyValue(t *testing.T) {
 
 	assert.Equal(t, []byte(""), node.Values[0], "Values[0] should be empty")
 	assert.True(t, node.Dirty, "node should be marked dirty")
-	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should remain 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "NumKeys should remain 1")
 }
 
 // ApplyLeafInsert Tests
@@ -124,7 +124,7 @@ func TestApplyLeafInsert_Middle(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b', 'c']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2', 'v3']")
-	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "NumKeys should be 3")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -141,7 +141,7 @@ func TestApplyLeafInsert_Beginning(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b', 'c']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2', 'v3']")
-	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "NumKeys should be 3")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -158,7 +158,7 @@ func TestApplyLeafInsert_End(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b', 'c']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2', 'v3']")
-	assert.Equal(t, uint16(3), node.NumKeys, "NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "NumKeys should be 3")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -175,7 +175,7 @@ func TestApplyLeafInsert_EmptyNode(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['first']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['value1']")
-	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "NumKeys should be 1")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -192,7 +192,7 @@ func TestApplyLeafInsert_SingleElement(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2']")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -211,7 +211,7 @@ func TestApplyLeafDelete_Middle(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'c']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v3']")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -228,7 +228,7 @@ func TestApplyLeafDelete_First(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['b', 'c']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v2', 'v3']")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -245,7 +245,7 @@ func TestApplyLeafDelete_Last(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a', 'b']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1', 'v2']")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -262,7 +262,7 @@ func TestApplyLeafDelete_OnlyElement(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be empty")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be empty")
-	assert.Equal(t, uint16(0), node.NumKeys, "NumKeys should be 0")
+	assert.Equal(t, uint32(0), node.NumKeys, "NumKeys should be 0")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -279,7 +279,7 @@ func TestApplyLeafDelete_DownToOne(t *testing.T) {
 
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "keys should be ['a']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "values should be ['v1']")
-	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "NumKeys should be 1")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -300,7 +300,7 @@ func TestApplyBranchRemoveSeparator_BranchNode_Middle(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 4}
 	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -318,7 +318,7 @@ func TestApplyBranchRemoveSeparator_BranchNode_First(t *testing.T) {
 	expectedChildren := []base.PageID{10, 30}
 	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
-	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "NumKeys should be 1")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -336,7 +336,7 @@ func TestApplyBranchRemoveSeparator_BranchNode_Last(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 3}
 	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -358,7 +358,7 @@ func TestApplyBranchRemoveSeparator_LeafNode(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 4}
 	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
-	assert.Equal(t, uint16(2), node.NumKeys, "NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -376,7 +376,7 @@ func TestApplyBranchRemoveSeparator_DownToOneKey(t *testing.T) {
 	expectedChildren := []base.PageID{1, 3}
 	require.Equal(t, len(expectedChildren), len(node.Children), "children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "children should match expected")
-	assert.Equal(t, uint16(1), node.NumKeys, "NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "NumKeys should be 1")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -406,7 +406,7 @@ func TestBorrowFromLeft_LeafNodes(t *testing.T) {
 
 	expectedNodeValues := [][]byte{[]byte("v3"), []byte("v5"), []byte("v6")}
 	assert.True(t, equalByteSlices(node.Values, expectedNodeValues), "node values should be ['v3', 'v5', 'v6']")
-	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("a"), []byte("b")}
@@ -414,7 +414,7 @@ func TestBorrowFromLeft_LeafNodes(t *testing.T) {
 
 	expectedLeftValues := [][]byte{[]byte("v1"), []byte("v2")}
 	assert.True(t, equalByteSlices(leftSibling.Values, expectedLeftValues), "leftSibling values should be ['v1', 'v2']")
-	assert.Equal(t, uint16(2), leftSibling.NumKeys, "leftSibling NumKeys should be 2")
+	assert.Equal(t, uint32(2), leftSibling.NumKeys, "leftSibling NumKeys should be 2")
 
 	// Verify parent
 	assert.Equal(t, []byte("c"), parent.Keys[0], "parent separator key should be 'c'")
@@ -449,12 +449,12 @@ func TestBorrowFromLeft_LeafNodes_SingleElementRight(t *testing.T) {
 
 	expectedNodeValues := [][]byte{[]byte("v2"), []byte("v4")}
 	assert.True(t, equalByteSlices(node.Values, expectedNodeValues), "node values should be ['v2', 'v4']")
-	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("a")}
 	assert.True(t, equalByteSlices(leftSibling.Keys, expectedLeftKeys), "leftSibling keys should be ['a']")
-	assert.Equal(t, uint16(1), leftSibling.NumKeys, "leftSibling NumKeys should be 1")
+	assert.Equal(t, uint32(1), leftSibling.NumKeys, "leftSibling NumKeys should be 1")
 
 	// Verify parent
 	assert.Equal(t, []byte("b"), parent.Keys[0], "parent separator key should be 'b'")
@@ -490,7 +490,7 @@ func TestBorrowFromLeft_BranchNodes(t *testing.T) {
 	expectedNodeChildren := []base.PageID{4, 10, 11, 12}
 	require.Equal(t, len(expectedNodeChildren), len(node.Children), "node children length should match")
 	assert.Equal(t, expectedNodeChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("k1"), []byte("k2")}
@@ -499,7 +499,7 @@ func TestBorrowFromLeft_BranchNodes(t *testing.T) {
 	expectedLeftChildren := []base.PageID{1, 2, 3}
 	require.Equal(t, len(expectedLeftChildren), len(leftSibling.Children), "leftSibling children length should match")
 	assert.Equal(t, expectedLeftChildren, leftSibling.Children, "leftSibling children should match expected")
-	assert.Equal(t, uint16(2), leftSibling.NumKeys, "leftSibling NumKeys should be 2")
+	assert.Equal(t, uint32(2), leftSibling.NumKeys, "leftSibling NumKeys should be 2")
 
 	// Verify parent
 	assert.Equal(t, []byte("k3"), parent.Keys[0], "parent separator key should be 'k3'")
@@ -535,7 +535,7 @@ func TestBorrowFromLeft_BranchNodes_SingleElementRight(t *testing.T) {
 	expectedNodeChildren := []base.PageID{3, 10, 11}
 	require.Equal(t, len(expectedNodeChildren), len(node.Children), "node children length should match")
 	assert.Equal(t, expectedNodeChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify left sibling
 	expectedLeftKeys := [][]byte{[]byte("k1")}
@@ -544,7 +544,7 @@ func TestBorrowFromLeft_BranchNodes_SingleElementRight(t *testing.T) {
 	expectedLeftChildren := []base.PageID{1, 2}
 	require.Equal(t, len(expectedLeftChildren), len(leftSibling.Children), "leftSibling children length should match")
 	assert.Equal(t, expectedLeftChildren, leftSibling.Children, "leftSibling children should match expected")
-	assert.Equal(t, uint16(1), leftSibling.NumKeys, "leftSibling NumKeys should be 1")
+	assert.Equal(t, uint32(1), leftSibling.NumKeys, "leftSibling NumKeys should be 1")
 
 	// Verify parent
 	assert.Equal(t, []byte("k2"), parent.Keys[0], "parent separator key should be 'k2'")
@@ -604,14 +604,14 @@ func TestBorrowFromRight_LeafNodes(t *testing.T) {
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v5")}
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a', 'b', 'e']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v2', 'v5']")
-	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("f"), []byte("g")}
 	expectedRightValues := [][]byte{[]byte("v6"), []byte("v7")}
 	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['f', 'g']")
 	assert.True(t, equalByteSlices(rightSibling.Values, expectedRightValues), "rightSibling values should be ['v6', 'v7']")
-	assert.Equal(t, uint16(2), rightSibling.NumKeys, "rightSibling NumKeys should be 2")
+	assert.Equal(t, uint32(2), rightSibling.NumKeys, "rightSibling NumKeys should be 2")
 
 	// Verify parent
 	assert.Equal(t, []byte("f"), parent.Keys[0], "parent separator key should be 'f'")
@@ -643,12 +643,12 @@ func TestBorrowFromRight_LeafNodes_SingleElementLeft(t *testing.T) {
 	expectedValues := [][]byte{[]byte("v1"), []byte("v3")}
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['a', 'c']")
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v3']")
-	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("d")}
 	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['d']")
-	assert.Equal(t, uint16(1), rightSibling.NumKeys, "rightSibling NumKeys should be 1")
+	assert.Equal(t, uint32(1), rightSibling.NumKeys, "rightSibling NumKeys should be 1")
 
 	// Verify parent
 	assert.Equal(t, []byte("d"), parent.Keys[0], "parent separator key should be 'd'")
@@ -681,7 +681,7 @@ func TestBorrowFromRight_BranchNodes(t *testing.T) {
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1', 'k2', 'k5']")
 	require.Equal(t, len(expectedChildren), len(node.Children), "node children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "node NumKeys should be 3")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("k7"), []byte("k8")}
@@ -689,7 +689,7 @@ func TestBorrowFromRight_BranchNodes(t *testing.T) {
 	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['k7', 'k8']")
 	require.Equal(t, len(expectedRightChildren), len(rightSibling.Children), "rightSibling children length should match")
 	assert.Equal(t, expectedRightChildren, rightSibling.Children, "rightSibling children should match expected")
-	assert.Equal(t, uint16(2), rightSibling.NumKeys, "rightSibling NumKeys should be 2")
+	assert.Equal(t, uint32(2), rightSibling.NumKeys, "rightSibling NumKeys should be 2")
 
 	// Verify parent
 	assert.Equal(t, []byte("k6"), parent.Keys[0], "parent separator key should be 'k6'")
@@ -722,7 +722,7 @@ func TestBorrowFromRight_BranchNodes_SingleElementLeft(t *testing.T) {
 	assert.True(t, equalByteSlices(node.Keys, expectedKeys), "node keys should be ['k1', 'k3']")
 	require.Equal(t, len(expectedChildren), len(node.Children), "node children length should match")
 	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "node NumKeys should be 2")
 
 	// Verify rightSibling
 	expectedRightKeys := [][]byte{[]byte("k5")}
@@ -730,7 +730,7 @@ func TestBorrowFromRight_BranchNodes_SingleElementLeft(t *testing.T) {
 	assert.True(t, equalByteSlices(rightSibling.Keys, expectedRightKeys), "rightSibling keys should be ['k5']")
 	require.Equal(t, len(expectedRightChildren), len(rightSibling.Children), "rightSibling children length should match")
 	assert.Equal(t, expectedRightChildren, rightSibling.Children, "rightSibling children should match expected")
-	assert.Equal(t, uint16(1), rightSibling.NumKeys, "rightSibling NumKeys should be 1")
+	assert.Equal(t, uint32(1), rightSibling.NumKeys, "rightSibling NumKeys should be 1")
 
 	// Verify parent
 	assert.Equal(t, []byte("k4"), parent.Keys[0], "parent separator key should be 'k4'")
@@ -784,7 +784,7 @@ func TestMergeNodes_LeafNodes(t *testing.T) {
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v4"), []byte("v5")}
 	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['a', 'b', 'd', 'e']")
 	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v1', 'v2', 'v4', 'v5']")
-	assert.Equal(t, uint16(4), left.NumKeys, "left NumKeys should be 4")
+	assert.Equal(t, uint32(4), left.NumKeys, "left NumKeys should be 4")
 	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
@@ -805,7 +805,7 @@ func TestMergeNodes_LeafNodes_SingleElementEach(t *testing.T) {
 	expectedValues := [][]byte{[]byte("v1"), []byte("v3")}
 	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['a', 'c']")
 	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v1', 'v3']")
-	assert.Equal(t, uint16(2), left.NumKeys, "left NumKeys should be 2")
+	assert.Equal(t, uint32(2), left.NumKeys, "left NumKeys should be 2")
 	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
@@ -826,7 +826,7 @@ func TestMergeNodes_LeafNodes_EmptyLeft(t *testing.T) {
 	expectedValues := [][]byte{[]byte("v2"), []byte("v3")}
 	assert.True(t, equalByteSlices(left.Keys, expectedKeys), "left keys should be ['b', 'c']")
 	assert.True(t, equalByteSlices(left.Values, expectedValues), "left values should be ['v2', 'v3']")
-	assert.Equal(t, uint16(2), left.NumKeys, "left NumKeys should be 2")
+	assert.Equal(t, uint32(2), left.NumKeys, "left NumKeys should be 2")
 	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
@@ -850,7 +850,7 @@ func TestMergeNodes_BranchNodes(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 3, 10, 11, 12}
 	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
 	assert.Equal(t, expectedChildren, left.Children, "left children should match expected")
-	assert.Equal(t, uint16(5), left.NumKeys, "left NumKeys should be 5")
+	assert.Equal(t, uint32(5), left.NumKeys, "left NumKeys should be 5")
 	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
@@ -873,7 +873,7 @@ func TestMergeNodes_BranchNodes_SingleElementEach(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 10, 11}
 	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
 	assert.Equal(t, expectedChildren, left.Children, "left children should match expected")
-	assert.Equal(t, uint16(3), left.NumKeys, "left NumKeys should be 3")
+	assert.Equal(t, uint32(3), left.NumKeys, "left NumKeys should be 3")
 	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
@@ -896,7 +896,7 @@ func TestMergeNodes_BranchNodes_EmptyLeft(t *testing.T) {
 	expectedChildren := []base.PageID{1, 10, 11}
 	require.Equal(t, len(expectedChildren), len(left.Children), "left children length should match")
 	assert.Equal(t, expectedChildren, left.Children, "left children should match expected")
-	assert.Equal(t, uint16(2), left.NumKeys, "left NumKeys should be 2")
+	assert.Equal(t, uint32(2), left.NumKeys, "left NumKeys should be 2")
 	assert.True(t, left.Dirty, "left should be marked dirty")
 }
 
@@ -950,7 +950,7 @@ func TestNewBranchRoot_Basic(t *testing.T) {
 	assert.Equal(t, base.PageID(100), root.PageID, "root PageID should be 100")
 	assert.True(t, root.Dirty, "root should be marked dirty")
 	assert.Equal(t, base.BranchType, root.Type(), "root should be a branch node")
-	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
+	assert.Equal(t, uint32(1), root.NumKeys, "root NumKeys should be 1")
 	assert.True(t, equalByteSlices(root.Keys, [][]byte{[]byte("m")}), "root keys should contain separator")
 	assert.Nil(t, root.Values, "root values should be nil for branch node")
 
@@ -971,7 +971,7 @@ func TestNewBranchRoot_EmptyKey(t *testing.T) {
 	expectedChildren := []base.PageID{5, 6}
 	require.Equal(t, 2, len(root.Children), "root should have 2 children")
 	assert.Equal(t, expectedChildren, root.Children, "root children should be [5, 6]")
-	assert.Equal(t, uint16(1), root.NumKeys, "root NumKeys should be 1")
+	assert.Equal(t, uint32(1), root.NumKeys, "root NumKeys should be 1")
 	assert.Equal(t, base.BranchType, root.Type(), "root should be a branch node")
 }
 
@@ -1008,7 +1008,7 @@ func TestApplyChildSplit_Middle(t *testing.T) {
 	expectedChildren := []base.PageID{1, 10, 11, 3}
 	require.Equal(t, 4, len(parent.Children), "parent should have 4 children")
 	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
-	assert.Equal(t, uint16(3), parent.NumKeys, "parent NumKeys should be 3")
+	assert.Equal(t, uint32(3), parent.NumKeys, "parent NumKeys should be 3")
 	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
@@ -1031,7 +1031,7 @@ func TestApplyChildSplit_Beginning(t *testing.T) {
 	expectedChildren := []base.PageID{10, 11, 2}
 	require.Equal(t, 3, len(parent.Children), "parent should have 3 children")
 	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
-	assert.Equal(t, uint16(2), parent.NumKeys, "parent NumKeys should be 2")
+	assert.Equal(t, uint32(2), parent.NumKeys, "parent NumKeys should be 2")
 	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
@@ -1053,7 +1053,7 @@ func TestApplyChildSplit_End(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 10, 11}
 	require.Equal(t, 4, len(parent.Children), "parent should have 4 children")
 	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
-	assert.Equal(t, uint16(3), parent.NumKeys, "parent NumKeys should be 3")
+	assert.Equal(t, uint32(3), parent.NumKeys, "parent NumKeys should be 3")
 	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
@@ -1080,7 +1080,7 @@ func TestApplyChildSplit_LeafParent(t *testing.T) {
 	expectedChildren := []base.PageID{10, 11, 2}
 	require.Equal(t, 3, len(parent.Children), "parent should have 3 children")
 	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
-	assert.Equal(t, uint16(2), parent.NumKeys, "parent NumKeys should be 2")
+	assert.Equal(t, uint32(2), parent.NumKeys, "parent NumKeys should be 2")
 	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
@@ -1102,7 +1102,7 @@ func TestApplyChildSplit_SingleKeyParent(t *testing.T) {
 	expectedChildren := []base.PageID{1, 10, 11}
 	require.Equal(t, 3, len(parent.Children), "parent should have 3 children")
 	assert.Equal(t, expectedChildren, parent.Children, "parent children should match expected")
-	assert.Equal(t, uint16(2), parent.NumKeys, "parent NumKeys should be 2")
+	assert.Equal(t, uint32(2), parent.NumKeys, "parent NumKeys should be 2")
 	assert.True(t, parent.Dirty, "parent should be marked dirty")
 }
 
@@ -1124,7 +1124,7 @@ func TestTruncateLeft_LeafNode(t *testing.T) {
 
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2")}
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v2']")
-	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "node NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -1143,7 +1143,7 @@ func TestTruncateLeft_LeafNode_SingleElement(t *testing.T) {
 
 	expectedValues := [][]byte{[]byte("v1")}
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1']")
-	assert.Equal(t, uint16(1), node.NumKeys, "node NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "node NumKeys should be 1")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -1165,7 +1165,7 @@ func TestTruncateLeft_BranchNode(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2}
 	require.Equal(t, 2, len(node.Children), "node should have 2 children")
 	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(1), node.NumKeys, "node NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "node NumKeys should be 1")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -1186,7 +1186,7 @@ func TestTruncateLeft_BranchNode_MultipleElements(t *testing.T) {
 	expectedChildren := []base.PageID{1, 2, 3}
 	require.Equal(t, 3, len(node.Children), "node should have 3 children")
 	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(2), node.NumKeys, "node NumKeys should be 2")
+	assert.Equal(t, uint32(2), node.NumKeys, "node NumKeys should be 2")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -1205,7 +1205,7 @@ func TestTruncateLeft_LeafNode_AllButOne(t *testing.T) {
 
 	expectedValues := [][]byte{[]byte("v1"), []byte("v2"), []byte("v3")}
 	assert.True(t, equalByteSlices(node.Values, expectedValues), "node values should be ['v1', 'v2', 'v3']")
-	assert.Equal(t, uint16(3), node.NumKeys, "node NumKeys should be 3")
+	assert.Equal(t, uint32(3), node.NumKeys, "node NumKeys should be 3")
 	assert.True(t, node.Dirty, "node should be marked dirty")
 }
 
@@ -1225,6 +1225,6 @@ func TestTruncateLeft_BranchNode_ChildrenAlignment(t *testing.T) {
 	expectedChildren := []base.PageID{10, 20}
 	require.Equal(t, 2, len(node.Children), "node should have 2 children")
 	assert.Equal(t, expectedChildren, node.Children, "node children should match expected")
-	assert.Equal(t, uint16(1), node.NumKeys, "node NumKeys should be 1")
+	assert.Equal(t, uint32(1), node.NumKeys, "node NumKeys should be 1")
 	assert.Equal(t, len(node.Keys)+1, len(node.Children), "children count should be keys + 1")
 }

@@ -2,6 +2,7 @@ package fredb
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -84,6 +85,11 @@ func Open(path string, options ...Option) (*DB, error) {
 		if err = root.Deserialize(rootPage); err != nil {
 			_ = pg.Close()
 			return nil, err
+		}
+
+		// Sanity check
+		if meta.RootPageID != root.PageID {
+			panic(fmt.Sprintf("invalid pageID: %d, expected %d", meta.RootPageID, root.PageID))
 		}
 
 		// Bundle root with metadata and make visible atomically
