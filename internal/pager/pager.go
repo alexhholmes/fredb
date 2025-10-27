@@ -420,19 +420,8 @@ func (p *Pager) Commit(
 		p.TrackWrite(root.PageID)
 
 		// Write overflow pages
-		for _, pages := range overflowPages {
-			for i, page := range pages {
-				header := page.Header()
-				pageID := header.PageID
-				if i > 0 {
-					// Continuation page - calculate PageID from first page
-					pageID = pages[0].Header().PageID + base.PageID(i)
-				}
-				if err = p.store.WritePage(pageID, page); err != nil {
-					return err
-				}
-				p.TrackWrite(pageID)
-			}
+		if err := p.WriteOverflow(overflowPages); err != nil {
+			return err
 		}
 
 		root.Dirty = false
@@ -489,19 +478,8 @@ func (p *Pager) WriteRun(run []*base.Node, txID uint64) error {
 		p.TrackWrite(node.PageID)
 
 		// Write overflow pages
-		for _, pages := range overflowPages {
-			for i, page := range pages {
-				header := page.Header()
-				pageID := header.PageID
-				if i > 0 {
-					// Continuation page - calculate PageID from first page
-					pageID = pages[0].Header().PageID + base.PageID(i)
-				}
-				if err := p.store.WritePage(pageID, page); err != nil {
-					return err
-				}
-				p.TrackWrite(pageID)
-			}
+		if err := p.WriteOverflow(overflowPages); err != nil {
+			return err
 		}
 
 		node.Dirty = false
@@ -531,34 +509,76 @@ func (p *Pager) WriteRun(run []*base.Node, txID uint64) error {
 			p.TrackWrite(node.PageID)
 		}
 
-		// Write overflow pages (one WriteAt per overflow chain)
-		for _, pages := range allOverflowPages {
-			if len(pages) == 0 {
-				continue
-			}
-
-			// Allocate contiguous buffer for this overflow chain
-			overflowBuf := make([]byte, len(pages)*base.PageSize)
-			for i, page := range pages {
-				copy(overflowBuf[i*base.PageSize:], page.Data[:])
-			}
-
-			// Write overflow chain contiguously
-			firstPageID := pages[0].Header().PageID
-			if err := p.store.WriteAt(firstPageID, overflowBuf); err != nil {
-				return err
-			}
-
-			// Track writes for all overflow pages
-			for i := range pages {
-				p.TrackWrite(firstPageID + base.PageID(i))
-			}
+		// Write overflow pages
+		if err := p.WriteOverflow(allOverflowPages); err != nil {
+			return err
 		}
 
 		// Mark clean and cache only after successful write
 		for _, node := range run {
 			node.Dirty = false
 			p.cache.Put(node.PageID, node)
+		}
+	}
+
+	return nil
+}
+
+// WriteOverflow writes all overflow pages with a single WriteAt call
+// since they are allocated contiguously by the single writer
+func (p *Pager) WriteOverflow(overflowPages [][]*base.Page) error {
+	if len(overflowPages) == 0 {
+		return nil
+	}
+
+	// Count total overflow pages
+	totalOverflowPages := 0
+	for _, pages := range overflowPages {
+		totalOverflowPages += len(pages)
+	}
+
+	if totalOverflowPages == 0 {
+		return nil
+	}
+
+	// Use fixed 512KB buffer, reuse for multiple writes if needed
+	const bufferSize = 512 * 1024 // 512KB (128 pages)
+	const pagesPerBuffer = bufferSize / base.PageSize
+
+	buf := make([]byte, bufferSize)
+	firstPageID := overflowPages[0][0].Header().PageID
+
+	// Flatten overflow pages into single slice for easier iteration
+	var allPages []*base.Page
+	for _, pages := range overflowPages {
+		allPages = append(allPages, pages...)
+	}
+
+	// Write in chunks using reusable buffer
+	for i := 0; i < totalOverflowPages; i += pagesPerBuffer {
+		// Calculate chunk size
+		pagesInChunk := pagesPerBuffer
+		if i+pagesPerBuffer > totalOverflowPages {
+			pagesInChunk = totalOverflowPages - i
+		}
+		chunkSize := pagesInChunk * base.PageSize
+
+		// Copy pages into buffer
+		offset := 0
+		for j := 0; j < pagesInChunk; j++ {
+			copy(buf[offset:], allPages[i+j].Data[:])
+			offset += base.PageSize
+		}
+
+		// Write chunk
+		chunkPageID := firstPageID + base.PageID(i)
+		if err := p.store.WriteAt(chunkPageID, buf[:chunkSize]); err != nil {
+			return err
+		}
+
+		// Track writes for this chunk
+		for j := 0; j < pagesInChunk; j++ {
+			p.TrackWrite(chunkPageID + base.PageID(j))
 		}
 	}
 
