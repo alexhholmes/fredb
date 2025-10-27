@@ -16,9 +16,9 @@ import (
 const (
 	multiBucketBatchSize   = 1000
 	multiBucketNumBuckets  = 10
-	multiBucketValueSize   = 512
-	multiBucketUpdateRatio = 0.2
-	multiBucketDeleteRatio = 0.1
+	multiBucketValueSize   = 32 * 4096
+	multiBucketUpdateRatio = 0
+	multiBucketDeleteRatio = 0
 )
 
 func BenchmarkMultiBucket(b *testing.B) {

@@ -72,6 +72,10 @@ func (c *Cursor) First() ([]byte, []byte) {
 	c.stack = append(c.stack, path{node: node, childIndex: 0})
 
 	if node.NumKeys > 0 {
+		// Load overflow value if needed
+		if err := node.LoadOverflowValue(0, c.tx.db.store.ReadAt); err != nil {
+			return nil, nil
+		}
 		c.key = node.Keys[0]
 		c.value = node.Values[0]
 		c.valid = true
@@ -120,6 +124,10 @@ func (c *Cursor) Last() ([]byte, []byte) {
 	c.stack = append(c.stack, path{node: node, childIndex: lastIndex})
 
 	if lastIndex >= 0 {
+		// Load overflow value if needed
+		if err := node.LoadOverflowValue(lastIndex, c.tx.db.store.ReadAt); err != nil {
+			return nil, nil
+		}
 		c.key = node.Keys[lastIndex]
 		c.value = node.Values[lastIndex]
 		c.valid = true
@@ -187,6 +195,10 @@ func (c *Cursor) Seek(seek []byte) ([]byte, []byte) {
 	c.stack = append(c.stack, path{node: node, childIndex: i})
 
 	if i < int(node.NumKeys) {
+		// Load overflow value if needed
+		if err := node.LoadOverflowValue(i, c.tx.db.store.ReadAt); err != nil {
+			return nil, nil
+		}
 		c.key = node.Keys[i]
 		c.value = node.Values[i]
 		c.valid = true
@@ -221,6 +233,11 @@ func (c *Cursor) Next() ([]byte, []byte) {
 	leaf.childIndex++
 
 	if leaf.childIndex < int(leaf.node.NumKeys) {
+		// Load overflow value if needed
+		if err := leaf.node.LoadOverflowValue(leaf.childIndex, c.tx.db.store.ReadAt); err != nil {
+			c.valid = false
+			return nil, nil
+		}
 		c.key = leaf.node.Keys[leaf.childIndex]
 		c.value = leaf.node.Values[leaf.childIndex]
 
@@ -263,6 +280,11 @@ func (c *Cursor) Prev() ([]byte, []byte) {
 	leaf.childIndex--
 
 	if leaf.childIndex >= 0 {
+		// Load overflow value if needed
+		if err := leaf.node.LoadOverflowValue(leaf.childIndex, c.tx.db.store.ReadAt); err != nil {
+			c.valid = false
+			return nil, nil
+		}
 		c.key = leaf.node.Keys[leaf.childIndex]
 		c.value = leaf.node.Values[leaf.childIndex]
 
@@ -362,6 +384,11 @@ func (c *Cursor) nextLeaf() error {
 			c.stack = append(c.stack, path{node: node, childIndex: 0})
 
 			if node.NumKeys > 0 {
+				// Load overflow value if needed
+				if err := node.LoadOverflowValue(0, c.tx.db.store.ReadAt); err != nil {
+					c.valid = false
+					return err
+				}
 				c.key = node.Keys[0]
 				c.value = node.Values[0]
 				c.valid = true
@@ -417,6 +444,11 @@ func (c *Cursor) prevLeaf() error {
 			c.stack = append(c.stack, path{node: node, childIndex: lastIndex})
 
 			if lastIndex >= 0 {
+				// Load overflow value if needed
+				if err := node.LoadOverflowValue(lastIndex, c.tx.db.store.ReadAt); err != nil {
+					c.valid = false
+					return err
+				}
 				c.key = node.Keys[lastIndex]
 				c.value = node.Values[lastIndex]
 				c.valid = true

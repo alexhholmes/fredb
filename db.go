@@ -25,7 +25,7 @@ const (
 	// MaxValueSize is the maximum length of a value, in bytes.
 	// Without overflow pages, values must fit inline in leaf pages.
 	// PageSize (4096) - PageHeaderSize (24) - LeafElementSize (16) - MaxKeySize (1024) = 3032 bytes
-	MaxValueSize = 3032
+	MaxValueSize = base.MaxValueSize // 256 MB
 )
 
 type DB struct {
@@ -102,8 +102,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
-		rootPageID := pg.Allocate()
-		rootLeafID := pg.Allocate()
+		rootPageID := pg.Allocate(1)
+		rootLeafID := pg.Allocate(1)
 
 		rootLeaf := &base.Node{
 			PageID:   rootLeafID,
@@ -124,8 +124,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 
 		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID := pg.Allocate()
-		rootBucketLeafID := pg.Allocate()
+		rootBucketRootID := pg.Allocate(1)
+		rootBucketLeafID := pg.Allocate(1)
 
 		rootBucketLeaf := &base.Node{
 			PageID:   rootBucketLeafID,
@@ -159,53 +159,49 @@ func Open(path string, options ...Option) (*DB, error) {
 		rootLeaf.NumKeys = 1
 
 		// 5. serialize and write all 4 pages
-		leafPage := &base.Page{}
-		err = rootLeaf.Serialize(0, leafPage)
+		leafPage, _, err := rootLeaf.Serialize(0, pg.Allocate)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		if err = store.WritePage(rootLeafID, leafPage); err != nil {
+		if err = store.WritePage(rootLeaf.PageID, leafPage); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		pg.TrackWrite(rootLeafID)
+		pg.TrackWrite(rootLeaf.PageID)
 
-		rootPage := &base.Page{}
-		err = root.Serialize(0, rootPage)
+		rootPage, _, err := root.Serialize(0, pg.Allocate)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		if err = store.WritePage(rootPageID, rootPage); err != nil {
+		if err = store.WritePage(root.PageID, rootPage); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		pg.TrackWrite(rootPageID)
+		pg.TrackWrite(root.PageID)
 
-		bucketLeafPage := &base.Page{}
-		err = rootBucketLeaf.Serialize(0, bucketLeafPage)
+		bucketLeafPage, _, err := rootBucketLeaf.Serialize(0, pg.Allocate)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		if err = store.WritePage(rootBucketLeafID, bucketLeafPage); err != nil {
+		if err = store.WritePage(rootBucketLeaf.PageID, bucketLeafPage); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		pg.TrackWrite(rootBucketLeafID)
+		pg.TrackWrite(rootBucketLeaf.PageID)
 
-		bucketRootPage := &base.Page{}
-		err = rootBucketRoot.Serialize(0, bucketRootPage)
+		bucketRootPage, _, err := rootBucketRoot.Serialize(0, pg.Allocate)
 		if err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		if err = store.WritePage(rootBucketRootID, bucketRootPage); err != nil {
+		if err = store.WritePage(rootBucketRoot.PageID, bucketRootPage); err != nil {
 			_ = pg.Close()
 			return nil, err
 		}
-		pg.TrackWrite(rootBucketRootID)
+		pg.TrackWrite(rootBucketRoot.PageID)
 
 		// 6. Update meta to point to root tree
 		meta.RootPageID = rootPageID
@@ -407,15 +403,16 @@ func (db *DB) Close() error {
 	// Flush root if dirty (was algo.close logic)
 	snapshot := db.pager.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
-		page := &base.Page{}
-		err := snapshot.Root.Serialize(snapshot.Meta.TxID, page)
+		rootPage, _, err := snapshot.Root.Serialize(snapshot.Meta.TxID, db.pager.Allocate)
 		if err != nil {
 			return err
 		}
-		if err := db.store.WritePage(snapshot.Root.PageID, page); err != nil {
+
+		err = db.store.WritePage(snapshot.Root.PageID, rootPage)
+		if err != nil {
 			return err
 		}
-		db.pager.TrackWrite(snapshot.Root.PageID)
+
 		snapshot.Root.Dirty = false
 	}
 
