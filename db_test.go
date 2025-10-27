@@ -1,6 +1,7 @@
 package fredb
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -2615,18 +2616,21 @@ func TestPageOverflowLargeValue(t *testing.T) {
 	db, _ := setup(t)
 
 	key := []byte("small_key")
-	// Value that's too large to fit inline in a page
-	// PageSize = 4096, PageHeaderSize = 32, LeafElementSize = 16
-	// Available = 4096 - 32 - 16 = 4048 for key+value
-	// small_key = 9 bytes, so max value = 4048 - 9 = 4039
+	// Value that's too large to fit inline in a page (4060 bytes)
+	// With overflow pages, this should now succeed
 	largeValue := make([]byte, 4060)
 	for i := range largeValue {
 		largeValue[i] = byte(i % 256)
 	}
 
-	// Should return ErrValueTooLarge (no overflow pages)
+	// Should succeed with overflow pages
 	err := db.Set(key, largeValue)
-	assert.ErrorIs(t, err, ErrValueTooLarge)
+	assert.NoError(t, err, "Large values should work with overflow pages")
+
+	// Verify we can read it back
+	retrieved, err := db.Get(key)
+	assert.NoError(t, err)
+	assert.Equal(t, largeValue, retrieved)
 }
 
 func TestPageOverflowCombinedSize(t *testing.T) {
@@ -2655,14 +2659,10 @@ func TestPageOverflowBoundary(t *testing.T) {
 
 	db, _ := setup(t)
 
-	// Test key+value that exceeds available space
-	// PageSize = 4096
-	// PageHeaderSize = 32
-	// LeafElementSize = 16 (2 * uint64)
-	// Available = 4096 - 32 - 16 = 4048 bytes for key+value
-
+	// Test key+value that exceeds available inline space
+	// With overflow pages (threshold 3KB), value goes to overflow chain
 	keySize := 1000
-	valueSize := 3050 // Total 4050 > 4048, should overflow
+	valueSize := 3050 // > 3KB threshold, will use overflow
 
 	key := make([]byte, keySize)
 	value := make([]byte, valueSize)
@@ -2673,8 +2673,14 @@ func TestPageOverflowBoundary(t *testing.T) {
 		value[i] = 'v'
 	}
 
+	// Should succeed with overflow pages
 	err := db.Set(key, value)
-	assert.ErrorIs(t, err, ErrValueTooLarge)
+	assert.NoError(t, err, "Should succeed with overflow pages")
+
+	// Verify we can read it back
+	retrieved, err := db.Get(key)
+	assert.NoError(t, err)
+	assert.Equal(t, value, retrieved)
 }
 
 func TestPageOverflowMaxKeyValue(t *testing.T) {
@@ -2868,4 +2874,310 @@ func TestDBRestartPersistence(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err, "Failed to read all keys after restart")
+}
+
+// Overflow Value Tests
+
+func TestOverflowBasicWriteRead(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	// Create a 5KB value (larger than 3KB threshold)
+	largeValue := make([]byte, 5*1024)
+	for i := range largeValue {
+		largeValue[i] = byte('A' + (i % 26))
+	}
+
+	key := []byte("overflow-key")
+
+	// Write overflow value
+	err := db.Set(key, largeValue)
+	require.NoError(t, err, "Failed to write overflow value")
+
+	// Read back
+	retrieved, err := db.Get(key)
+	require.NoError(t, err, "Failed to read overflow value")
+	assert.Equal(t, largeValue, retrieved, "Overflow value mismatch")
+}
+
+func TestOverflowLargeValue(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	// Create a 100KB value
+	largeValue := make([]byte, 100*1024)
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+
+	key := []byte("large-overflow-key")
+
+	// Write large overflow value
+	err := db.Set(key, largeValue)
+	require.NoError(t, err, "Failed to write large overflow value")
+
+	// Read back
+	retrieved, err := db.Get(key)
+	require.NoError(t, err, "Failed to read large overflow value")
+	assert.Equal(t, len(largeValue), len(retrieved), "Large overflow value length mismatch")
+	assert.Equal(t, largeValue, retrieved, "Large overflow value content mismatch")
+}
+
+func TestOverflowMultipleValues(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	// Write multiple overflow values
+	numKeys := 10
+	valueSize := 10 * 1024 // 10KB each
+
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("overflow-key-%d", i))
+		value := make([]byte, valueSize)
+		// Fill with unique pattern
+		for j := range value {
+			value[j] = byte((i + j) % 256)
+		}
+
+		err := db.Set(key, value)
+		require.NoError(t, err, "Failed to write overflow key %d", i)
+	}
+
+	// Read back and verify
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("overflow-key-%d", i))
+		expectedValue := make([]byte, valueSize)
+		for j := range expectedValue {
+			expectedValue[j] = byte((i + j) % 256)
+		}
+
+		retrieved, err := db.Get(key)
+		require.NoError(t, err, "Failed to read overflow key %d", i)
+		assert.Equal(t, expectedValue, retrieved, "Overflow value %d mismatch", i)
+	}
+}
+
+func TestOverflowUpdate(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	key := []byte("update-overflow-key")
+
+	// Write initial overflow value (5KB)
+	value1 := make([]byte, 5*1024)
+	for i := range value1 {
+		value1[i] = byte('A' + (i % 26))
+	}
+	err := db.Set(key, value1)
+	require.NoError(t, err, "Failed to write initial overflow value")
+
+	// Update with different overflow value (7KB)
+	value2 := make([]byte, 7*1024)
+	for i := range value2 {
+		value2[i] = byte('Z' - (i % 26))
+	}
+	err = db.Set(key, value2)
+	require.NoError(t, err, "Failed to update overflow value")
+
+	// Read back and verify it's the updated value
+	retrieved, err := db.Get(key)
+	require.NoError(t, err, "Failed to read updated overflow value")
+	assert.Equal(t, value2, retrieved, "Updated overflow value mismatch")
+	assert.NotEqual(t, value1, retrieved, "Should not match old value")
+}
+
+func TestOverflowDelete(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	// Write overflow value
+	key := []byte("delete-overflow-key")
+	largeValue := make([]byte, 10*1024)
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+
+	err := db.Set(key, largeValue)
+	require.NoError(t, err, "Failed to write overflow value")
+
+	// Verify it exists
+	retrieved, err := db.Get(key)
+	require.NoError(t, err, "Failed to read overflow value before delete")
+	assert.Equal(t, largeValue, retrieved)
+
+	// Delete the key (should free overflow chain)
+	err = db.Delete(key)
+	require.NoError(t, err, "Failed to delete overflow key")
+
+	// Verify it's gone
+	retrieved, err = db.Get(key)
+	assert.NoError(t, err)
+	assert.Nil(t, retrieved, "Deleted overflow key should return nil")
+}
+
+func TestOverflowCursorIteration(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	// Insert mix of normal and overflow values
+	normalValue := []byte("small-value")
+	overflowValue := make([]byte, 5*1024)
+	for i := range overflowValue {
+		overflowValue[i] = byte('X')
+	}
+
+	err := db.Set([]byte("key-normal-1"), normalValue)
+	require.NoError(t, err)
+
+	err = db.Set([]byte("key-overflow-1"), overflowValue)
+	require.NoError(t, err)
+
+	err = db.Set([]byte("key-normal-2"), normalValue)
+	require.NoError(t, err)
+
+	err = db.Set([]byte("key-overflow-2"), overflowValue)
+	require.NoError(t, err)
+
+	// Iterate with cursor
+	err = db.View(func(tx *Tx) error {
+		c := tx.Cursor()
+		count := 0
+
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			count++
+			if bytes.HasPrefix(k, []byte("key-overflow")) {
+				assert.Equal(t, overflowValue, v, "Cursor should load overflow value for %s", k)
+			} else if bytes.HasPrefix(k, []byte("key-normal")) {
+				assert.Equal(t, normalValue, v, "Normal value mismatch for %s", k)
+			}
+		}
+
+		assert.Equal(t, 4, count, "Should iterate over all 4 keys")
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+func TestOverflowMixedSizes(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	// Test various value sizes around the threshold
+	testCases := []struct {
+		name string
+		size int
+	}{
+		{"below-threshold", 2 * 1024},     // 2KB - inline
+		{"at-threshold", 3 * 1024},        // 3KB - inline
+		{"just-over-threshold", 4 * 1024}, // 4KB - overflow
+		{"medium-overflow", 20 * 1024},    // 20KB - overflow
+		{"large-overflow", 100 * 1024},    // 100KB - overflow
+	}
+
+	for _, tc := range testCases {
+		key := []byte(fmt.Sprintf("key-%s", tc.name))
+		value := make([]byte, tc.size)
+		// Fill with pattern
+		for i := range value {
+			value[i] = byte((i + tc.size) % 256)
+		}
+
+		err := db.Set(key, value)
+		require.NoError(t, err, "Failed to write %s", tc.name)
+
+		retrieved, err := db.Get(key)
+		require.NoError(t, err, "Failed to read %s", tc.name)
+		assert.Equal(t, value, retrieved, "Value mismatch for %s", tc.name)
+	}
+}
+
+func TestOverflowPersistence(t *testing.T) {
+	t.Parallel()
+
+	tmpfile := fmt.Sprintf("/tmp/test_overflow_persist_%s.db", t.Name())
+	_ = os.Remove(tmpfile)
+	defer os.Remove(tmpfile)
+
+	// Write overflow value and close
+	db, err := Open(tmpfile, WithCacheSizeMB(0))
+	require.NoError(t, err)
+
+	largeValue := make([]byte, 50*1024)
+	for i := range largeValue {
+		largeValue[i] = byte(i % 256)
+	}
+
+	err = db.Set([]byte("persistent-overflow"), largeValue)
+	require.NoError(t, err)
+
+	err = db.Close()
+	require.NoError(t, err)
+
+	// Reopen and verify overflow value persisted
+	db, err = Open(tmpfile, WithCacheSizeMB(0))
+	require.NoError(t, err)
+	defer db.Close()
+
+	retrieved, err := db.Get([]byte("persistent-overflow"))
+	require.NoError(t, err, "Failed to read overflow value after restart")
+	assert.Equal(t, largeValue, retrieved, "Persisted overflow value mismatch")
+}
+
+func TestOverflowUpdateToNormal(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	key := []byte("shrink-key")
+
+	// Start with overflow value (5KB)
+	largeValue := make([]byte, 5*1024)
+	for i := range largeValue {
+		largeValue[i] = byte('L')
+	}
+	err := db.Set(key, largeValue)
+	require.NoError(t, err)
+
+	// Update to normal value (should free overflow chain)
+	smallValue := []byte("small-value")
+	err = db.Set(key, smallValue)
+	require.NoError(t, err)
+
+	// Verify it's the small value
+	retrieved, err := db.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, smallValue, retrieved)
+}
+
+func TestOverflowUpdateFromNormal(t *testing.T) {
+	t.Parallel()
+
+	db, _ := setup(t)
+
+	key := []byte("grow-key")
+
+	// Start with normal value
+	smallValue := []byte("small-value")
+	err := db.Set(key, smallValue)
+	require.NoError(t, err)
+
+	// Update to overflow value (should allocate overflow chain)
+	largeValue := make([]byte, 8*1024)
+	for i := range largeValue {
+		largeValue[i] = byte('B')
+	}
+	err = db.Set(key, largeValue)
+	require.NoError(t, err)
+
+	// Verify it's the large value
+	retrieved, err := db.Get(key)
+	require.NoError(t, err)
+	assert.Equal(t, largeValue, retrieved)
 }

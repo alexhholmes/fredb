@@ -1,6 +1,7 @@
 package base
 
 import (
+	"encoding/binary"
 	"errors"
 	"unsafe"
 
@@ -31,6 +32,12 @@ const (
 	MagicNumber uint32 = 0x66726462
 
 	FormatVersion uint16 = 1
+
+	OverflowThreshold              = 3072      // 3KB
+	MaxValueSize                   = 268435456 // 256MB cap
+	OverflowFirstPageDataSize      = PageSize - PageHeaderSize // 4072 bytes
+	OverflowContinuationPageSize   = PageSize                  // 4096 bytes (no header)
+	LeafOverflowFlag        uint16 = 0x01
 )
 
 type PageID uint64
@@ -77,14 +84,18 @@ type PageID uint64
 // │   BranchElement[0..N-1].ChildID stores Children[1..N]               │
 // └─────────────────────────────────────────────────────────────────────┘
 //
-// OVERFLOW PAGE LAYOUT:
+// OVERFLOW PAGE LAYOUT (Contiguous):
+// First Page:
 // ┌─────────────────────────────────────────────────────────────────────┐
 // │ Header (24 bytes)                                                   │
-// │ PageID, Flags (Overflow Page Flag Set), NumKeys (Always 0), TxID    │
+// │ PageID, Flags (Overflow), NumKeys (bytes in this page), TxID        │
 // ├─────────────────────────────────────────────────────────────────────┤
-// │ Raw Data Payload for Large Value                                    │
-// ├─────────────────────────────────────────────────────────────────────┤
-// │ Fixed Size Next Overflow PageID (8 bytes)                           │
+// │ Raw Data Payload (4072 bytes)                                       │
+// └─────────────────────────────────────────────────────────────────────┘
+//
+// Continuation Pages (PageID+1, PageID+2, ...):
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ Raw Data Payload (4096 bytes, no header)                            │
 // └─────────────────────────────────────────────────────────────────────┘
 type Page struct {
 	Data [PageSize]byte
@@ -268,4 +279,16 @@ func (m *MetaPage) Validate() error {
 		return ErrInvalidChecksum
 	}
 	return nil
+}
+
+// WriteNextPageID writes the next overflow page ID to the last 8 bytes
+func (p *Page) WriteNextPageID(next PageID) {
+	offset := PageSize - 8
+	binary.LittleEndian.PutUint64(p.Data[offset:], uint64(next))
+}
+
+// ReadNextPageID reads the next overflow page ID from the last 8 bytes
+func (p *Page) ReadNextPageID() PageID {
+	offset := PageSize - 8
+	return PageID(binary.LittleEndian.Uint64(p.Data[offset:]))
 }

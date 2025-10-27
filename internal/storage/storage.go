@@ -62,6 +62,26 @@ func (s *Storage) ReadPage(id base.PageID) (*base.Page, error) {
 	return page, nil
 }
 
+// ReadAt reads multiple contiguous pages at once
+func (s *Storage) ReadAt(id base.PageID, pageCount int) ([]byte, error) {
+	size := pageCount * base.PageSize
+	buf := directio.AlignedBlock(size)
+
+	offset := int64(id) * base.PageSize
+	s.reads.Add(1)
+
+	n, err := s.file.ReadAt(buf, offset)
+	defer s.read.Add(uint64(n))
+	if err != nil {
+		return nil, err
+	}
+	if n != size {
+		return nil, fmt.Errorf("short read: got %d bytes, expected %d", n, size)
+	}
+
+	return buf, nil
+}
+
 // WritePage writes a page using direct I/O
 func (s *Storage) WritePage(id base.PageID, page *base.Page) error {
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(page)), base.PageSize)

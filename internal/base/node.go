@@ -2,6 +2,8 @@ package base
 
 import (
 	"bytes"
+	"encoding/binary"
+	"maps"
 )
 
 const (
@@ -16,6 +18,12 @@ const (
 	LeafType
 )
 
+// OverflowMeta stores metadata about an overflow value chain
+type OverflowMeta struct {
+	FirstPageID PageID
+	PageCount   uint16
+}
+
 // Node represents a B-tree Node with decoded Page data
 type Node struct {
 	PageID PageID
@@ -26,13 +34,25 @@ type Node struct {
 	Keys     [][]byte // Allocated copies
 	Values   [][]byte // If nil, this is a branch Node
 	Children []PageID
+
+	// Overflow metadata (maps index to overflow meta)
+	OverflowInfo map[int]OverflowMeta
 }
 
-// Serialize encodes the Node data into a fresh Page
-func (n *Node) Serialize(txID uint64, page *Page) error {
-	if err := n.CheckOverflow(); err != nil {
-		return err
+// PageAllocator is a function type for allocating new pages
+// count: number of contiguous pages to allocate
+// Returns the first PageID of the allocated range
+type PageAllocator func(count int) PageID
+
+// Serialize allocates and writes the node to pages, including overflow chains
+// Returns main page, overflow pages (one slice per overflow value), and error
+func (n *Node) Serialize(txID uint64, allocPage PageAllocator) (*Page, [][]*Page, error) {
+	// Allocate main page
+	if n.PageID == 0 {
+		n.PageID = allocPage(1)
 	}
+
+	mainPage := &Page{}
 
 	// Write header
 	header := &PageHeader{
@@ -45,46 +65,80 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 	} else {
 		header.Flags = BranchPageFlag
 	}
-	page.WriteHeader(header)
+	mainPage.WriteHeader(header)
+
+	var overflowPages [][]*Page
 
 	if n.Type() == LeafType {
 		// serialize leaf Node - pack forward from dataAreaStart
-		dataOffset := uint16(page.dataAreaStart())
+		dataOffset := uint16(mainPage.dataAreaStart())
+
 		for i := 0; i < int(n.NumKeys); i++ {
 			key := n.Keys[i]
 			value := n.Values[i]
-
-			// Write key and value consecutively
 			kvOffset := dataOffset
-			copy(page.Data[dataOffset:], key)
-			dataOffset += uint16(len(key))
-			copy(page.Data[dataOffset:], value)
-			dataOffset += uint16(len(value))
 
-			elem := &LeafElement{
-				KVOffset:  kvOffset,
-				KeySize:   uint16(len(key)),
-				ValueSize: uint16(len(value)),
-				Reserved:  0,
+			// Copy key
+			copy(mainPage.Data[dataOffset:], key)
+			dataOffset += uint16(len(key))
+
+			var elem *LeafElement
+
+			// Check if value should go to overflow
+			if len(value) > OverflowThreshold {
+				// Allocate and write overflow chain
+				pages, firstPageID := n.writeOverflowChain(value, txID, allocPage)
+				overflowPages = append(overflowPages, pages)
+
+				// Store overflow metadata
+				if n.OverflowInfo == nil {
+					n.OverflowInfo = make(map[int]OverflowMeta)
+				}
+				n.OverflowInfo[i] = OverflowMeta{
+					FirstPageID: firstPageID,
+					PageCount:   uint16(len(pages)),
+				}
+
+				// Write PageID pointer in data area (8 bytes)
+				binary.LittleEndian.PutUint64(mainPage.Data[dataOffset:], uint64(firstPageID))
+				dataOffset += 8
+
+				elem = &LeafElement{
+					KVOffset:  kvOffset,
+					KeySize:   uint16(len(key)),
+					ValueSize: uint16(len(pages)), // page count
+					Reserved:  LeafOverflowFlag,
+				}
+			} else {
+				// Inline value
+				copy(mainPage.Data[dataOffset:], value)
+				dataOffset += uint16(len(value))
+
+				elem = &LeafElement{
+					KVOffset:  kvOffset,
+					KeySize:   uint16(len(key)),
+					ValueSize: uint16(len(value)),
+					Reserved:  0,
+				}
 			}
 
-			page.WriteLeafElement(i, elem)
+			mainPage.WriteLeafElement(i, elem)
 		}
 	} else {
 		// serialize branch Node (B+ tree: only Keys, no Values)
 		// Write Children[0] right after elements
 		if len(n.Children) > 0 {
-			page.WriteBranchFirstChild(n.Children[0])
+			mainPage.WriteBranchFirstChild(n.Children[0])
 		}
 
 		// Pack Keys forward from dataAreaStart
-		dataOffset := uint16(page.dataAreaStart())
+		dataOffset := uint16(mainPage.dataAreaStart())
 		for i := 0; i < int(n.NumKeys); i++ {
 			key := n.Keys[i]
 
 			// Write key
 			keyOffset := dataOffset
-			copy(page.Data[dataOffset:], key)
+			copy(mainPage.Data[dataOffset:], key)
 			dataOffset += uint16(len(key))
 
 			elem := &BranchElement{
@@ -93,11 +147,71 @@ func (n *Node) Serialize(txID uint64, page *Page) error {
 				Reserved:  0,
 				ChildID:   n.Children[i+1],
 			}
-			page.WriteBranchElement(i, elem)
+			mainPage.WriteBranchElement(i, elem)
 		}
 	}
 
-	return nil
+	return mainPage, overflowPages, nil
+}
+
+// writeOverflowChain allocates contiguous pages and writes value across them
+// First page has header, continuation pages are raw data
+// Returns the allocated pages and the first page ID
+func (n *Node) writeOverflowChain(value []byte, txID uint64, allocPage PageAllocator) ([]*Page, PageID) {
+	// Calculate page count: first page + continuation pages
+	// First page: OverflowFirstPageDataSize (4072 bytes)
+	// Continuation: OverflowContinuationPageSize each (4096 bytes)
+	remaining := len(value)
+	pageCount := 1 // At least one page for header
+	if remaining > OverflowFirstPageDataSize {
+		remaining -= OverflowFirstPageDataSize
+		pageCount += (remaining + OverflowContinuationPageSize - 1) / OverflowContinuationPageSize
+	}
+
+	if pageCount > 65535 {
+		panic("value too large for overflow chain")
+	}
+
+	// Allocate contiguous pages
+	firstPageID := allocPage(pageCount)
+
+	pages := make([]*Page, pageCount)
+	for i := 0; i < pageCount; i++ {
+		pages[i] = &Page{}
+	}
+
+	// Write first page with header
+	firstPage := pages[0]
+	chunkSize := len(value)
+	if chunkSize > OverflowFirstPageDataSize {
+		chunkSize = OverflowFirstPageDataSize
+	}
+
+	header := &PageHeader{
+		PageID:  firstPageID,
+		Flags:   OverflowPageFlag,
+		NumKeys: uint32(len(value)), // Total value size in bytes
+		TxnID:   txID,
+	}
+	firstPage.WriteHeader(header)
+	copy(firstPage.Data[PageHeaderSize:], value[0:chunkSize])
+
+	// Write continuation pages (raw data, no headers)
+	offset := chunkSize
+	for i := 1; i < pageCount; i++ {
+		page := pages[i]
+		remaining := len(value) - offset
+		chunkSize := remaining
+		if chunkSize > OverflowContinuationPageSize {
+			chunkSize = OverflowContinuationPageSize
+		}
+
+		// Raw data only, no header
+		copy(page.Data[0:], value[offset:offset+chunkSize])
+		offset += chunkSize
+	}
+
+	return pages, firstPageID
 }
 
 // Deserialize decodes the Page data into Node fields
@@ -112,22 +226,41 @@ func (n *Node) Deserialize(p *Page) error {
 		n.Keys = make([][]byte, n.NumKeys)
 		n.Values = make([][]byte, n.NumKeys)
 		n.Children = nil
+		n.OverflowInfo = nil
 
 		elements := p.LeafElements()
 		for i := 0; i < int(n.NumKeys); i++ {
 			elem := elements[i]
 
-			// Key at KVOffset, value immediately after
+			// Read key
 			keyStart := elem.KVOffset
 			keyEnd := keyStart + elem.KeySize
 			n.Keys[i] = make([]byte, elem.KeySize)
 			copy(n.Keys[i], p.Data[keyStart:keyEnd])
 
-			// Value follows key consecutively
-			valueStart := keyEnd
-			valueEnd := valueStart + elem.ValueSize
-			n.Values[i] = make([]byte, elem.ValueSize)
-			copy(n.Values[i], p.Data[valueStart:valueEnd])
+			// Check if value is in overflow
+			if elem.Reserved&LeafOverflowFlag != 0 {
+				// Overflow value - read PageID pointer
+				firstPageID := PageID(binary.LittleEndian.Uint64(p.Data[keyEnd : keyEnd+8]))
+
+				// Store overflow metadata
+				if n.OverflowInfo == nil {
+					n.OverflowInfo = make(map[int]OverflowMeta)
+				}
+				n.OverflowInfo[i] = OverflowMeta{
+					FirstPageID: firstPageID,
+					PageCount:   elem.ValueSize, // ValueSize holds page count for overflow
+				}
+
+				// Leave value nil - will be loaded later via LoadOverflowValues
+				n.Values[i] = nil
+			} else {
+				// Inline value - read directly
+				valueStart := keyEnd
+				valueEnd := valueStart + elem.ValueSize
+				n.Values[i] = make([]byte, elem.ValueSize)
+				copy(n.Values[i], p.Data[valueStart:valueEnd])
+			}
 		}
 	} else {
 		// deserialize branch Node (B+ tree: only Keys, no Values)
@@ -151,6 +284,66 @@ func (n *Node) Deserialize(p *Page) error {
 		}
 	}
 
+	return nil
+}
+
+// BatchPageReader is a function type for reading multiple contiguous pages
+type BatchPageReader func(PageID, int) ([]byte, error)
+
+// LoadOverflowValue loads a single overflow value at the given index from contiguous pages
+// First page has header, continuation pages are raw data at contiguous page IDs
+func (n *Node) LoadOverflowValue(index int, readAt BatchPageReader) error {
+	if n.OverflowInfo == nil {
+		return nil // No overflow info
+	}
+
+	meta, ok := n.OverflowInfo[index]
+	if !ok || meta.PageCount == 0 {
+		return nil // Not an overflow value
+	}
+
+	// Already loaded
+	if n.Values[index] != nil {
+		return nil
+	}
+
+	// Read all contiguous pages at once
+	buf, err := readAt(meta.FirstPageID, int(meta.PageCount))
+	if err != nil {
+		return err
+	}
+
+	// Parse header from first page
+	firstPage := &Page{}
+	copy(firstPage.Data[:], buf[0:PageSize])
+	header := firstPage.Header()
+	totalSize := int(header.NumKeys) // Total value size in bytes
+
+	value := make([]byte, 0, totalSize)
+
+	// Extract data from first page
+	firstChunkSize := totalSize
+	if firstChunkSize > OverflowFirstPageDataSize {
+		firstChunkSize = OverflowFirstPageDataSize
+	}
+	value = append(value, buf[PageHeaderSize:PageHeaderSize+firstChunkSize]...)
+
+	// Extract data from continuation pages
+	offset := PageSize
+	bytesRead := firstChunkSize
+	for i := uint16(1); i < meta.PageCount; i++ {
+		remaining := totalSize - bytesRead
+		chunkSize := remaining
+		if chunkSize > OverflowContinuationPageSize {
+			chunkSize = OverflowContinuationPageSize
+		}
+
+		value = append(value, buf[offset:offset+chunkSize]...)
+		bytesRead += chunkSize
+		offset += PageSize
+	}
+
+	n.Values[index] = value
 	return nil
 }
 
@@ -193,6 +386,12 @@ func (n *Node) Clone() *Node {
 		copy(cloned.Children, n.Children)
 	}
 
+	// Shallow copy OverflowInfo
+	if n.OverflowInfo != nil {
+		cloned.OverflowInfo = make(map[int]OverflowMeta, len(n.OverflowInfo))
+		maps.Copy(cloned.OverflowInfo, n.OverflowInfo)
+	}
+
 	return cloned
 }
 
@@ -214,7 +413,12 @@ func (n *Node) CheckOverflow() error {
 func (n *Node) IsFull(key, value []byte) bool {
 	if n.Type() == LeafType {
 		currentSize := n.Size()
-		projectedSize := currentSize + LeafElementSize + len(key) + len(value)
+		valueSize := len(value)
+		// If value will overflow, only 8 bytes (PageID pointer) stored inline
+		if valueSize > OverflowThreshold {
+			valueSize = 8
+		}
+		projectedSize := currentSize + LeafElementSize + len(key) + valueSize
 		isFull := projectedSize > PageSize
 		return isFull
 	}
@@ -230,7 +434,23 @@ func (n *Node) Size() int {
 		size += int(n.NumKeys) * LeafElementSize
 		for i := 0; i < int(n.NumKeys); i++ {
 			size += len(n.Keys[i])
-			size += len(n.Values[i])
+
+			// Check if this value is or will be overflow
+			isOverflow := false
+			if n.OverflowInfo != nil {
+				if meta, ok := n.OverflowInfo[i]; ok && meta.PageCount > 0 {
+					isOverflow = true
+				}
+			}
+			if !isOverflow && n.Values[i] != nil && len(n.Values[i]) > OverflowThreshold {
+				isOverflow = true
+			}
+
+			if isOverflow {
+				size += 8 // Only PageID pointer stored inline
+			} else if n.Values[i] != nil {
+				size += len(n.Values[i])
+			}
 		}
 	} else {
 		// B+ tree: branch nodes only store Keys (no Values)

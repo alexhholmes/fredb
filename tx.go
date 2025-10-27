@@ -61,6 +61,10 @@ func (tx *Tx) search(node *base.Node, key []byte) ([]byte, error) {
 	if node.Type() == base.LeafType {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
+			// Load overflow value if needed
+			if err := node.LoadOverflowValue(idx, tx.db.store.ReadAt); err != nil {
+				return nil, err
+			}
 			return node.Values[idx], nil
 		}
 		return nil, ErrKeyNotFound
@@ -215,8 +219,8 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 		return nil, errors.New("bucket already exists")
 	}
 
-	bucketRootID := tx.db.pager.Allocate()
-	bucketLeafID := tx.db.pager.Allocate()
+	bucketRootID := tx.db.pager.Allocate(1)
+	bucketLeafID := tx.db.pager.Allocate(1)
 
 	// Create bucket's leaf node (empty)
 	bucketLeaf := &base.Node{
@@ -475,7 +479,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root using tx.allocatePage()
-				newRootID := tx.db.pager.Allocate()
+				newRootID := tx.db.pager.Allocate(1)
 				newRoot := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -505,7 +509,7 @@ func (tx *Tx) Commit() error {
 				}
 
 				// Create new root
-				newRootID := tx.db.pager.Allocate()
+				newRootID := tx.db.pager.Allocate(1)
 				newRoot2 := algo.NewBranchRoot(leftChild, rightChild, midKey, newRootID)
 
 				// CRITICAL: Add new root to tx.pages if it has a virtual ID
@@ -622,7 +626,7 @@ func (tx *Tx) clone(node *base.Node) *base.Node {
 	cloned := node.Clone()
 
 	// Put up cloned Node with new Page
-	cloned.PageID = tx.db.pager.Allocate()
+	cloned.PageID = tx.db.pager.Allocate(1)
 	cloned.Dirty = true
 
 	// Free the node page itself
@@ -661,7 +665,7 @@ func (tx *Tx) splitChild(child *base.Node, insertKey []byte) (*base.Node, *base.
 	rightKeys, rightVals, rightChildren := algo.ExtractRightPortion(child, sp)
 
 	// I/O: allocate page for right node
-	nodeID := tx.db.pager.Allocate()
+	nodeID := tx.db.pager.Allocate(1)
 
 	// State: construct right node
 	node := &base.Node{
@@ -693,6 +697,16 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 
 		// Check for update
 		if pos < int(cloned.NumKeys) && bytes.Equal(cloned.Keys[pos], key) {
+			// Before updating, check if old value has overflow pages to free
+			if cloned.OverflowInfo != nil {
+				if meta, ok := cloned.OverflowInfo[pos]; ok && meta.PageCount > 0 {
+					// Free all contiguous overflow pages
+					for i := uint16(0); i < meta.PageCount; i++ {
+						tx.freed[meta.FirstPageID+base.PageID(i)] = struct{}{}
+					}
+				}
+			}
+
 			// Check size before update (avoid preemptive rollback allocation)
 			sizeDelta := len(value) - len(cloned.Values[pos])
 			estimatedSize := cloned.Size() + sizeDelta
@@ -707,7 +721,12 @@ func (tx *Tx) insertNonFull(node *base.Node, key, value []byte) (*base.Node, err
 		}
 
 		// Check size before insert (avoid preemptive rollback)
-		insertSize := base.LeafElementSize + len(key) + len(value)
+		valueSize := len(value)
+		// If value will overflow, only 8 bytes (PageID pointer) stored inline
+		if valueSize > base.OverflowThreshold {
+			valueSize = 8
+		}
+		insertSize := base.LeafElementSize + len(key) + valueSize
 		estimatedSize := cloned.Size() + insertSize
 
 		if estimatedSize > base.PageSize {
@@ -828,6 +847,16 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 	if node.Type() == base.LeafType {
 		idx := algo.FindKeyInLeaf(node, key)
 		if idx >= 0 {
+			// Before COW, check if this value has overflow pages to free
+			if node.OverflowInfo != nil {
+				if meta, ok := node.OverflowInfo[idx]; ok && meta.PageCount > 0 {
+					// Free all contiguous overflow pages
+					for i := uint16(0); i < meta.PageCount; i++ {
+						tx.freed[meta.FirstPageID+base.PageID(i)] = struct{}{}
+					}
+				}
+			}
+
 			node = tx.clone(node)
 
 			// Remove key and value using algo

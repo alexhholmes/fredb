@@ -12,7 +12,6 @@ import (
 
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/cache"
-	"github.com/alexhholmes/fredb/internal/directio"
 	"github.com/alexhholmes/fredb/internal/storage"
 )
 
@@ -198,18 +197,24 @@ func NewPager(mode SyncMode, store *storage.Storage, cache *cache.Cache) (*Pager
 }
 
 // Allocate allocates a new Page (from freelist or grows file)
-func (p *Pager) Allocate() base.PageID {
-	// Try freelist first
-	id := p.freelist.Allocate()
-	if id != 0 {
-		return id
+func (p *Pager) Allocate(count int) base.PageID {
+	if count <= 0 {
+		return 0
 	}
 
-	// Grow file - use atomic pages counter (includes uncommitted allocations)
-	// Atomically increment and get the new page ID
-	id = base.PageID(p.pages.Add(1) - 1)
+	// For single page, try freelist first
+	if count == 1 {
+		id := p.freelist.Allocate()
+		if id != 0 {
+			return id
+		}
+	}
 
-	return id
+	// Grow file - allocate contiguous pages
+	// Atomically add count and get the first page ID
+	firstID := base.PageID(p.pages.Add(uint64(count)) - uint64(count))
+
+	return firstID
 }
 
 // Free adds a Page to the freelist
@@ -352,18 +357,14 @@ func (p *Pager) Commit(
 		})
 		run := make([]*base.Node, 0, pages.Len())
 		pages.Ascend(func(item *base.Node) bool {
-			// Check if current item is contiguous with last in run
-			var last base.PageID
-			if len(run) > 0 {
-				last = run[len(run)-1].PageID
-			} else {
+			if len(run) == 0 {
+				// First item, start new run
 				run = append(run, item)
-			}
-
-			if item.PageID == last+1 {
+			} else if item.PageID == run[len(run)-1].PageID+1 {
+				// Contiguous, add to current run
 				run = append(run, item)
 			} else {
-				// Write current run to disk
+				// Not contiguous, write current run and start new one
 				runner := run
 				wg.Add(1)
 
@@ -376,14 +377,27 @@ func (p *Pager) Commit(
 					}
 				}()
 
-				run = make([]*base.Node, 0, pages.Len()-len(run))
+				// Start new run with current item
+				run = make([]*base.Node, 0, pages.Len())
 				run = append(run, item)
-
-				run = run[:0]
 			}
 
 			return true
 		})
+
+		// Write any remaining run
+		if len(run) > 0 {
+			wg.Add(1)
+			runner := run
+			go func() {
+				defer wg.Done()
+
+				err2 := p.WriteRun(runner, txID)
+				if err2 != nil {
+					errFunc()
+				}
+			}()
+		}
 
 		wg.Wait()
 
@@ -392,24 +406,26 @@ func (p *Pager) Commit(
 		}
 	}
 
-	buf := p.store.GetBuffer()
-	defer p.store.PutBuffer(buf)
-
 	// Write root separately if dirty
 	if root != nil && root.Dirty {
-		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		err := root.Serialize(txID, page)
+		mainPage, overflowPages, err := root.Serialize(txID, p.Allocate)
 		if err != nil {
 			return err
 		}
 
-		if err = p.store.WritePage(root.PageID, page); err != nil {
+		// Write main page
+		if err = p.store.WritePage(root.PageID, mainPage); err != nil {
+			return err
+		}
+		p.TrackWrite(root.PageID)
+
+		// Write overflow pages
+		if err := p.WriteOverflow(overflowPages); err != nil {
 			return err
 		}
 
 		root.Dirty = false
 		p.cache.Put(root.PageID, root)
-		p.TrackWrite(root.PageID)
 	}
 
 	// Add freed pages to pending
@@ -449,34 +465,52 @@ func (p *Pager) Commit(
 func (p *Pager) WriteRun(run []*base.Node, txID uint64) error {
 	// Write current run to disk
 	if len(run) == 1 {
-		buf := p.store.GetBuffer()
-		defer p.store.PutBuffer(buf)
-
 		node := run[0]
-		page := (*base.Page)(unsafe.Pointer(&buf[0]))
-		if err := node.Serialize(txID, page); err != nil {
+		mainPage, overflowPages, err := node.Serialize(txID, p.Allocate)
+		if err != nil {
 			return err
 		}
-		if err := p.store.WritePage(node.PageID, page); err != nil {
+
+		// Write main page
+		if err := p.store.WritePage(node.PageID, mainPage); err != nil {
+			return err
+		}
+		p.TrackWrite(node.PageID)
+
+		// Write overflow pages
+		if err := p.WriteOverflow(overflowPages); err != nil {
 			return err
 		}
 
 		node.Dirty = false
 		p.cache.Put(node.PageID, node)
-		p.TrackWrite(node.PageID)
 	} else {
-		// Allocate aligned buffer for contiguous write
-		bigBuf := directio.AlignedBlock(len(run) * base.PageSize)
+		// For contiguous runs, serialize all main pages and write together
+		// Collect overflow pages to write separately
+		mainBuf := make([]byte, len(run)*base.PageSize)
+		var allOverflowPages [][]*base.Page
 
 		for i, node := range run {
-			page := (*base.Page)(unsafe.Pointer(&bigBuf[i*base.PageSize]))
-			if err := node.Serialize(txID, page); err != nil {
+			mainPage, overflowPages, err := node.Serialize(txID, p.Allocate)
+			if err != nil {
 				return err
 			}
+
+			// Copy main page to contiguous buffer
+			copy(mainBuf[i*base.PageSize:], mainPage.Data[:])
+			allOverflowPages = append(allOverflowPages, overflowPages...)
 		}
 
-		// Write all at once
-		if err := p.store.WriteAt(run[0].PageID, bigBuf); err != nil {
+		// Write all main pages at once
+		if err := p.store.WriteAt(run[0].PageID, mainBuf); err != nil {
+			return err
+		}
+		for _, node := range run {
+			p.TrackWrite(node.PageID)
+		}
+
+		// Write overflow pages
+		if err := p.WriteOverflow(allOverflowPages); err != nil {
 			return err
 		}
 
@@ -485,10 +519,67 @@ func (p *Pager) WriteRun(run []*base.Node, txID uint64) error {
 			node.Dirty = false
 			p.cache.Put(node.PageID, node)
 		}
+	}
 
-		// Track max written page (last in run since run is sorted)
-		maxNode := run[len(run)-1]
-		p.TrackWrite(maxNode.PageID)
+	return nil
+}
+
+// WriteOverflow writes all overflow pages with a single WriteAt call
+// since they are allocated contiguously by the single writer
+func (p *Pager) WriteOverflow(overflowPages [][]*base.Page) error {
+	if len(overflowPages) == 0 {
+		return nil
+	}
+
+	// Count total overflow pages
+	totalOverflowPages := 0
+	for _, pages := range overflowPages {
+		totalOverflowPages += len(pages)
+	}
+
+	if totalOverflowPages == 0 {
+		return nil
+	}
+
+	// Use fixed 512KB buffer, reuse for multiple writes if needed
+	const bufferSize = 512 * 1024 // 512KB (128 pages)
+	const pagesPerBuffer = bufferSize / base.PageSize
+
+	buf := make([]byte, bufferSize)
+	firstPageID := overflowPages[0][0].Header().PageID
+
+	// Flatten overflow pages into single slice for easier iteration
+	var allPages []*base.Page
+	for _, pages := range overflowPages {
+		allPages = append(allPages, pages...)
+	}
+
+	// Write in chunks using reusable buffer
+	for i := 0; i < totalOverflowPages; i += pagesPerBuffer {
+		// Calculate chunk size
+		pagesInChunk := pagesPerBuffer
+		if i+pagesPerBuffer > totalOverflowPages {
+			pagesInChunk = totalOverflowPages - i
+		}
+		chunkSize := pagesInChunk * base.PageSize
+
+		// Copy pages into buffer
+		offset := 0
+		for j := 0; j < pagesInChunk; j++ {
+			copy(buf[offset:], allPages[i+j].Data[:])
+			offset += base.PageSize
+		}
+
+		// Write chunk
+		chunkPageID := firstPageID + base.PageID(i)
+		if err := p.store.WriteAt(chunkPageID, buf[:chunkSize]); err != nil {
+			return err
+		}
+
+		// Track writes for this chunk
+		for j := 0; j < pagesInChunk; j++ {
+			p.TrackWrite(chunkPageID + base.PageID(j))
+		}
 	}
 
 	return nil
