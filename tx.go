@@ -35,7 +35,7 @@ type Tx struct {
 	freed map[base.PageID]struct{}  // Pages freed in this transaction (for freelist)
 
 	// Reader tracking
-	unregister func() // Slot unregister function in readerSlots array (only for read-only transactions)
+	unregister func() // Slot unregister function in readers array (only for read-only transactions)
 }
 
 // Get retrieves the value for a key from the default bucket.
@@ -1063,7 +1063,7 @@ func (tx *Tx) tryReleasePages() {
 	}
 
 	// Check reader slots (returns 0 if no readers)
-	readerMinTxID := tx.db.readerSlots.MinTxID()
+	readerMinTxID := tx.db.readers.MinTxID()
 	if readerMinTxID > 0 && readerMinTxID < minTxID {
 		minTxID = readerMinTxID
 	}

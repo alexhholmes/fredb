@@ -31,18 +31,15 @@ const (
 type DB struct {
 	mu    sync.Mutex // Lock only for writers
 	pager *pager.Pager
-	cache *cache.Cache
 	store *storage.Storage
 
-	// Transaction state
-	writer      atomic.Pointer[Tx]     // Current write transaction (nil if none)
-	readerSlots *lifecycle.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
-	nextTxID    atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
+	writer   atomic.Pointer[Tx]     // Current write transaction (nil if none)
+	readers  *lifecycle.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
+	nextTxID atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
-	options Options // Store options for reference
-
-	closed atomic.Bool    // Database closed flag
-	txWg   sync.WaitGroup // Track active transactions for graceful shutdown
+	options Options        // Store options for reference
+	closed  atomic.Bool    // Database closed flag
+	txWg    sync.WaitGroup // Track active transactions for graceful shutdown
 }
 
 func Open(path string, options ...Option) (*DB, error) {
@@ -62,7 +59,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	// Create cache (no eviction callback needed - nodes own their allocations)
 	c := cache.NewCache(opts.MaxCacheSizeMB*256, nil)
 
-	// Create pg with dependencies
+	// Create pager with dependencies
 	pg, err := pager.NewPager(pager.SyncMode(opts.SyncMode), store, c)
 	if err != nil {
 		_ = store.Close()
@@ -225,7 +222,6 @@ func Open(path string, options ...Option) (*DB, error) {
 	db := &DB{
 		pager:   pg,
 		options: *opts,
-		cache:   c,
 		store:   store,
 	}
 	db.nextTxID.Store(meta.TxID) // Next writer will get TxID + 1
@@ -234,7 +230,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	if opts.MaxReaders < 1 {
 		return nil, ErrInvalidMaxReaders
 	}
-	db.readerSlots = lifecycle.NewReaderSlots(opts.MaxReaders)
+	db.readers = lifecycle.NewReaderSlots(opts.MaxReaders)
 
 	return db, nil
 }
@@ -330,7 +326,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	}
 
 	// Register reader in a slot
-	unregister, err := db.readerSlots.Register(tx.txID)
+	unregister, err := db.readers.Register(tx.txID)
 	if err != nil {
 		return nil, err
 	}
