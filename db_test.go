@@ -2217,7 +2217,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 		}
 
 		// Final tree should be empty
-		assert.Equal(t, uint16(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
+		assert.Equal(t, uint32(0), db.pager.GetSnapshot().Root.NumKeys, "Tree should be empty")
 		assert.Equal(t, base.BranchType, db.pager.GetSnapshot().Root.Type(), "Empty tree root should be branch")
 
 		// close database after each iteration
