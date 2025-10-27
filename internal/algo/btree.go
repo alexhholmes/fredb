@@ -64,21 +64,6 @@ func FindInsertPosition(node *base.Node, key []byte) int {
 	})
 }
 
-// FindDeleteChildIndex returns child index for deletion in branch node
-func FindDeleteChildIndex(node *base.Node, key []byte) int {
-	if node.NumKeys < SearchThreshold {
-		idx := 0
-		for idx < int(node.NumKeys) && bytes.Compare(key, node.Keys[idx]) >= 0 {
-			idx++
-		}
-		return idx
-	}
-
-	return sort.Search(int(node.NumKeys), func(i int) bool {
-		return bytes.Compare(key, node.Keys[i]) < 0
-	})
-}
-
 // SplitHint guides how to bias the split point
 type SplitHint int
 

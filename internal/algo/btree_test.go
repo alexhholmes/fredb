@@ -220,61 +220,6 @@ func TestFindInsertPosition(t *testing.T) {
 	}
 }
 
-func TestFindDeleteChildIndex(t *testing.T) {
-	tests := []struct {
-		name string
-		node *base.Node
-		key  []byte
-		want int
-	}{
-		{
-			name: "empty_node",
-			node: makeBranchNode(nil, []base.PageID{1}),
-			key:  []byte("key"),
-			want: 0,
-		},
-		{
-			name: "key_less_than_first",
-			node: makeBranchNode([][]byte{[]byte("b"), []byte("d")}, []base.PageID{1, 2, 3}),
-			key:  []byte("a"),
-			want: 0,
-		},
-		{
-			name: "key_equal_first",
-			node: makeBranchNode([][]byte{[]byte("b"), []byte("d")}, []base.PageID{1, 2, 3}),
-			key:  []byte("b"),
-			want: 1,
-		},
-		{
-			name: "key_between_keys",
-			node: makeBranchNode([][]byte{[]byte("b"), []byte("d")}, []base.PageID{1, 2, 3}),
-			key:  []byte("c"),
-			want: 1,
-		},
-		{
-			name: "key_equal_last",
-			node: makeBranchNode([][]byte{[]byte("b"), []byte("d")}, []base.PageID{1, 2, 3}),
-			key:  []byte("d"),
-			want: 2,
-		},
-		{
-			name: "key_greater_than_all",
-			node: makeBranchNode([][]byte{[]byte("b"), []byte("d")}, []base.PageID{1, 2, 3}),
-			key:  []byte("z"),
-			want: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := FindDeleteChildIndex(tt.node, tt.key)
-			if got != tt.want {
-				t.Errorf("FindDeleteChildIndex() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCalculateSplitPoint(t *testing.T) {
 	// Create a leaf with enough keys to split
 	makeFullLeaf := func(n int) *base.Node {

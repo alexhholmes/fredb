@@ -869,7 +869,7 @@ func (tx *Tx) deleteFromNode(node *base.Node, key []byte) (*base.Node, error) {
 
 	// Branch node: descend to child (never delete from branch)
 	// Find child where key might be using algo
-	childIdx := algo.FindDeleteChildIndex(node, key)
+	childIdx := algo.FindChildIndex(node, key)
 
 	child, err := tx.load(node.Children[childIdx])
 	if err != nil {

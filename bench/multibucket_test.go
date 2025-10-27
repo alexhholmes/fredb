@@ -17,7 +17,7 @@ const (
 	multiBucketBatchSize   = 1000
 	multiBucketNumBuckets  = 10
 	multiBucketValueSize   = 512
-	multiBucketUpdateRatio = 0.2
+	multiBucketUpdateRatio = 0.05
 	multiBucketDeleteRatio = 0.1
 )
 
