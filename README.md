@@ -7,14 +7,14 @@ infrastructure.
 
 ## Status
 
-**In Development** - Core B-tree operations, disk persistence, MVCC, API, and direct 
+**In Development** - Core B-tree operations, disk persistence, MVCC, API, overflow 
+pages, and direct 
 I/O are complete. Optimizations still in-progress.
 
 **TODO**:
 
 - Freelist persistence on DB close; currently only supports one freepage at Page ID 2
 - Compaction of freepages, either during runtime or on db startup
-- Overflow pages
 
 ## Features
 
