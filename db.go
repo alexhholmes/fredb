@@ -248,7 +248,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	return result, err
 }
 
-func (db *DB) Set(key, value []byte) error {
+func (db *DB) Put(key, value []byte) error {
 	return db.Update(func(tx *Tx) error {
 		return tx.Put(key, value)
 	})
