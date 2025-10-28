@@ -255,6 +255,7 @@ func (tx *Tx) CreateBucket(name []byte) (*Bucket, error) {
 	bucket := &Bucket{
 		tx:       tx,
 		root:     bucketRoot,
+		rootID:   bucketRootID,
 		name:     name,
 		sequence: 0,
 		writable: true,
@@ -368,7 +369,7 @@ func (tx *Tx) ForEachBucket(fn func(name []byte, b *Bucket) error) error {
 		bucket.name = k
 		bucket.root, err = tx.load(bucket.rootID)
 		if err != nil {
-			continue
+			return err
 		}
 
 		// Call user function
