@@ -49,8 +49,8 @@ func TestDBBasicOperations(t *testing.T) {
 	key := []byte("test-key")
 	value := []byte("test-value")
 
-	err := db.Set(key, value)
-	assert.NoError(t, err, "Failed to set key")
+	err := db.Put(key, value)
+	assert.NoError(t, err, "Failed to Put key")
 
 	retrieved, err := db.Get(key)
 	assert.NoError(t, err, "Failed to get key")
@@ -58,7 +58,7 @@ func TestDBBasicOperations(t *testing.T) {
 
 	// Test Update
 	newValue := []byte("updated-value")
-	err = db.Set(key, newValue)
+	err = db.Put(key, newValue)
 	assert.NoError(t, err, "Failed to update key")
 
 	retrieved, err = db.Get(key)
@@ -103,8 +103,8 @@ func TestDBClose(t *testing.T) {
 	require.NoError(t, err, "Failed to create DB")
 
 	// Put a key before closing
-	err = db.Set([]byte("key"), []byte("value"))
-	assert.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key"), []byte("value"))
+	assert.NoError(t, err, "Failed to Put key")
 
 	// close the DB
 	err = db.Close()
@@ -154,7 +154,7 @@ func TestDBConcurrency(t *testing.T) {
 
 					// Retry on write transaction conflict
 					for {
-						err := db.Set([]byte(key), []byte(value))
+						err := db.Put([]byte(key), []byte(value))
 						if err == ErrTxInProgress {
 							continue
 						}
@@ -223,7 +223,7 @@ func TestDBConcurrentReads(t *testing.T) {
 		value := fmt.Sprintf("value-%d", i)
 		testData[key] = value
 
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		require.NoError(t, err, "Failed to insert test data")
 	}
 
@@ -308,7 +308,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 
 				// Retry on write transaction conflict
 				for {
-					err := db.Set([]byte(key), []byte(value))
+					err := db.Put([]byte(key), []byte(value))
 					if errors.Is(err, ErrTxInProgress) {
 						// Another writer holds the lock, retry
 						continue
@@ -352,7 +352,7 @@ func TestDBConcurrentWrites(t *testing.T) {
 
 			// Retry on write transaction conflict
 			for {
-				err := db.Set(updateKey, []byte(value))
+				err := db.Put(updateKey, []byte(value))
 				if err == ErrTxInProgress {
 					// Another writer holds the lock, retry
 					continue
@@ -383,7 +383,7 @@ func TestTxSnapshotIsolation(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d-v1", i))
-		require.NoError(t, db.Set(key, value), "Failed to set initial key")
+		require.NoError(t, db.Put(key, value), "Failed to Put initial key")
 	}
 
 	// Test 1: Simple snapshot isolation
@@ -477,9 +477,9 @@ func TestTxSnapshotIsolation(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := []byte(fmt.Sprintf("key-%d", i))
 			value := []byte(fmt.Sprintf("value-%d-v3", i))
-			err := db.Set(key, value)
+			err := db.Put(key, value)
 			if err != nil {
-				readerErrors <- fmt.Errorf("writer: failed to set key-%d: %w", i, err)
+				readerErrors <- fmt.Errorf("writer: failed to Put key-%d: %w", i, err)
 				return
 			}
 		}
@@ -520,7 +520,7 @@ func TestTxRollbackUnderContention(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := []byte(fmt.Sprintf("initial-key-%d", i))
 		value := []byte(fmt.Sprintf("initial-value-%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert initial data")
+		require.NoError(t, db.Put(key, value), "Failed to insert initial data")
 	}
 
 	// Track committed transactions
@@ -768,7 +768,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := makeKey(i)
 			value := makeValue(i)
-			require.NoError(t, db.Set(key, value), "Failed to insert large key %d", i)
+			require.NoError(t, db.Put(key, value), "Failed to insert large key %d", i)
 		}
 	})
 
@@ -800,7 +800,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 				newValue[j] = byte('Z' - (j % 26))
 			}
 
-			require.NoError(t, db.Set(key, newValue), "Failed to update large key %d", i)
+			require.NoError(t, db.Put(key, newValue), "Failed to update large key %d", i)
 
 			// Verify update
 			value, err := db.Get(key)
@@ -852,7 +852,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 
 						// Retry on conflict
 						for {
-							err := db.Set(key, value)
+							err := db.Put(key, value)
 							if err == ErrTxInProgress {
 								continue
 							}
@@ -891,7 +891,7 @@ func TestDBLargeKeysPerPage(t *testing.T) {
 		for i := 100; i < 200; i++ {
 			key := makeKey(i)
 			value := makeValue(i)
-			require.NoError(t, db.Set(key, value), "Failed to insert key %d in deep tree", i)
+			require.NoError(t, db.Put(key, value), "Failed to insert key %d in deep tree", i)
 		}
 
 		// Spot active some Keys
@@ -923,13 +923,13 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	// Create DB and do a single commit
 	db1, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
-	db1.Set([]byte("key1"), []byte("value1"))
+	db1.Put([]byte("key1"), []byte("value1"))
 	db1.Close()
 
 	// Reopen and do a second commit (Put without close to avoid extra TxID)
 	db2, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to reopen DB")
-	db2.Set([]byte("key2"), []byte("value2"))
+	db2.Put([]byte("key2"), []byte("value2"))
 
 	// Check TxnIDs after second Put (before close)
 	file, err := os.Open(tmpfile)
@@ -971,17 +971,17 @@ func TestCrashRecoveryLastCommittedState(t *testing.T) {
 	meta1 = page1.ReadMeta()
 
 	// Corrupt the newer one
-	var corruptOffset int64
+	var corruptOffPut int64
 	if meta0.TxID > meta1.TxID {
-		corruptOffset = int64(base.PageHeaderSize)
+		corruptOffPut = int64(base.PageHeaderSize)
 		t.Logf("Corrupting Page 0 (TxID %d)", meta0.TxID)
 	} else {
-		corruptOffset = int64(base.PageSize + base.PageHeaderSize)
+		corruptOffPut = int64(base.PageSize + base.PageHeaderSize)
 		t.Logf("Corrupting Page 1 (TxID %d)", meta1.TxID)
 	}
 
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
-	file.WriteAt(corruptData, corruptOffset)
+	file.WriteAt(corruptData, corruptOffPut)
 	file.Sync()
 	file.Close()
 
@@ -1025,8 +1025,8 @@ func TestDiskPageManagerBasic(t *testing.T) {
 	require.NoError(t, err, "Failed to create DB")
 
 	// Insert some data
-	require.NoError(t, db.Set([]byte("key1"), []byte("value1")), "Failed to set key1")
-	require.NoError(t, db.Set([]byte("key2"), []byte("value2")), "Failed to set key2")
+	require.NoError(t, db.Put([]byte("key1"), []byte("value1")), "Failed to Put key1")
+	require.NoError(t, db.Put([]byte("key2"), []byte("value2")), "Failed to Put key2")
 
 	// Verify data
 	val, err := db.Get([]byte("key1"))
@@ -1070,7 +1070,7 @@ func TestDiskPageManagerPersistence(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := []byte{byte(i)}
 		value := []byte{byte(i * 2)}
-		require.NoError(t, db.Set(key, value), "Failed to set key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to Put key %d", i)
 	}
 
 	require.NoError(t, db.Close(), "Failed to close DB")
@@ -1105,9 +1105,9 @@ func TestDiskPageManagerDelete(t *testing.T) {
 	require.NoError(t, err, "Failed to create DB")
 
 	// Insert Keys
-	db.Set([]byte("a"), []byte("1"))
-	db.Set([]byte("b"), []byte("2"))
-	db.Set([]byte("c"), []byte("3"))
+	db.Put([]byte("a"), []byte("1"))
+	db.Put([]byte("b"), []byte("2"))
+	db.Put([]byte("c"), []byte("3"))
 
 	// Delete one
 	require.NoError(t, db.Delete([]byte("b")), "Failed to delete")
@@ -1147,8 +1147,8 @@ func TestDBFileFormat(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key1"), []byte("value1"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key1"), []byte("value1"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
@@ -1183,7 +1183,7 @@ func TestDBFileFormat(t *testing.T) {
 	meta1 := page1.ReadMeta()
 
 	// close() increments TxID from 0 to 1, so writes to Page 1 (1 % 2 = 1)
-	// Page 1 should have the latest meta with RootPageID set
+	// Page 1 should have the latest meta with RootPageID Put
 	t.Logf("Meta Page 0 TxID: %d, RootPageID: %d", meta0.TxID, meta0.RootPageID)
 	t.Logf("Meta Page 1 TxID: %d, RootPageID: %d", meta1.TxID, meta1.RootPageID)
 
@@ -1244,8 +1244,8 @@ func TestDBFileHexDump(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("testkey"), []byte("testvalue"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("testkey"), []byte("testvalue"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
@@ -1296,7 +1296,7 @@ func formatHexDump(data []byte) string {
 			end = len(data)
 		}
 
-		// Offset
+		// OffPut
 		result += fmt.Sprintf("%08x: ", i)
 
 		// Hex bytes
@@ -1337,8 +1337,8 @@ func TestDBCorruptionDetection(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key"), []byte("value"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key"), []byte("value"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
@@ -1379,8 +1379,8 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key"), []byte("value"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key"), []byte("value"))
+	require.NoError(t, err, "Failed to Put key")
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
 
@@ -1389,10 +1389,10 @@ func TestCrashRecoveryBothMetaCorrupted(t *testing.T) {
 	require.NoError(t, err, "Failed to open file")
 
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
-	// Corrupt Page 0 meta magic (at PageHeaderSize offset)
+	// Corrupt Page 0 meta magic (at PageHeaderSize offPut)
 	_, err = file.WriteAt(corruptData, int64(base.PageHeaderSize))
 	require.NoError(t, err, "Failed to corrupt Page 0")
-	// Corrupt Page 1 meta magic (at storage.PageSize + PageHeaderSize offset)
+	// Corrupt Page 1 meta magic (at storage.PageSize + PageHeaderSize offPut)
 	_, err = file.WriteAt(corruptData, int64(base.PageSize+base.PageHeaderSize))
 	require.NoError(t, err, "Failed to corrupt Page 1")
 	file.Sync() // Ensure corruption is written to disk
@@ -1437,15 +1437,15 @@ func TestCrashRecoveryChecksumCorruption(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key"), []byte("value"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key"), []byte("value"))
+	require.NoError(t, err, "Failed to Put key")
 	db.Close()
 
 	// Corrupt Page 0's checksum field (last 4 bytes of MetaPage header)
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
 	require.NoError(t, err, "Failed to open file")
 
-	// Checksum is at offset 44 (after all other fields)
+	// Checksum is at offPut 44 (after all other fields)
 	corruptData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
 	_, err = file.WriteAt(corruptData, 44)
 	require.NoError(t, err, "Failed to corrupt checksum")
@@ -1484,8 +1484,8 @@ func TestCrashRecoveryAlternatingWrites(t *testing.T) {
 		key := []byte(fmt.Sprintf("key%d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
 
-		err = db.Set(key, value)
-		require.NoError(t, err, "Failed to set key%d", i)
+		err = db.Put(key, value)
+		require.NoError(t, err, "Failed to Put key%d", i)
 	}
 
 	db.Close()
@@ -1540,8 +1540,8 @@ func TestCrashRecoveryWrongMagicNumber(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key1"), []byte("value1"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key1"), []byte("value1"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
@@ -1586,13 +1586,13 @@ func TestCrashRecoveryRootPageIDZero(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key1"), []byte("value1"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key1"), []byte("value1"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
 
-	// Corrupt meta Page: set RootPageID to 0 but keep valid TxID
+	// Corrupt meta Page: Put RootPageID to 0 but keep valid TxID
 	file, err := os.OpenFile(tmpfile, os.O_RDWR, 0600)
 	require.NoError(t, err, "Failed to open file")
 
@@ -1642,8 +1642,8 @@ func TestCrashRecoveryTruncatedFile(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key1"), []byte("value1"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key1"), []byte("value1"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
@@ -1676,8 +1676,8 @@ func TestCrashRecoveryBothMetaSameTxnID(t *testing.T) {
 	db, err := Open(tmpfile)
 	require.NoError(t, err, "Failed to create DB")
 
-	err = db.Set([]byte("key1"), []byte("value1"))
-	require.NoError(t, err, "Failed to set key")
+	err = db.Put([]byte("key1"), []byte("value1"))
+	require.NoError(t, err, "Failed to Put key")
 
 	err = db.Close()
 	require.NoError(t, err, "Failed to close DB")
@@ -1731,7 +1731,7 @@ func TestBTreeBasicOps(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert key-value pair
-	err := db.Set([]byte("key1"), []byte("value1"))
+	err := db.Put([]byte("key1"), []byte("value1"))
 	assert.NoError(t, err)
 
 	// get existing key
@@ -1740,7 +1740,7 @@ func TestBTreeBasicOps(t *testing.T) {
 	assert.Equal(t, "value1", string(val))
 
 	// Update existing key
-	err = db.Set([]byte("key1"), []byte("value2"))
+	err = db.Put([]byte("key1"), []byte("value2"))
 	assert.NoError(t, err)
 
 	val, err = db.Get([]byte("key1"))
@@ -1759,11 +1759,11 @@ func TestBTreeUpdate(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert key with value1
-	err := db.Set([]byte("testkey"), []byte("value1"))
+	err := db.Put([]byte("testkey"), []byte("value1"))
 	assert.NoError(t, err)
 
 	// Update same key with value2
-	err = db.Set([]byte("testkey"), []byte("value2"))
+	err = db.Put([]byte("testkey"), []byte("value2"))
 	assert.NoError(t, err)
 
 	// Verify get returns value2
@@ -1775,11 +1775,11 @@ func TestBTreeUpdate(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key%d", i))
 		val := []byte(fmt.Sprintf("value%d", i))
-		db.Set(key, val)
+		db.Put(key, val)
 	}
 
 	// Update the original key again
-	err = db.Set([]byte("testkey"), []byte("value3"))
+	err = db.Put([]byte("testkey"), []byte("value3"))
 	assert.NoError(t, err)
 
 	val, err = db.Get([]byte("testkey"))
@@ -1802,7 +1802,7 @@ func TestBTreeSplitting(t *testing.T) {
 		value := fmt.Sprintf("value%06d", i)
 		keys[key] = value
 
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -1836,7 +1836,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 		value := fmt.Sprintf("value%08d", i)
 		keys[key] = value
 
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -1863,7 +1863,7 @@ func TestBTreeMultipleSplits(t *testing.T) {
 	// Verify we can still insert after multiple splits
 	testKey := []byte("test_after_splits")
 	testValue := []byte("test_value")
-	err = db.Set(testKey, testValue)
+	err = db.Put(testKey, testValue)
 	assert.NoError(t, err)
 
 	val, err := db.Get(testKey)
@@ -1885,7 +1885,7 @@ func TestSequentialInsert(t *testing.T) {
 		key := fmt.Sprintf("key%08d", i)
 		value := fmt.Sprintf("value%08d", i)
 
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -1937,7 +1937,7 @@ func TestRandomInsert(t *testing.T) {
 		value := fmt.Sprintf("value%08d", idx)
 		keys[key] = value
 
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -1973,7 +1973,7 @@ func TestReverseSequentialInsert(t *testing.T) {
 		key := fmt.Sprintf("key%08d", i)
 		value := fmt.Sprintf("value%08d", i)
 
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -2013,7 +2013,7 @@ func TestBTreeDelete(t *testing.T) {
 	// Insert some Keys
 	keys := []string{"key1", "key2", "key3", "key4", "key5"}
 	for _, k := range keys {
-		err := db.Set([]byte(k), []byte("value-"+k))
+		err := db.Put([]byte(k), []byte("value-"+k))
 		assert.NoError(t, err)
 	}
 
@@ -2066,7 +2066,7 @@ func TestBTreeDeleteAll(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%04d", i)
 		value := fmt.Sprintf("value%04d", i)
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -2112,7 +2112,7 @@ func TestBTreeSequentialDelete(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -2162,7 +2162,7 @@ func TestBTreeRandomDelete(t *testing.T) {
 			key := fmt.Sprintf("key%06d", i)
 			value := fmt.Sprintf("value%06d", i)
 			keys[i] = key
-			err := db.Set([]byte(key), []byte(value))
+			err := db.Put([]byte(key), []byte(value))
 			assert.NoError(t, err)
 		}
 
@@ -2237,7 +2237,7 @@ func TestBTreeReverseDelete(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		assert.NoError(t, err)
 	}
 
@@ -2351,7 +2351,7 @@ func TestSingleKey(t *testing.T) {
 	testKey := []byte("single_key")
 	testValue := []byte("single_value")
 
-	err := db.Set(testKey, testValue)
+	err := db.Put(testKey, testValue)
 	assert.NoError(t, err)
 
 	// get that key
@@ -2366,7 +2366,7 @@ func TestSingleKey(t *testing.T) {
 
 	// Update the key
 	newValue := []byte("updated_value")
-	err = db.Set(testKey, newValue)
+	err = db.Put(testKey, newValue)
 	assert.NoError(t, err)
 
 	val, err = db.Get(testKey)
@@ -2400,7 +2400,7 @@ func TestDuplicateKeys(t *testing.T) {
 	value3 := []byte("value3")
 
 	// Insert key with value1
-	err := db.Set(key, value1)
+	err := db.Put(key, value1)
 	assert.NoError(t, err)
 
 	// Verify value1 is stored
@@ -2409,7 +2409,7 @@ func TestDuplicateKeys(t *testing.T) {
 	assert.Equal(t, string(value1), string(val))
 
 	// Insert same key with value2
-	err = db.Set(key, value2)
+	err = db.Put(key, value2)
 	assert.NoError(t, err)
 
 	// Verify only one entry exists with value2
@@ -2421,11 +2421,11 @@ func TestDuplicateKeys(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		k := []byte(fmt.Sprintf("key%d", i))
 		v := []byte(fmt.Sprintf("value%d", i))
-		db.Set(k, v)
+		db.Put(k, v)
 	}
 
 	// Update original key again with value3
-	err = db.Set(key, value3)
+	err = db.Put(key, value3)
 	assert.NoError(t, err)
 
 	val, err = db.Get(key)
@@ -2450,13 +2450,13 @@ func TestBinaryKeys(t *testing.T) {
 		{[]byte("\x00\x01\x02\x03"), []byte("ascending"), "ascending bytes"},
 		{[]byte("\xff\xfe\xfd\xfc"), []byte("descending"), "descending bytes"},
 		{[]byte("normal\x00key"), []byte("embedded_null"), "embedded null"},
-		{[]byte("\x80\x90\xa0\xb0"), []byte("high_bits"), "high bits set"},
+		{[]byte("\x80\x90\xa0\xb0"), []byte("high_bits"), "high bits Put"},
 		{[]byte{0, 1, 255, 254, 127, 128}, []byte("mixed"), "mixed binary"},
 	}
 
 	// Insert all binary Keys
 	for _, td := range testData {
-		err := db.Set(td.key, td.value)
+		err := db.Put(td.key, td.value)
 		assert.NoError(t, err)
 	}
 
@@ -2474,8 +2474,8 @@ func TestBinaryKeys(t *testing.T) {
 	val1 := []byte("first")
 	val2 := []byte("second")
 
-	db.Set(key1, val1)
-	db.Set(key2, val2)
+	db.Put(key1, val1)
+	db.Put(key2, val2)
 
 	// Both should be retrievable
 	v, err := db.Get(key1)
@@ -2497,7 +2497,7 @@ func TestZeroLengthKeys(t *testing.T) {
 	emptyKey := []byte{}
 	emptyValue := []byte("empty_key_value")
 
-	err := db.Set(emptyKey, emptyValue)
+	err := db.Put(emptyKey, emptyValue)
 	assert.NoError(t, err)
 
 	// Retrieve empty key
@@ -2517,7 +2517,7 @@ func TestZeroLengthKeys(t *testing.T) {
 	}
 
 	for _, kv := range normalKeys {
-		err := db.Set(kv.key, kv.value)
+		err := db.Put(kv.key, kv.value)
 		assert.NoError(t, err)
 	}
 
@@ -2545,7 +2545,7 @@ func TestZeroLengthValues(t *testing.T) {
 	key := []byte("key_with_empty_value")
 	emptyValue := []byte{}
 
-	err := db.Set(key, emptyValue)
+	err := db.Put(key, emptyValue)
 	assert.NoError(t, err)
 
 	// Retrieve and verify empty value
@@ -2566,7 +2566,7 @@ func TestZeroLengthValues(t *testing.T) {
 	}
 
 	for _, td := range testData {
-		err := db.Set(td.key, td.value)
+		err := db.Put(td.key, td.value)
 		assert.NoError(t, err)
 	}
 
@@ -2580,14 +2580,14 @@ func TestZeroLengthValues(t *testing.T) {
 
 	// Update a key from non-empty to empty value
 	updateKey := []byte("update_test")
-	db.Set(updateKey, []byte("initial_value"))
+	db.Put(updateKey, []byte("initial_value"))
 
 	val, err = db.Get(updateKey)
 	assert.NoError(t, err)
 	assert.Equal(t, "initial_value", string(val))
 
 	// Update to empty value
-	db.Set(updateKey, []byte{})
+	db.Put(updateKey, []byte{})
 
 	val, err = db.Get(updateKey)
 	assert.NoError(t, err)
@@ -2606,7 +2606,7 @@ func TestPageOverflowLargeKey(t *testing.T) {
 	}
 	value := []byte("small_value")
 
-	err := db.Set(largeKey, value)
+	err := db.Put(largeKey, value)
 	assert.Equal(t, ErrKeyTooLarge, err)
 }
 
@@ -2624,7 +2624,7 @@ func TestPageOverflowLargeValue(t *testing.T) {
 	}
 
 	// Should succeed with overflow pages
-	err := db.Set(key, largeValue)
+	err := db.Put(key, largeValue)
 	assert.NoError(t, err, "Large values should work with overflow pages")
 
 	// Verify we can read it back
@@ -2650,7 +2650,7 @@ func TestPageOverflowCombinedSize(t *testing.T) {
 		value[i] = byte((i + 50) % 256)
 	}
 
-	err := db.Set(key, value)
+	err := db.Put(key, value)
 	assert.Equal(t, ErrKeyTooLarge, err)
 }
 
@@ -2674,7 +2674,7 @@ func TestPageOverflowBoundary(t *testing.T) {
 	}
 
 	// Should succeed with overflow pages
-	err := db.Set(key, value)
+	err := db.Put(key, value)
 	assert.NoError(t, err, "Should succeed with overflow pages")
 
 	// Verify we can read it back
@@ -2700,7 +2700,7 @@ func TestPageOverflowMaxKeyValue(t *testing.T) {
 		value[i] = byte((i + 128) % 256)
 	}
 
-	err := db.Set(key, value)
+	err := db.Put(key, value)
 	assert.NoError(t, err)
 
 	// Verify retrieval
@@ -2722,7 +2722,7 @@ func TestBoundaryInsert255ThenSplit(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		require.NoError(t, err)
 	}
 
@@ -2754,7 +2754,7 @@ func TestBoundaryRootWithOneKeyDeleteIt(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		require.NoError(t, err)
 	}
 
@@ -2787,7 +2787,7 @@ func TestBoundarySiblingBorrowVsMerge(t *testing.T) {
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key%06d", i)
 		value := fmt.Sprintf("value%06d", i)
-		err := db.Set([]byte(key), []byte(value))
+		err := db.Put([]byte(key), []byte(value))
 		require.NoError(t, err)
 	}
 
@@ -2892,7 +2892,7 @@ func TestOverflowBasicWriteRead(t *testing.T) {
 	key := []byte("overflow-key")
 
 	// Write overflow value
-	err := db.Set(key, largeValue)
+	err := db.Put(key, largeValue)
 	require.NoError(t, err, "Failed to write overflow value")
 
 	// Read back
@@ -2915,7 +2915,7 @@ func TestOverflowLargeValue(t *testing.T) {
 	key := []byte("large-overflow-key")
 
 	// Write large overflow value
-	err := db.Set(key, largeValue)
+	err := db.Put(key, largeValue)
 	require.NoError(t, err, "Failed to write large overflow value")
 
 	// Read back
@@ -2942,7 +2942,7 @@ func TestOverflowMultipleValues(t *testing.T) {
 			value[j] = byte((i + j) % 256)
 		}
 
-		err := db.Set(key, value)
+		err := db.Put(key, value)
 		require.NoError(t, err, "Failed to write overflow key %d", i)
 	}
 
@@ -2972,7 +2972,7 @@ func TestOverflowUpdate(t *testing.T) {
 	for i := range value1 {
 		value1[i] = byte('A' + (i % 26))
 	}
-	err := db.Set(key, value1)
+	err := db.Put(key, value1)
 	require.NoError(t, err, "Failed to write initial overflow value")
 
 	// Update with different overflow value (7KB)
@@ -2980,7 +2980,7 @@ func TestOverflowUpdate(t *testing.T) {
 	for i := range value2 {
 		value2[i] = byte('Z' - (i % 26))
 	}
-	err = db.Set(key, value2)
+	err = db.Put(key, value2)
 	require.NoError(t, err, "Failed to update overflow value")
 
 	// Read back and verify it's the updated value
@@ -3002,7 +3002,7 @@ func TestOverflowDelete(t *testing.T) {
 		largeValue[i] = byte(i % 256)
 	}
 
-	err := db.Set(key, largeValue)
+	err := db.Put(key, largeValue)
 	require.NoError(t, err, "Failed to write overflow value")
 
 	// Verify it exists
@@ -3032,16 +3032,16 @@ func TestOverflowCursorIteration(t *testing.T) {
 		overflowValue[i] = byte('X')
 	}
 
-	err := db.Set([]byte("key-normal-1"), normalValue)
+	err := db.Put([]byte("key-normal-1"), normalValue)
 	require.NoError(t, err)
 
-	err = db.Set([]byte("key-overflow-1"), overflowValue)
+	err = db.Put([]byte("key-overflow-1"), overflowValue)
 	require.NoError(t, err)
 
-	err = db.Set([]byte("key-normal-2"), normalValue)
+	err = db.Put([]byte("key-normal-2"), normalValue)
 	require.NoError(t, err)
 
-	err = db.Set([]byte("key-overflow-2"), overflowValue)
+	err = db.Put([]byte("key-overflow-2"), overflowValue)
 	require.NoError(t, err)
 
 	// Iterate with cursor
@@ -3089,7 +3089,7 @@ func TestOverflowMixedSizes(t *testing.T) {
 			value[i] = byte((i + tc.size) % 256)
 		}
 
-		err := db.Set(key, value)
+		err := db.Put(key, value)
 		require.NoError(t, err, "Failed to write %s", tc.name)
 
 		retrieved, err := db.Get(key)
@@ -3114,7 +3114,7 @@ func TestOverflowPersistence(t *testing.T) {
 		largeValue[i] = byte(i % 256)
 	}
 
-	err = db.Set([]byte("persistent-overflow"), largeValue)
+	err = db.Put([]byte("persistent-overflow"), largeValue)
 	require.NoError(t, err)
 
 	err = db.Close()
@@ -3142,12 +3142,12 @@ func TestOverflowUpdateToNormal(t *testing.T) {
 	for i := range largeValue {
 		largeValue[i] = byte('L')
 	}
-	err := db.Set(key, largeValue)
+	err := db.Put(key, largeValue)
 	require.NoError(t, err)
 
 	// Update to normal value (should free overflow chain)
 	smallValue := []byte("small-value")
-	err = db.Set(key, smallValue)
+	err = db.Put(key, smallValue)
 	require.NoError(t, err)
 
 	// Verify it's the small value
@@ -3165,7 +3165,7 @@ func TestOverflowUpdateFromNormal(t *testing.T) {
 
 	// Start with normal value
 	smallValue := []byte("small-value")
-	err := db.Set(key, smallValue)
+	err := db.Put(key, smallValue)
 	require.NoError(t, err)
 
 	// Update to overflow value (should allocate overflow chain)
@@ -3173,7 +3173,7 @@ func TestOverflowUpdateFromNormal(t *testing.T) {
 	for i := range largeValue {
 		largeValue[i] = byte('B')
 	}
-	err = db.Set(key, largeValue)
+	err = db.Put(key, largeValue)
 	require.NoError(t, err)
 
 	// Verify it's the large value
