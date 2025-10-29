@@ -1,4 +1,4 @@
-// Package logger provides adapters for popular logging libraries to work with fredb's Logger interface.
+// Package logger provides adapters for popular logger libraries to work with fredb's Logger interface.
 //
 // The adapters allow you to use your existing logger with fredb without writing boilerplate.
 // Note that the standard library's slog.Logger already implements fredb.Logger directly.

@@ -24,6 +24,7 @@ type Options struct {
 	SyncMode       SyncMode
 	MaxReaders     int // Maximum number of concurrent readers
 	MaxCacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
+	Logger         Logger
 }
 
 // Option configures database options using the functional options pattern.
@@ -80,5 +81,13 @@ func WithMaxReaders(n int) Option {
 func WithCacheSizeMB(mb int) Option {
 	return func(opts *Options) {
 		opts.MaxCacheSizeMB = mb
+	}
+}
+
+// WithLogger sets the default logger for this fredb instance. See the logger
+// subpackage for logger library adapters for the Logger interface.
+func WithLogger(logger Logger) Option {
+	return func(opts *Options) {
+		opts.Logger = logger
 	}
 }
