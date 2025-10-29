@@ -23,24 +23,4 @@
 //	    defer db.Close()
 //	}
 //
-// Example with zerolog:
-//
-//	import (
-//	    "github.com/alexhholmes/fredb"
-//	    "github.com/alexhholmes/fredb/logger"
-//	    "github.com/rs/zerolog"
-//	    "os"
-//	)
-//
-//	func main() {
-//	    zlog := zerolog.New(os.Stderr).With().Timestamp().Logger()
-//
-//	    db, err := fredb.Open("data.db", &fredb.Options{
-//	        Logger: logger.NewZerolog(zlog),
-//	    })
-//	    if err != nil {
-//	        panic(err)
-//	    }
-//	    defer db.Close()
-//	}
 package logger
