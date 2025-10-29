@@ -22,5 +22,4 @@
 //	    }
 //	    defer db.Close()
 //	}
-//
 package logger

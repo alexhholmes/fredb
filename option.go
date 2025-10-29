@@ -38,6 +38,7 @@ func DefaultOptions() Option {
 		opts.SyncMode = SyncEveryCommit
 		opts.MaxReaders = 256
 		opts.MaxCacheSizeMB = 1024
+		opts.Logger = DiscardLogger{}
 	}
 }
 
