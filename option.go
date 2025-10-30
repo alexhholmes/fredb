@@ -85,8 +85,8 @@ func WithCacheSizeMB(mb int) Option {
 	}
 }
 
-// WithLogger sets the default logger for this fredb instance. See the logger
-// subpackage for logger library adapters for the Logger interface.
+// WithLogger sets the default log for this fredb instance. See the log
+// subpackage for log library adapters for the Logger interface.
 func WithLogger(logger Logger) Option {
 	return func(opts *Options) {
 		opts.Logger = logger

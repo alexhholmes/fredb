@@ -32,6 +32,7 @@ type DB struct {
 	mu    sync.Mutex // Lock only for writers
 	pager *pager.Pager
 	store *storage.Storage
+	log   Logger
 
 	writer   atomic.Pointer[Tx]     // Current write transaction (nil if none)
 	readers  *lifecycle.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
@@ -49,6 +50,9 @@ func Open(path string, options ...Option) (*DB, error) {
 	for _, opt := range options {
 		opt(opts)
 	}
+
+	logger := opts.Logger
+	logger.Info("Opening database")
 
 	// Create disk storage
 	store, err := storage.New(path)
@@ -68,9 +72,11 @@ func Open(path string, options ...Option) (*DB, error) {
 
 	// Initialize root (was newTree logic)
 	var root *base.Node
-	meta := pg.GetMeta()
+	meta := pg.GetSnapshot().Meta
 
 	if meta.RootPageID != 0 {
+		logger.Info("Loading existing database")
+
 		// Load existing root
 		rootPage, err := store.ReadPage(meta.RootPageID)
 		if err != nil {
@@ -86,7 +92,8 @@ func Open(path string, options ...Option) (*DB, error) {
 
 		// Sanity check
 		if meta.RootPageID != root.PageID {
-			panic(fmt.Sprintf("invalid pageID: %d, expected %d", meta.RootPageID, root.PageID))
+			logger.Error("Invalid root pageID", "given", meta.RootPageID, "expected", root.PageID)
+			return nil, fmt.Errorf("invalid pageID: %d, expected %d", root.PageID, meta.RootPageID)
 		}
 
 		// Bundle root with metadata and make visible atomically
@@ -96,6 +103,8 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 		pg.CommitSnapshot()
 	} else {
+		logger.Info("Creating new database")
+
 		// NEW DATABASE - Create root tree (directory) + __root__ bucket
 
 		// 1. Create root tree (directory for bucket metadata)
@@ -223,6 +232,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		pager:   pg,
 		options: *opts,
 		store:   store,
+		log:     logger,
 	}
 	db.nextTxID.Store(meta.TxID) // Next writer will get TxID + 1
 
@@ -423,7 +433,13 @@ func (db *DB) Close() error {
 	}
 
 	// Close pager
-	return db.pager.Close()
+	err := db.pager.Close()
+	if err != nil {
+		return err
+	}
+
+	db.log.Info("Database closed")
+	return nil
 }
 
 func (db *DB) Stats() pager.Stats {
