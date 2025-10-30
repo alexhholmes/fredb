@@ -18,7 +18,7 @@ func TestCursorSequentialScan(t *testing.T) {
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	// Sequential scan from beginning
@@ -53,7 +53,7 @@ func TestCursorReverseScan(t *testing.T) {
 	for i := 1; i <= 50; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	// Seek to last key
@@ -99,7 +99,7 @@ func TestCursorRangeScan(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i*10)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i*10)
 	}
 
 	// Range scan: [30, 70)
@@ -155,7 +155,7 @@ func TestCursorSeekNotFound(t *testing.T) {
 	for i := 1; i <= 9; i += 2 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	// Seek to key002 (not present) - should land on key003
@@ -191,7 +191,7 @@ func TestCursorAcrossSplits(t *testing.T) {
 	for i := 1; i <= 200; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	// Full scan should traverse all leaves via sibling pointers
@@ -228,7 +228,7 @@ func TestCursorAfterMerges(t *testing.T) {
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	// Delete every other key to trigger potential merges
@@ -269,7 +269,7 @@ func TestCursorSeekSTART(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i*10)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i*10)
 	}
 
 	tx, err := db.Begin(false)
@@ -305,7 +305,7 @@ func TestCursorSeekEND(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i*10))
 		value := []byte(fmt.Sprintf("value%d", i*10))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i*10)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i*10)
 	}
 
 	tx, err := db.Begin(false)
@@ -369,7 +369,7 @@ func TestCursorRangeScanWithSTARTEND(t *testing.T) {
 	for i := 1; i <= 100; i++ {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	tx, err := db.Begin(false)
@@ -399,7 +399,7 @@ func TestCursorSeekFirstFunction(t *testing.T) {
 	for i := 10; i <= 50; i += 10 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	tx, err := db.Begin(false)
@@ -425,7 +425,7 @@ func TestCursorSeekLastFunction(t *testing.T) {
 	for i := 10; i <= 50; i += 10 {
 		key := []byte(fmt.Sprintf("key%03d", i))
 		value := []byte(fmt.Sprintf("value%d", i))
-		require.NoError(t, db.Set(key, value), "Failed to insert key %d", i)
+		require.NoError(t, db.Put(key, value), "Failed to insert key %d", i)
 	}
 
 	tx, err := db.Begin(false)
@@ -492,8 +492,8 @@ func TestCursorSeekENDComparison(t *testing.T) {
 	nearMaxKey[MaxKeySize-1] = 0xFE
 
 	// Insert both Keys
-	require.NoError(t, db.Set(maxKey, []byte("max_value")), "Failed to insert maxKey")
-	require.NoError(t, db.Set(nearMaxKey, []byte("near_max_value")), "Failed to insert nearMaxKey")
+	require.NoError(t, db.Put(maxKey, []byte("max_value")), "Failed to insert maxKey")
+	require.NoError(t, db.Put(nearMaxKey, []byte("near_max_value")), "Failed to insert nearMaxKey")
 
 	// Verify END compares greater than both Keys
 	assert.Less(t, bytes.Compare(maxKey, END), 0, "Expected maxKey < END")

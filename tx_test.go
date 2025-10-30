@@ -271,7 +271,7 @@ func TestTxOperationsAfterClose(t *testing.T) {
 	db, _ := setup(t)
 
 	// Insert some data
-	err := db.Set([]byte("key1"), []byte("value1"))
+	err := db.Put([]byte("key1"), []byte("value1"))
 	require.NoError(t, err)
 
 	// Begin transaction before close
@@ -372,7 +372,7 @@ func TestTxWriteThenReadMultiple(t *testing.T) {
 	db, _ := setup(t)
 
 	// Write some data
-	err := db.Set([]byte("initial"), []byte("data"))
+	err := db.Put([]byte("initial"), []byte("data"))
 	require.NoError(t, err)
 
 	// Begin write transaction

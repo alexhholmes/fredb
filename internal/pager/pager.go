@@ -244,11 +244,6 @@ func (p *Pager) Release(minTxnID uint64) int {
 	})
 }
 
-// GetMeta returns the current metadata
-func (p *Pager) GetMeta() base.MetaPage {
-	return p.active.Load().Meta
-}
-
 // GetSnapshot returns a COPY of the bundled metadata and root pointer atomically
 // Returns by value to prevent data races with concurrent PutSnapshot updates
 func (p *Pager) GetSnapshot() Snapshot {
