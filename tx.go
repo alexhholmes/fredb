@@ -1099,6 +1099,7 @@ func (tx *Tx) freeTree(rootID base.PageID) error {
 		} else {
 			node, err := tx.db.pager.LoadNode(item.pageID)
 			if err != nil {
+				tx.db.log.Error("Database corruption detected", "pageID", item.pageID)
 				return ErrCorruption
 			}
 

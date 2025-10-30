@@ -2,19 +2,9 @@ package base
 
 import (
 	"encoding/binary"
-	"errors"
 	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
-)
-
-var (
-	ErrInvalidOffset      = errors.New("invalid offset: out of bounds")
-	ErrInvalidMagicNumber = errors.New("invalid magic number")
-	ErrInvalidVersion     = errors.New("invalid format version")
-	ErrInvalidPageSize    = errors.New("invalid Page Size")
-	ErrInvalidChecksum    = errors.New("invalid checksum")
-	ErrPageOverflow       = errors.New("page overflow")
 )
 
 const (
@@ -33,11 +23,11 @@ const (
 
 	FormatVersion uint16 = 1
 
-	OverflowThreshold              = 3072      // 3KB
-	MaxValueSize                   = 268435456 // 256MB cap
-	OverflowFirstPageDataSize      = PageSize - PageHeaderSize // 4072 bytes
-	OverflowContinuationPageSize   = PageSize                  // 4096 bytes (no header)
-	LeafOverflowFlag        uint16 = 0x01
+	OverflowThreshold                   = 3072                      // 3KB
+	MaxValueSize                        = 268435456                 // 256MB cap
+	OverflowFirstPageDataSize           = PageSize - PageHeaderSize // 4072 bytes
+	OverflowContinuationPageSize        = PageSize                  // 4096 bytes (no header)
+	LeafOverflowFlag             uint16 = 0x01
 )
 
 type PageID uint64

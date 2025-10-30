@@ -2,6 +2,7 @@ package fredb
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -66,6 +67,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	// Create pager with dependencies
 	pg, err := pager.NewPager(pager.SyncMode(opts.SyncMode), store, c)
 	if err != nil {
+		logger.Error("Fatal error opening database", "error", err)
 		_ = store.Close()
 		return nil, err
 	}
@@ -86,6 +88,9 @@ func Open(path string, options ...Option) (*DB, error) {
 
 		root = &base.Node{}
 		if err = root.Deserialize(rootPage); err != nil {
+			if errors.Is(err, ErrCorruption) {
+				logger.Error("Corrupted root page")
+			}
 			_ = pg.Close()
 			return nil, err
 		}
@@ -358,7 +363,11 @@ func (db *DB) View(fn func(*Tx) error) error {
 	}
 
 	tx, err := db.Begin(false)
-	if err != nil {
+	if errors.Is(err, ErrTooManyReaders) {
+		db.log.Warn("Too many readers", "max_readers", db.options.MaxReaders)
+	} else if errors.Is(err, ErrCorruption) {
+		db.log.Error("Database corruption detected")
+	} else if err != nil {
 		return err
 	}
 	defer func(tx *Tx) {
@@ -374,6 +383,9 @@ func (db *DB) View(fn func(*Tx) error) error {
 func (db *DB) Update(fn func(*Tx) error) error {
 	db.txWg.Add(1)
 	defer db.txWg.Done()
+	defer func() {
+		db.log.Info("Transaction commit", "tx_id", db.nextTxID.Load())
+	}()
 
 	// Atomically check closed flag and register transaction
 	if db.closed.Load() {
@@ -389,6 +401,11 @@ func (db *DB) Update(fn func(*Tx) error) error {
 	}(tx)
 
 	if err := fn(tx); err != nil {
+		if errors.Is(err, ErrCorruption) || errors.Is(err, ErrInvalidChecksum) {
+			db.log.Error("Database corruption detected")
+		} else if errors.Is(err, ErrPageOverflow) {
+			db.log.Error("Page overflow")
+		}
 		return err
 	}
 
