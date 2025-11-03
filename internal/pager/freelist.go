@@ -82,64 +82,61 @@ func (f *Freelist) Release(minEpoch uint64, onRelease func(base.PageID)) int {
 	return released
 }
 
-// PagesNeeded returns number of pages needed to serialize this freelist
-func (f *Freelist) PagesNeeded() int {
+// Serialize writes freelist to raw pages for persistence by the pager. Pager
+// allocates actual pages. Meta page tracks the starting page ID at the end
+// of the file.
+func (f *Freelist) Serialize() []*base.Page {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	totalBytes := 8 + len(f.freed)*8
-	if totalBytes == 0 {
-		return 1
-	}
-
-	pagesNeeded := 0
-	remainingBytes := totalBytes
-	for remainingBytes > 0 {
-		pagesNeeded++
-		if remainingBytes <= base.PageSize {
-			remainingBytes = 0
-		} else {
-			remainingBytes -= base.PageSize
-		}
-	}
-
-	return pagesNeeded
-}
-
-// Serialize writes freelist to pages starting at given slice
-func (f *Freelist) Serialize(pages []*base.Page) {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-
-	buf := make([]byte, 0, base.PageSize*len(pages))
-
-	// Write Free count
-	countBytes := make([]byte, 8)
-	*(*uint64)(unsafe.Pointer(&countBytes[0])) = uint64(len(f.freed))
-	buf = append(buf, countBytes...)
-
-	// Sort freed IDs for deterministic serialization
-	freedSlice := make([]base.PageID, 0, len(f.freed))
+	// Collect freed page IDs
+	allPages := make([]base.PageID, 0, len(f.freed))
 	for id := range f.freed {
-		freedSlice = append(freedSlice, id)
+		allPages = append(allPages, id)
 	}
-	sort.Slice(freedSlice, func(i, j int) bool {
-		return freedSlice[i] < freedSlice[j]
+
+	// Collect pending page IDs from all epochs
+	for _, pages := range f.pending {
+		allPages = append(allPages, pages...)
+	}
+
+	// Sort all page IDs
+	sort.Slice(allPages, func(i, j int) bool {
+		return allPages[i] < allPages[j]
 	})
 
-	// Write Free IDs
-	for _, id := range freedSlice {
-		idBytes := make([]byte, 8)
-		*(*base.PageID)(unsafe.Pointer(&idBytes[0])) = id
-		buf = append(buf, idBytes...)
+	// Calculate number of pages needed
+	totalBytes := 8 + len(allPages)*8
+	pagesNeeded := (totalBytes + base.PageSize - 1) / base.PageSize
+	if pagesNeeded == 0 {
+		pagesNeeded = 1
 	}
 
-	// Copy buffer to pages
-	offset := 0
-	for i := 0; i < len(pages); i++ {
-		n := copy(pages[i].Data[:], buf[offset:])
-		offset += n
+	// Allocate pages
+	pages := make([]*base.Page, pagesNeeded)
+	for i := range pages {
+		pages[i] = &base.Page{}
 	}
+
+	// Write count at offset 0
+	*(*uint64)(unsafe.Pointer(&pages[0].Data[0])) = uint64(len(allPages))
+
+	// Write page IDs sequentially
+	offset := 8
+	pageIdx := 0
+	for _, id := range allPages {
+		// Check if we need to move to next page
+		if offset+8 > base.PageSize {
+			pageIdx++
+			offset = 0
+		}
+
+		// Write page ID
+		*(*base.PageID)(unsafe.Pointer(&pages[pageIdx].Data[offset])) = id
+		offset += 8
+	}
+
+	return pages
 }
 
 // Deserialize reads freelist from pages

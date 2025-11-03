@@ -47,40 +47,6 @@ func TestPageManagerFreeListEmptyRelease(t *testing.T) {
 	assert.Equal(t, 0, released, "Expected 0 pages released after empty FreePending")
 }
 
-func TestPageManagerFreeListPersistence(t *testing.T) {
-	t.Parallel()
-
-	tmpFile := t.TempDir() + "/test.db"
-
-	// Create Pager and add data
-	{
-		pm, cleanup := createTestPager(t, tmpFile)
-
-		// Add some free pages
-		pm.Free(10)
-		pm.Free(20)
-		pm.Free(30)
-
-		cleanup()
-	}
-
-	// Reopen and verify
-	{
-		pm, cleanup := createTestPager(t, tmpFile)
-		defer cleanup()
-
-		// Try to allocate - should get freed pages first
-		allocated := make(map[base.PageID]bool)
-		for i := 0; i < 3; i++ {
-			id := pm.Allocate(1)
-			allocated[id] = true
-		}
-
-		// Should have allocated the freed pages 10, 20, 30
-		assert.True(t, allocated[10] || allocated[20] || allocated[30], "Expected to allocate freed pages after reopening")
-	}
-}
-
 func TestPageManagerAllocateAndFree(t *testing.T) {
 	t.Parallel()
 

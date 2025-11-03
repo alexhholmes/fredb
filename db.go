@@ -62,7 +62,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	}
 
 	// Create cache (no eviction callback needed - nodes own their allocations)
-	c := cache.NewCache(opts.MaxCacheSizeMB*256, nil)
+	c := cache.NewCache(opts.CacheSizeMB*256, nil)
 
 	// Create pager with dependencies
 	pg, err := pager.NewPager(pager.SyncMode(opts.SyncMode), store, c)
@@ -368,6 +368,7 @@ func (db *DB) View(fn func(*Tx) error) error {
 	} else if errors.Is(err, ErrCorruption) {
 		db.log.Error("Database corruption detected")
 	} else if err != nil {
+		db.log.Warn("Read transaction error", "error", err)
 		return err
 	}
 	defer func(tx *Tx) {
@@ -402,14 +403,25 @@ func (db *DB) Update(fn func(*Tx) error) error {
 
 	if err := fn(tx); err != nil {
 		if errors.Is(err, ErrCorruption) || errors.Is(err, ErrInvalidChecksum) {
-			db.log.Error("Database corruption detected")
+			db.log.Error("Database corruption detected", "tx_id", db.nextTxID.Load())
 		} else if errors.Is(err, ErrPageOverflow) {
-			db.log.Error("Page overflow")
+			db.log.Error("Page overflow", "tx_id", db.nextTxID.Load())
+		} else {
+			db.log.Warn("Transaction error", "tx_id", db.nextTxID.Load(), "err", err)
 		}
 		return err
 	}
 
 	return tx.Commit()
+}
+
+func (db *DB) Compact() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	panic("not implemented") // TODO
+
+	return nil
 }
 
 func (db *DB) Close() error {

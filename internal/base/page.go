@@ -232,15 +232,15 @@ type MetaPage struct {
 	Checksum        uint64 // 8 bytes: CRC32 of above fields
 }
 
-// WriteMeta writes metadata to the Page starting at PageHeaderSize
-func (p *Page) WriteMeta(m *MetaPage) {
+// SerializeMeta writes metadata to the Page starting at PageHeaderSize
+func (p *Page) SerializeMeta(m *MetaPage) {
 	offset := PageHeaderSize
 	ptr := unsafe.Pointer(&p.Data[offset])
 	*(*MetaPage)(ptr) = *m
 }
 
-// ReadMeta reads metadata from the Page starting at PageHeaderSize
-func (p *Page) ReadMeta() *MetaPage {
+// DeserializeMeta reads metadata from the Page starting at PageHeaderSize
+func (p *Page) DeserializeMeta() *MetaPage {
 	offset := PageHeaderSize
 	ptr := unsafe.Pointer(&p.Data[offset])
 	return (*MetaPage)(ptr)

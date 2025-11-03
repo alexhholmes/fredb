@@ -30,9 +30,10 @@ type Pager struct {
 	mode  SyncMode         // Sync mode for commits
 
 	// Dual meta pages for atomic writes visible to readers stored at page IDs 0 and 1
-	active atomic.Pointer[Snapshot]
-	meta0  Snapshot
-	meta1  Snapshot
+	active      atomic.Pointer[Snapshot]
+	meta1       Snapshot
+	meta2       Snapshot
+	lastUpdated *Snapshot // Track which meta was last updated by PutSnapshot
 
 	// Page allocation tracking (separate from meta to avoid data races)
 	pages       atomic.Uint64 // Total pages allocated (includes uncommitted allocations)
@@ -79,118 +80,108 @@ func NewPager(mode SyncMode, store *storage.Storage, cache *cache.Cache) (*Pager
 			Version:         base.FormatVersion,
 			PageSize:        base.PageSize,
 			RootPageID:      0, // Will be set by BTree
-			FreelistID:      2, // Page 2
-			FreelistPages:   1, // One freelist Page
+			FreelistID:      0,
+			FreelistPages:   0,
 			TxID:            0, // First transaction
 			CheckpointTxnID: 0, // No checkpoint yet
-			NumPages:        3, // Pages 0-1 (meta), 2 (freelist) reserved
+			NumPages:        3, // Pages 1-2 (meta)
 		}
 		meta.Checksum = meta.CalculateChecksum()
 
 		// Put both in-memory copies with Meta and RootiReiot is nil initially)
-		c.meta0.Meta = meta
-		c.meta0.Root = nil
 		c.meta1.Meta = meta
 		c.meta1.Root = nil
-		c.active.Store(&c.meta0)
+		c.meta2.Meta = meta
+		c.meta2.Root = nil
+		c.active.Store(&c.meta1)
 
 		// Initialize atomic pages counter and max written page
 		c.pages.Store(meta.NumPages)
-		c.pagesOnDisk.Store(2) // Pages 0,1,2 written (meta x2, freelist)
+		c.pagesOnDisk.Store(3) // Pages 0 (reserved) + 1, 2 written (meta x2)
 
-		// Write meta to both disk pages 0 and 1
+		// Write meta to both disk pages 1 and 2, 0 is reserved
 		metaPage := &base.Page{}
-		metaPage.WriteMeta(&meta)
+		metaPage.SerializeMeta(&meta)
 
-		if err := c.store.WritePage(0, metaPage); err != nil {
-			return nil, err
-		}
 		if err := c.store.WritePage(1, metaPage); err != nil {
 			return nil, err
 		}
-
-		// Write empty freelist to Page 2
-		freelistPages := []*base.Page{&base.Page{}}
-		c.freelist.Serialize(freelistPages)
-		if err := c.store.WritePage(2, freelistPages[0]); err != nil {
-			return nil, err
-		}
-
-		// Fsync to ensure durability
-		if err := c.store.Sync(); err != nil {
+		if err := c.store.WritePage(2, metaPage); err != nil {
 			return nil, err
 		}
 	} else {
 		// Existing database - load meta and freelist
 		// Read both meta pages
-		page0, err := c.store.ReadPage(0)
+		page0, err := c.store.ReadPage(1)
 		if err != nil {
 			return nil, err
 		}
-		page1, err := c.store.ReadPage(1)
+		page1, err := c.store.ReadPage(2)
 		if err != nil {
 			return nil, err
 		}
 
 		// Validate and pick the best meta Page
-		meta0 := page0.ReadMeta()
-		meta1 := page1.ReadMeta()
+		meta1 := page0.DeserializeMeta()
+		meta2 := page1.DeserializeMeta()
 
-		err0 := meta0.Validate()
 		err1 := meta1.Validate()
+		err2 := meta2.Validate()
 
 		// Both invalid - corrupted database
-		if err0 != nil && err1 != nil {
-			return nil, fmt.Errorf("both meta pages corrupted: %v, %v", err0, err1)
+		if err1 != nil && err2 != nil {
+			return nil, fmt.Errorf("both meta pages corrupted: %v, %v", err1, err2)
 		}
 
 		// Put both in-memory copies with .Meta and .Root (Root will be loaded by DB later)
-		if err0 == nil {
-			c.meta0.Meta = *meta0
-			c.meta0.Root = nil // Will be set by DB.Open()
-		}
 		if err1 == nil {
 			c.meta1.Meta = *meta1
 			c.meta1.Root = nil // Will be set by DB.Open()
 		}
+		if err2 == nil {
+			c.meta2.Meta = *meta2
+			c.meta2.Root = nil // Will be set by DB.Open()
+		}
 
 		// Point active to the one with higher TxID
-		if err0 != nil {
+		if err1 != nil {
+			c.active.Store(&c.meta2)
+		} else if err2 != nil {
 			c.active.Store(&c.meta1)
-		} else if err1 != nil {
-			c.active.Store(&c.meta0)
 		} else {
 			// Both valid - pick highest TxID
-			if meta0.TxID > meta1.TxID {
-				c.active.Store(&c.meta0)
-			} else {
+			if meta1.TxID > meta2.TxID {
 				c.active.Store(&c.meta1)
+			} else {
+				c.active.Store(&c.meta2)
 			}
 		}
-
-		// Load freelist using active meta
-		activeMeta := c.active.Load()
-		freelistPages := make([]*base.Page, activeMeta.Meta.FreelistPages)
-		for i := uint64(0); i < activeMeta.Meta.FreelistPages; i++ {
-			page, err := c.store.ReadPage(activeMeta.Meta.FreelistID + base.PageID(i))
-			if err != nil {
-				return nil, err
-			}
-			freelistPages[i] = page
-		}
-		c.freelist.Deserialize(freelistPages)
-
-		// Release any pending pages that are safe to reclaim
-		// On startup, no readers exist, so all pending pages with txnID <= current can be released
-		// No cache invalidation needed on startup (cache is empty)
-		c.freelist.Release(activeMeta.Meta.TxID, nil)
 
 		// Initialize atomic pages counter and max written page from active meta
+		activeMeta := c.active.Load()
 		c.pages.Store(activeMeta.Meta.NumPages)
-		// NumPages is count (e.g., 8 pages = IDs 0-7), so max ID is NumPages-1
 		if activeMeta.Meta.NumPages > 0 {
 			c.pagesOnDisk.Store(activeMeta.Meta.NumPages - 1)
 		}
+
+		if activeMeta.Meta.FreelistPages == 0 {
+			// No freelist to load
+			return c, nil
+		}
+
+		// Load freelist from disk
+		freelist := make([]*base.Page, activeMeta.Meta.FreelistPages)
+		bytes, err := c.store.ReadAt(activeMeta.Meta.FreelistID, int(activeMeta.Meta.FreelistPages))
+		if err != nil {
+			return nil, err
+		}
+
+		// Chunk bytes into pages
+		for i := 0; i < int(activeMeta.Meta.FreelistPages); i++ {
+			freelist[i] = (*base.Page)(unsafe.Pointer(&bytes[i*base.PageSize]))
+		}
+
+		c.freelist.Deserialize(freelist)
 	}
 
 	return c, nil
@@ -260,24 +251,26 @@ func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 	meta.Checksum = meta.CalculateChecksum()
 
 	// Determine which page to write to based on TxID
-	metaPageID := base.PageID(meta.TxID % 2)
+	metaPageID := base.PageID(meta.TxID%2) + 1
 
 	// Write to disk
 	buf := p.store.GetBuffer()
 	defer p.store.PutBuffer(buf)
 	metaPage := (*base.Page)(unsafe.Pointer(&buf[0]))
-	metaPage.WriteMeta(&meta)
+	metaPage.SerializeMeta(&meta)
 	if err := p.store.WritePage(metaPageID, metaPage); err != nil {
 		return err
 	}
 
 	// Update inactive in-memory copy with both meta and root (don't swap pointer yet)
-	if metaPageID == 0 {
-		p.meta0.Meta = meta
-		p.meta0.Root = root
-	} else {
+	if metaPageID == 1 {
 		p.meta1.Meta = meta
 		p.meta1.Root = root
+		p.lastUpdated = &p.meta1
+	} else {
+		p.meta2.Meta = meta
+		p.meta2.Root = root
+		p.lastUpdated = &p.meta2
 	}
 
 	return nil
@@ -287,13 +280,8 @@ func (p *Pager) PutSnapshot(meta base.MetaPage, root *base.Node) error {
 // Call AFTER fsync to ensure durability before visibility
 // Lock-free: single writer guarantee + atomic swap
 func (p *Pager) CommitSnapshot() {
-	// Swap to the meta with higher or equal TxID
-	// Use >= to handle initial case where both metas have TxID=0
-	if p.meta0.Meta.TxID >= p.meta1.Meta.TxID {
-		p.active.Swap(&p.meta0)
-	} else {
-		p.active.Swap(&p.meta1)
-	}
+	// Swap to whichever meta was last updated by PutSnapshot
+	p.active.Swap(p.lastUpdated)
 }
 
 // LoadNode retrieves a node, checking cache first then loading from disk.
@@ -657,41 +645,25 @@ func (p *Pager) Close() error {
 	// Release all pending pages (no readers at shutdown)
 	p.freelist.Release(math.MaxUint64, nil)
 
-	// serialize freelist to disk
-	pagesNeeded := p.freelist.PagesNeeded()
+	// Serialize freelist to pages, then append to end of file
+	freelistPages := p.freelist.Serialize()
+	if len(freelistPages) > 0 {
+		freelistStart := p.Allocate(len(freelistPages))
 
-	// If freelist grew beyond reserved space, relocate to end to avoid overwriting data
-	if uint64(pagesNeeded) > meta.FreelistPages {
-		// Mark old freelist pages as pending (not immediately reusable)
-		// Using current TxID ensures they're only released after this close() completes
-		oldPages := make([]base.PageID, meta.FreelistPages)
-		for i := uint64(0); i < meta.FreelistPages; i++ {
-			oldPages[i] = meta.FreelistID + base.PageID(i)
+		// Allocate one large slice and copy all pages into it for single WriteAt
+		buf := make([]byte, len(freelistPages)*base.PageSize)
+		for i, page := range freelistPages {
+			copy(buf[i*base.PageSize:], page.Data[:])
 		}
-		p.freelist.Pending(meta.TxID, oldPages)
 
-		// Recalculate pages needed after adding old freelist pages to pending
-		pagesNeeded = p.freelist.PagesNeeded()
-
-		// Move freelist to new pages at end of file
-		meta.FreelistID = base.PageID(meta.NumPages)
-		meta.FreelistPages = uint64(pagesNeeded)
-		meta.NumPages += uint64(pagesNeeded)
-	}
-
-	// Write freelist
-	freelistPages := make([]*base.Page, pagesNeeded)
-	for i := 0; i < pagesNeeded; i++ {
-		freelistPages[i] = &base.Page{}
-	}
-	p.freelist.Serialize(freelistPages)
-
-	for i := 0; i < pagesNeeded; i++ {
-		pageID := meta.FreelistID + base.PageID(i)
-		if err := p.store.WritePage(pageID, freelistPages[i]); err != nil {
+		// Write all freelist pages at once
+		if err := p.store.WriteAt(freelistStart, buf); err != nil {
 			return err
 		}
-		p.TrackWrite(pageID)
+
+		// Update meta with freelist location and count
+		meta.FreelistID = freelistStart
+		meta.FreelistPages = uint64(len(freelistPages))
 	}
 
 	// Update meta (increment TxID, sync NumPages from pagesOnDisk, recalculate checksum)
@@ -707,23 +679,20 @@ func (p *Pager) Close() error {
 
 	meta.Checksum = meta.CalculateChecksum()
 
-	// Determine which metapage to write to
-	metaPageID := base.PageID(meta.TxID % 2)
-
 	// Write meta to disk
 	metaPage := &base.Page{}
-	metaPage.WriteMeta(&meta)
-	if err := p.store.WritePage(metaPageID, metaPage); err != nil {
-		return err
+	metaPage.SerializeMeta(&meta)
+	err1 := p.store.WritePage(1, metaPage)
+	if err1 == nil {
+		err1 = p.store.Sync()
+	}
+	err2 := p.store.WritePage(2, metaPage)
+	if err2 == nil {
+		err2 = p.store.Sync()
 	}
 
-	// Update in-memory and swap pointer
-	if metaPageID == 0 {
-		p.meta0.Meta = meta
-		p.active.Swap(&p.meta0)
-	} else {
-		p.meta1.Meta = meta
-		p.active.Swap(&p.meta1)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("failed to write final meta pages: %v, %v", err1, err2)
 	}
 
 	return p.store.Close()
