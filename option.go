@@ -25,7 +25,6 @@ type Options struct {
 	MaxReaders  int // Maximum number of concurrent readers
 	CacheSizeMB int // Maximum size of in-memory cache in MB. 0 means no limit.
 	Logger      Logger
-	Compaction  bool
 }
 
 // Option configures database options using the functional options pattern.
@@ -40,7 +39,6 @@ func DefaultOptions() Option {
 		opts.MaxReaders = 256
 		opts.CacheSizeMB = 1024
 		opts.Logger = DiscardLogger{}
-		opts.Compaction = false
 	}
 }
 
@@ -94,15 +92,5 @@ func WithCacheSizeMB(mb int) Option {
 func WithLogger(logger Logger) Option {
 	return func(opts *Options) {
 		opts.Logger = logger
-	}
-}
-
-// WithCompaction enables or disables compaction on database startup. By default,
-// this is disabled, and compaction must be manually invoked by the user.
-//
-//goland:noinspection GoUnusedExportedFunction
-func WithCompaction(enabled bool) Option {
-	return func(opts *Options) {
-		opts.Compaction = enabled
 	}
 }
