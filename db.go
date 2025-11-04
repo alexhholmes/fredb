@@ -333,34 +333,6 @@ func copyInBatches(cursor *Cursor, batchSize int, putFn func(keys, values [][]by
 	return nil
 }
 
-// copyBucket copies a bucket and all its contents from source to destination DB in batches.
-func (db *DB) copyBucket(name []byte, srcBucket *Bucket, dst *DB, batchSize int) error {
-	// Create bucket first
-	if err := dst.Update(func(dstTx *Tx) error {
-		_, err := dstTx.CreateBucket(name)
-		return err
-	}); err != nil {
-		return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
-	}
-
-	// Copy bucket contents in batches
-	cursor := srcBucket.Cursor()
-	return copyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
-		return dst.Update(func(dstTx *Tx) error {
-			dstBucket := dstTx.Bucket(name)
-			if dstBucket == nil {
-				return fmt.Errorf("bucket %s not found", string(name))
-			}
-			for i := 0; i < len(keys); i++ {
-				if err := dstBucket.Put(keys[i], values[i]); err != nil {
-					return fmt.Errorf("failed to put key in bucket: %w", err)
-				}
-			}
-			return nil
-		})
-	})
-}
-
 // Compact creates a new compacted database at the given destination path.
 // The current database remains open and usable, it is up to the reader of the
 // database to close the old database. Returns a new DB instance for the
@@ -443,7 +415,30 @@ func (db *DB) Compact(dst string) (*DB, error) {
 
 	// Copy buckets in batches
 	err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
-		return db.copyBucket(name, bucket, compacted, batchSize)
+		// Create bucket first
+		if err := compacted.Update(func(dstTx *Tx) error {
+			_, err := dstTx.CreateBucket(name)
+			return err
+		}); err != nil {
+			return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
+		}
+
+		// Copy bucket contents in batches
+		cursor := bucket.Cursor()
+		return copyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
+			return compacted.Update(func(dstTx *Tx) error {
+				dstBucket := dstTx.Bucket(name)
+				if dstBucket == nil {
+					return fmt.Errorf("bucket %s not found", string(name))
+				}
+				for i := 0; i < len(keys); i++ {
+					if err := dstBucket.Put(keys[i], values[i]); err != nil {
+						return fmt.Errorf("failed to put key in bucket: %w", err)
+					}
+				}
+				return nil
+			})
+		})
 	})
 	if err != nil {
 		db.log.Error("Failed to copy data during compaction", "error", err)
