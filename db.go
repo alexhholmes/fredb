@@ -352,8 +352,8 @@ func (db *DB) Compact(dst string) (*DB, error) {
 		options: db.options,
 		log:     db.log,
 	}
-	db.nextTxID.Store(1) // Next writer will get TxID + 1
-	db.readers = lifecycle.NewReaderSlots(db.options.MaxReaders)
+	compacted.nextTxID.Store(1) // Next writer will get TxID + 1
+	compacted.readers = lifecycle.NewReaderSlots(compacted.options.MaxReaders)
 
 	// Walk the source database and copy live data to the new database.
 	// Open a write transaction on the compacted database.
