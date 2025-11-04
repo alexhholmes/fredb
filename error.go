@@ -11,6 +11,7 @@ import (
 var (
 	ErrKeyNotFound       = errors.New("key not found")
 	ErrDatabaseClosed    = errors.New("database is closed")
+	ErrDatabaseExists    = errors.New("database already exists at path")
 	ErrKeyTooLarge       = errors.New("key too large")
 	ErrValueTooLarge     = errors.New("value too large")
 	ErrCorruption        = errors.New("data corruption detected")

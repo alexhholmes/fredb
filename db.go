@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -72,8 +73,6 @@ func Open(path string, options ...Option) (*DB, error) {
 		return nil, err
 	}
 
-	// Initialize root (was newTree logic)
-	var root *base.Node
 	meta := pg.GetSnapshot().Meta
 
 	if meta.RootPageID != 0 {
@@ -86,7 +85,7 @@ func Open(path string, options ...Option) (*DB, error) {
 			return nil, err
 		}
 
-		root = &base.Node{}
+		root := &base.Node{}
 		if err = root.Deserialize(rootPage); err != nil {
 			if errors.Is(err, ErrCorruption) {
 				logger.Error("Corrupted root page")
@@ -109,128 +108,12 @@ func Open(path string, options ...Option) (*DB, error) {
 		pg.CommitSnapshot()
 	} else {
 		logger.Info("Creating new database")
-
-		// NEW DATABASE - Create root tree (directory) + __root__ bucket
-
-		// 1. Create root tree (directory for bucket metadata)
-		rootPageID := pg.Allocate(1)
-		rootLeafID := pg.Allocate(1)
-
-		rootLeaf := &base.Node{
-			PageID:   rootLeafID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
-
-		root = &base.Node{
-			PageID:   rootPageID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{rootLeafID},
-		}
-
-		// 2. Create __root__ bucket's tree (default namespace)
-		rootBucketRootID := pg.Allocate(1)
-		rootBucketLeafID := pg.Allocate(1)
-
-		rootBucketLeaf := &base.Node{
-			PageID:   rootBucketLeafID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   make([][]byte, 0),
-			Children: nil,
-		}
-
-		rootBucketRoot := &base.Node{
-			PageID:   rootBucketRootID,
-			Dirty:    true,
-			NumKeys:  0,
-			Keys:     make([][]byte, 0),
-			Values:   nil,
-			Children: []base.PageID{rootBucketLeafID},
-		}
-
-		// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
-		// We serialize manually since we don't have a Bucket object yet
-		metadata := make([]byte, 16)
-		binary.LittleEndian.PutUint64(metadata[0:8], uint64(rootBucketRootID))
-		binary.LittleEndian.PutUint64(metadata[8:16], 0) // Sequence = 0
-
-		// 4. Insert __root__ bucket metadata into root tree's leaf
-		// We need to manually insert since we don't have a transaction yet
-		rootLeaf.Keys = append(rootLeaf.Keys, []byte("__root__"))
-
-		rootLeaf.Values = append(rootLeaf.Values, metadata)
-		rootLeaf.NumKeys = 1
-
-		// 5. serialize and write all 4 pages
-		leafPage, _, err := rootLeaf.Serialize(0, pg.Allocate)
+		err = initialize(meta, pg, store)
 		if err != nil {
+			logger.Error("Fatal error initializing database", "error", err)
 			_ = pg.Close()
 			return nil, err
 		}
-		if err = store.WritePage(rootLeaf.PageID, leafPage); err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		pg.TrackWrite(rootLeaf.PageID)
-
-		rootPage, _, err := root.Serialize(0, pg.Allocate)
-		if err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		if err = store.WritePage(root.PageID, rootPage); err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		pg.TrackWrite(root.PageID)
-
-		bucketLeafPage, _, err := rootBucketLeaf.Serialize(0, pg.Allocate)
-		if err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		if err = store.WritePage(rootBucketLeaf.PageID, bucketLeafPage); err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		pg.TrackWrite(rootBucketLeaf.PageID)
-
-		bucketRootPage, _, err := rootBucketRoot.Serialize(0, pg.Allocate)
-		if err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		if err = store.WritePage(rootBucketRoot.PageID, bucketRootPage); err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-		pg.TrackWrite(rootBucketRoot.PageID)
-
-		// 6. Update meta to point to root tree
-		meta.RootPageID = rootPageID
-
-		if err = pg.PutSnapshot(meta, root); err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-
-		// 7. CRITICAL: Sync pg to persist the initial allocations
-		// This ensures root and leaf are not returned by future Allocate() calls
-		if err = store.Sync(); err != nil {
-			_ = pg.Close()
-			return nil, err
-		}
-
-		// 8. Make metapage AND root visible to readers atomically
-		pg.CommitSnapshot()
 	}
 
 	db := &DB{
@@ -415,13 +298,107 @@ func (db *DB) Update(fn func(*Tx) error) error {
 	return tx.Commit()
 }
 
-func (db *DB) Compact() error {
+// Compact creates a new compacted database at the given destination path.
+// The current database remains open and usable, it is up to the reader of the
+// database to close the old database. Returns a new DB instance for the
+// compacted database.
+func (db *DB) Compact(dst string) (*DB, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	panic("not implemented") // TODO
+	src, err := db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer func(src *Tx) {
+		_ = src.Rollback()
+	}(src)
 
-	return nil
+	// Create disk storage
+	store, err := storage.New(dst)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create cache (no eviction callback needed - nodes own their allocations)
+	c := cache.NewCache(db.options.CacheSizeMB*256, nil)
+
+	// Create pager with dependencies
+	pg, err := pager.NewPager(pager.SyncMode(db.options.SyncMode), store, c)
+	if err != nil {
+		db.log.Error("Fatal error opening compacted database", "error", err)
+		_ = store.Close()
+		return nil, err
+	}
+
+	// Check if database is new or existing
+	meta := pg.GetSnapshot().Meta
+	if meta.RootPageID != 0 {
+		db.log.Error("Database already exists at compacted destination", "path", dst)
+		_ = pg.Close()
+		return nil, ErrDatabaseExists
+	}
+
+	err = initialize(meta, pg, store)
+	if err != nil {
+		db.log.Error("Fatal error initializing compacted database", "error", err)
+		_ = pg.Close()
+		return nil, err
+	}
+
+	compacted := &DB{
+		pager:   pg,
+		store:   store,
+		options: db.options,
+		log:     db.log,
+	}
+	db.nextTxID.Store(1) // Next writer will get TxID + 1
+	db.readers = lifecycle.NewReaderSlots(db.options.MaxReaders)
+
+	// Walk the source database and copy live data to the new database.
+	// Open a write transaction on the compacted database.
+	err = compacted.Update(func(dstTx *Tx) error {
+		// Walk all keys in source __root__ using cursor
+		c := src.Cursor()
+
+		// Iterate through all key-value pairs in sorted order
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			// Insert into destination (rebuilds B+ tree with optimal packing)
+			if err := dstTx.Put(k, v); err != nil {
+				return fmt.Errorf("failed to put key during compaction: %w", err)
+			}
+		}
+
+		// Iterate through all buckets and copy their contents
+		err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
+			dstBucket, err := dstTx.CreateBucket(name)
+			if err != nil {
+				return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
+			}
+
+			bc := bucket.Cursor()
+			for k, v := bc.First(); k != nil; k, v = bc.Next() {
+				if err = dstBucket.Put(k, v); err != nil {
+					return fmt.Errorf("failed to put key in bucket %s during compaction: %w", string(name), err)
+				}
+			}
+
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to iterate buckets during compaction: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		db.log.Error("Failed to copy data during compaction", "error", err)
+		_ = compacted.Close()
+		_ = os.Remove(dst)
+		return nil, fmt.Errorf("compaction failed: %w", err)
+	}
+
+	return compacted, nil
 }
 
 func (db *DB) Close() error {
@@ -473,4 +450,130 @@ func (db *DB) Close() error {
 
 func (db *DB) Stats() pager.Stats {
 	return db.pager.Stats()
+}
+
+func initialize(meta base.MetaPage, pg *pager.Pager, store *storage.Storage) error {
+	// NEW DATABASE - Create root tree (directory) + __root__ bucket
+
+	// 1. Create root tree (directory for bucket metadata)
+	rootPageID := pg.Allocate(1)
+	rootLeafID := pg.Allocate(1)
+
+	rootLeaf := &base.Node{
+		PageID:   rootLeafID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: nil,
+	}
+
+	root := &base.Node{
+		PageID:   rootPageID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   nil,
+		Children: []base.PageID{rootLeafID},
+	}
+
+	// 2. Create __root__ bucket's tree (default namespace)
+	rootBucketRootID := pg.Allocate(1)
+	rootBucketLeafID := pg.Allocate(1)
+
+	rootBucketLeaf := &base.Node{
+		PageID:   rootBucketLeafID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   make([][]byte, 0),
+		Children: nil,
+	}
+
+	rootBucketRoot := &base.Node{
+		PageID:   rootBucketRootID,
+		Dirty:    true,
+		NumKeys:  0,
+		Keys:     make([][]byte, 0),
+		Values:   nil,
+		Children: []base.PageID{rootBucketLeafID},
+	}
+
+	// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
+	// We serialize manually since we don't have a Bucket object yet
+	metadata := make([]byte, 16)
+	binary.LittleEndian.PutUint64(metadata[0:8], uint64(rootBucketRootID))
+	binary.LittleEndian.PutUint64(metadata[8:16], 0) // Sequence = 0
+
+	// 4. Insert __root__ bucket metadata into root tree's leaf
+	// We need to manually insert since we don't have a transaction yet
+	rootLeaf.Keys = append(rootLeaf.Keys, []byte("__root__"))
+
+	rootLeaf.Values = append(rootLeaf.Values, metadata)
+	rootLeaf.NumKeys = 1
+
+	// 5. serialize and write all 4 pages
+	leafPage, _, err := rootLeaf.Serialize(0, pg.Allocate)
+	if err != nil {
+		_ = pg.Close()
+		return err
+	}
+	if err = store.WritePage(rootLeaf.PageID, leafPage); err != nil {
+		_ = pg.Close()
+		return err
+	}
+	pg.TrackWrite(rootLeaf.PageID)
+
+	rootPage, _, err := root.Serialize(0, pg.Allocate)
+	if err != nil {
+		_ = pg.Close()
+		return err
+	}
+	if err = store.WritePage(root.PageID, rootPage); err != nil {
+		_ = pg.Close()
+		return err
+	}
+	pg.TrackWrite(root.PageID)
+
+	bucketLeafPage, _, err := rootBucketLeaf.Serialize(0, pg.Allocate)
+	if err != nil {
+		_ = pg.Close()
+		return err
+	}
+	if err = store.WritePage(rootBucketLeaf.PageID, bucketLeafPage); err != nil {
+		_ = pg.Close()
+		return err
+	}
+	pg.TrackWrite(rootBucketLeaf.PageID)
+
+	bucketRootPage, _, err := rootBucketRoot.Serialize(0, pg.Allocate)
+	if err != nil {
+		_ = pg.Close()
+		return err
+	}
+	if err = store.WritePage(rootBucketRoot.PageID, bucketRootPage); err != nil {
+		_ = pg.Close()
+		return err
+	}
+	pg.TrackWrite(rootBucketRoot.PageID)
+
+	// 6. Update meta to point to root tree
+	meta.RootPageID = rootPageID
+
+	if err = pg.PutSnapshot(meta, root); err != nil {
+		_ = pg.Close()
+		return err
+	}
+
+	// 7. CRITICAL: Sync pg to persist the initial allocations
+	// This ensures root and leaf are not returned by future Allocate() calls
+	if err = store.Sync(); err != nil {
+		_ = pg.Close()
+		return err
+	}
+
+	// 8. Make metapage AND root visible to readers atomically
+	pg.CommitSnapshot()
+
+	return nil
 }
