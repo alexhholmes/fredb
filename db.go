@@ -1,7 +1,6 @@
 package fredb
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -13,7 +12,7 @@ import (
 
 	"github.com/alexhholmes/fredb/internal/base"
 	"github.com/alexhholmes/fredb/internal/cache"
-	"github.com/alexhholmes/fredb/internal/lifecycle"
+	internal "github.com/alexhholmes/fredb/internal/db"
 	"github.com/alexhholmes/fredb/internal/pager"
 	"github.com/alexhholmes/fredb/internal/storage"
 )
@@ -37,7 +36,7 @@ type DB struct {
 	log   Logger
 
 	writer   atomic.Pointer[Tx]     // Current write transaction (nil if none)
-	readers  *lifecycle.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
+	readers  *internal.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
 	nextTxID atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options        // Store options for reference
@@ -108,7 +107,7 @@ func Open(path string, options ...Option) (*DB, error) {
 		pg.CommitSnapshot()
 	} else {
 		logger.Info("Creating new database")
-		err = initialize(meta, pg, store)
+		err = internal.Initialize(meta, pg, store)
 		if err != nil {
 			logger.Error("Fatal error initializing database", "error", err)
 			_ = pg.Close()
@@ -128,7 +127,7 @@ func Open(path string, options ...Option) (*DB, error) {
 	if opts.MaxReaders < 1 {
 		return nil, ErrInvalidMaxReaders
 	}
-	db.readers = lifecycle.NewReaderSlots(opts.MaxReaders)
+	db.readers = internal.NewReaderSlots(opts.MaxReaders)
 
 	return db, nil
 }
@@ -339,7 +338,7 @@ func (db *DB) Compact(dst string) (*DB, error) {
 		return nil, ErrDatabaseExists
 	}
 
-	err = initialize(meta, pg, store)
+	err = internal.Initialize(meta, pg, store)
 	if err != nil {
 		db.log.Error("Fatal error initializing compacted database", "error", err)
 		_ = pg.Close()
@@ -353,7 +352,7 @@ func (db *DB) Compact(dst string) (*DB, error) {
 		log:     db.log,
 	}
 	compacted.nextTxID.Store(1) // Next writer will get TxID + 1
-	compacted.readers = lifecycle.NewReaderSlots(compacted.options.MaxReaders)
+	compacted.readers = internal.NewReaderSlots(compacted.options.MaxReaders)
 
 	// Walk the source database and copy live data to the new database.
 	// Use batched transactions to prevent OOM on large databases.
@@ -361,122 +360,49 @@ func (db *DB) Compact(dst string) (*DB, error) {
 
 	// Copy __root__ keys in batches
 	cursor := src.Cursor()
-	keyBatch := make([][]byte, 0, batchSize)
-	valBatch := make([][]byte, 0, batchSize)
-
-	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-		// Accumulate batch
-		keyCopy := make([]byte, len(k))
-		valCopy := make([]byte, len(v))
-		copy(keyCopy, k)
-		copy(valCopy, v)
-		keyBatch = append(keyBatch, keyCopy)
-		valBatch = append(valBatch, valCopy)
-
-		// Commit batch when full
-		if len(keyBatch) >= batchSize {
-			err := compacted.Update(func(dstTx *Tx) error {
-				for i := 0; i < len(keyBatch); i++ {
-					if err := dstTx.Put(keyBatch[i], valBatch[i]); err != nil {
-						return fmt.Errorf("failed to put key during compaction: %w", err)
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				db.log.Error("Failed to copy batch during compaction", "error", err)
-				_ = compacted.Close()
-				_ = os.Remove(dst)
-				return nil, fmt.Errorf("compaction failed: %w", err)
-			}
-			keyBatch = keyBatch[:0]
-			valBatch = valBatch[:0]
-		}
-	}
-
-	// Commit remaining keys
-	if len(keyBatch) > 0 {
-		err := compacted.Update(func(dstTx *Tx) error {
-			for i := 0; i < len(keyBatch); i++ {
-				if err := dstTx.Put(keyBatch[i], valBatch[i]); err != nil {
+	err = internal.CopyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
+		return compacted.Update(func(dstTx *Tx) error {
+			for i := 0; i < len(keys); i++ {
+				if err := dstTx.Put(keys[i], values[i]); err != nil {
 					return fmt.Errorf("failed to put key during compaction: %w", err)
 				}
 			}
 			return nil
 		})
-		if err != nil {
-			db.log.Error("Failed to copy final batch during compaction", "error", err)
-			_ = compacted.Close()
-			_ = os.Remove(dst)
-			return nil, fmt.Errorf("compaction failed: %w", err)
-		}
+	})
+	if err != nil {
+		db.log.Error("Failed to copy root keys during compaction", "error", err)
+		_ = compacted.Close()
+		_ = os.Remove(dst)
+		return nil, fmt.Errorf("compaction failed: %w", err)
 	}
 
 	// Copy buckets in batches
 	err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
 		// Create bucket first
-		err := compacted.Update(func(dstTx *Tx) error {
+		if err := compacted.Update(func(dstTx *Tx) error {
 			_, err := dstTx.CreateBucket(name)
 			return err
-		})
-		if err != nil {
+		}); err != nil {
 			return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
 		}
 
 		// Copy bucket contents in batches
-		bc := bucket.Cursor()
-		keyBatch := make([][]byte, 0, batchSize)
-		valBatch := make([][]byte, 0, batchSize)
-
-		for k, v := bc.First(); k != nil; k, v = bc.Next() {
-			keyCopy := make([]byte, len(k))
-			valCopy := make([]byte, len(v))
-			copy(keyCopy, k)
-			copy(valCopy, v)
-			keyBatch = append(keyBatch, keyCopy)
-			valBatch = append(valBatch, valCopy)
-
-			if len(keyBatch) >= batchSize {
-				err := compacted.Update(func(dstTx *Tx) error {
-					dstBucket := dstTx.Bucket(name)
-					if dstBucket == nil {
-						return fmt.Errorf("bucket %s not found", string(name))
-					}
-					for i := 0; i < len(keyBatch); i++ {
-						if err := dstBucket.Put(keyBatch[i], valBatch[i]); err != nil {
-							return fmt.Errorf("failed to put key in bucket: %w", err)
-						}
-					}
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				keyBatch = keyBatch[:0]
-				valBatch = valBatch[:0]
-			}
-		}
-
-		// Commit remaining bucket keys
-		if len(keyBatch) > 0 {
-			err := compacted.Update(func(dstTx *Tx) error {
+		cursor := bucket.Cursor()
+		return internal.CopyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
+			return compacted.Update(func(dstTx *Tx) error {
 				dstBucket := dstTx.Bucket(name)
 				if dstBucket == nil {
 					return fmt.Errorf("bucket %s not found", string(name))
 				}
-				for i := 0; i < len(keyBatch); i++ {
-					if err := dstBucket.Put(keyBatch[i], valBatch[i]); err != nil {
+				for i := 0; i < len(keys); i++ {
+					if err := dstBucket.Put(keys[i], values[i]); err != nil {
 						return fmt.Errorf("failed to put key in bucket: %w", err)
 					}
 				}
 				return nil
 			})
-			if err != nil {
-				return err
-			}
-		}
-
-		return nil
+		})
 	})
 	if err != nil {
 		db.log.Error("Failed to copy data during compaction", "error", err)
@@ -537,130 +463,4 @@ func (db *DB) Close() error {
 
 func (db *DB) Stats() pager.Stats {
 	return db.pager.Stats()
-}
-
-func initialize(meta base.MetaPage, pg *pager.Pager, store *storage.Storage) error {
-	// NEW DATABASE - Create root tree (directory) + __root__ bucket
-
-	// 1. Create root tree (directory for bucket metadata)
-	rootPageID := pg.Allocate(1)
-	rootLeafID := pg.Allocate(1)
-
-	rootLeaf := &base.Node{
-		PageID:   rootLeafID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   make([][]byte, 0),
-		Children: nil,
-	}
-
-	root := &base.Node{
-		PageID:   rootPageID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   nil,
-		Children: []base.PageID{rootLeafID},
-	}
-
-	// 2. Create __root__ bucket's tree (default namespace)
-	rootBucketRootID := pg.Allocate(1)
-	rootBucketLeafID := pg.Allocate(1)
-
-	rootBucketLeaf := &base.Node{
-		PageID:   rootBucketLeafID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   make([][]byte, 0),
-		Children: nil,
-	}
-
-	rootBucketRoot := &base.Node{
-		PageID:   rootBucketRootID,
-		Dirty:    true,
-		NumKeys:  0,
-		Keys:     make([][]byte, 0),
-		Values:   nil,
-		Children: []base.PageID{rootBucketLeafID},
-	}
-
-	// 3. Create bucket metadata for __root__ bucket (16 bytes: RootPageID + Sequence)
-	// We serialize manually since we don't have a Bucket object yet
-	metadata := make([]byte, 16)
-	binary.LittleEndian.PutUint64(metadata[0:8], uint64(rootBucketRootID))
-	binary.LittleEndian.PutUint64(metadata[8:16], 0) // Sequence = 0
-
-	// 4. Insert __root__ bucket metadata into root tree's leaf
-	// We need to manually insert since we don't have a transaction yet
-	rootLeaf.Keys = append(rootLeaf.Keys, []byte("__root__"))
-
-	rootLeaf.Values = append(rootLeaf.Values, metadata)
-	rootLeaf.NumKeys = 1
-
-	// 5. serialize and write all 4 pages
-	leafPage, _, err := rootLeaf.Serialize(0, pg.Allocate)
-	if err != nil {
-		_ = pg.Close()
-		return err
-	}
-	if err = store.WritePage(rootLeaf.PageID, leafPage); err != nil {
-		_ = pg.Close()
-		return err
-	}
-	pg.TrackWrite(rootLeaf.PageID)
-
-	rootPage, _, err := root.Serialize(0, pg.Allocate)
-	if err != nil {
-		_ = pg.Close()
-		return err
-	}
-	if err = store.WritePage(root.PageID, rootPage); err != nil {
-		_ = pg.Close()
-		return err
-	}
-	pg.TrackWrite(root.PageID)
-
-	bucketLeafPage, _, err := rootBucketLeaf.Serialize(0, pg.Allocate)
-	if err != nil {
-		_ = pg.Close()
-		return err
-	}
-	if err = store.WritePage(rootBucketLeaf.PageID, bucketLeafPage); err != nil {
-		_ = pg.Close()
-		return err
-	}
-	pg.TrackWrite(rootBucketLeaf.PageID)
-
-	bucketRootPage, _, err := rootBucketRoot.Serialize(0, pg.Allocate)
-	if err != nil {
-		_ = pg.Close()
-		return err
-	}
-	if err = store.WritePage(rootBucketRoot.PageID, bucketRootPage); err != nil {
-		_ = pg.Close()
-		return err
-	}
-	pg.TrackWrite(rootBucketRoot.PageID)
-
-	// 6. Update meta to point to root tree
-	meta.RootPageID = rootPageID
-
-	if err = pg.PutSnapshot(meta, root); err != nil {
-		_ = pg.Close()
-		return err
-	}
-
-	// 7. CRITICAL: Sync pg to persist the initial allocations
-	// This ensures root and leaf are not returned by future Allocate() calls
-	if err = store.Sync(); err != nil {
-		_ = pg.Close()
-		return err
-	}
-
-	// 8. Make metapage AND root visible to readers atomically
-	pg.CommitSnapshot()
-
-	return nil
 }
