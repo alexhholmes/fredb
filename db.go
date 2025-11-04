@@ -298,6 +298,69 @@ func (db *DB) Update(fn func(*Tx) error) error {
 	return tx.Commit()
 }
 
+// copyInBatches copies key-value pairs from a cursor to a destination DB in batches.
+// The putFn function is called for each batch to perform the actual Put operations.
+func copyInBatches(cursor *Cursor, batchSize int, putFn func(keys, values [][]byte) error) error {
+	keyBatch := make([][]byte, 0, batchSize)
+	valBatch := make([][]byte, 0, batchSize)
+
+	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+		// Accumulate batch
+		keyCopy := make([]byte, len(k))
+		valCopy := make([]byte, len(v))
+		copy(keyCopy, k)
+		copy(valCopy, v)
+		keyBatch = append(keyBatch, keyCopy)
+		valBatch = append(valBatch, valCopy)
+
+		// Commit batch when full
+		if len(keyBatch) >= batchSize {
+			if err := putFn(keyBatch, valBatch); err != nil {
+				return err
+			}
+			keyBatch = keyBatch[:0]
+			valBatch = valBatch[:0]
+		}
+	}
+
+	// Commit remaining keys
+	if len(keyBatch) > 0 {
+		if err := putFn(keyBatch, valBatch); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// copyBucket copies a bucket and all its contents from source to destination DB in batches.
+func (db *DB) copyBucket(name []byte, srcBucket *Bucket, dst *DB, batchSize int) error {
+	// Create bucket first
+	if err := dst.Update(func(dstTx *Tx) error {
+		_, err := dstTx.CreateBucket(name)
+		return err
+	}); err != nil {
+		return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
+	}
+
+	// Copy bucket contents in batches
+	cursor := srcBucket.Cursor()
+	return copyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
+		return dst.Update(func(dstTx *Tx) error {
+			dstBucket := dstTx.Bucket(name)
+			if dstBucket == nil {
+				return fmt.Errorf("bucket %s not found", string(name))
+			}
+			for i := 0; i < len(keys); i++ {
+				if err := dstBucket.Put(keys[i], values[i]); err != nil {
+					return fmt.Errorf("failed to put key in bucket: %w", err)
+				}
+			}
+			return nil
+		})
+	})
+}
+
 // Compact creates a new compacted database at the given destination path.
 // The current database remains open and usable, it is up to the reader of the
 // database to close the old database. Returns a new DB instance for the
@@ -361,122 +424,26 @@ func (db *DB) Compact(dst string) (*DB, error) {
 
 	// Copy __root__ keys in batches
 	cursor := src.Cursor()
-	keyBatch := make([][]byte, 0, batchSize)
-	valBatch := make([][]byte, 0, batchSize)
-
-	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-		// Accumulate batch
-		keyCopy := make([]byte, len(k))
-		valCopy := make([]byte, len(v))
-		copy(keyCopy, k)
-		copy(valCopy, v)
-		keyBatch = append(keyBatch, keyCopy)
-		valBatch = append(valBatch, valCopy)
-
-		// Commit batch when full
-		if len(keyBatch) >= batchSize {
-			err := compacted.Update(func(dstTx *Tx) error {
-				for i := 0; i < len(keyBatch); i++ {
-					if err := dstTx.Put(keyBatch[i], valBatch[i]); err != nil {
-						return fmt.Errorf("failed to put key during compaction: %w", err)
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				db.log.Error("Failed to copy batch during compaction", "error", err)
-				_ = compacted.Close()
-				_ = os.Remove(dst)
-				return nil, fmt.Errorf("compaction failed: %w", err)
-			}
-			keyBatch = keyBatch[:0]
-			valBatch = valBatch[:0]
-		}
-	}
-
-	// Commit remaining keys
-	if len(keyBatch) > 0 {
-		err := compacted.Update(func(dstTx *Tx) error {
-			for i := 0; i < len(keyBatch); i++ {
-				if err := dstTx.Put(keyBatch[i], valBatch[i]); err != nil {
+	err = copyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
+		return compacted.Update(func(dstTx *Tx) error {
+			for i := 0; i < len(keys); i++ {
+				if err := dstTx.Put(keys[i], values[i]); err != nil {
 					return fmt.Errorf("failed to put key during compaction: %w", err)
 				}
 			}
 			return nil
 		})
-		if err != nil {
-			db.log.Error("Failed to copy final batch during compaction", "error", err)
-			_ = compacted.Close()
-			_ = os.Remove(dst)
-			return nil, fmt.Errorf("compaction failed: %w", err)
-		}
+	})
+	if err != nil {
+		db.log.Error("Failed to copy root keys during compaction", "error", err)
+		_ = compacted.Close()
+		_ = os.Remove(dst)
+		return nil, fmt.Errorf("compaction failed: %w", err)
 	}
 
 	// Copy buckets in batches
 	err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
-		// Create bucket first
-		err := compacted.Update(func(dstTx *Tx) error {
-			_, err := dstTx.CreateBucket(name)
-			return err
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
-		}
-
-		// Copy bucket contents in batches
-		bc := bucket.Cursor()
-		keyBatch := make([][]byte, 0, batchSize)
-		valBatch := make([][]byte, 0, batchSize)
-
-		for k, v := bc.First(); k != nil; k, v = bc.Next() {
-			keyCopy := make([]byte, len(k))
-			valCopy := make([]byte, len(v))
-			copy(keyCopy, k)
-			copy(valCopy, v)
-			keyBatch = append(keyBatch, keyCopy)
-			valBatch = append(valBatch, valCopy)
-
-			if len(keyBatch) >= batchSize {
-				err := compacted.Update(func(dstTx *Tx) error {
-					dstBucket := dstTx.Bucket(name)
-					if dstBucket == nil {
-						return fmt.Errorf("bucket %s not found", string(name))
-					}
-					for i := 0; i < len(keyBatch); i++ {
-						if err := dstBucket.Put(keyBatch[i], valBatch[i]); err != nil {
-							return fmt.Errorf("failed to put key in bucket: %w", err)
-						}
-					}
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				keyBatch = keyBatch[:0]
-				valBatch = valBatch[:0]
-			}
-		}
-
-		// Commit remaining bucket keys
-		if len(keyBatch) > 0 {
-			err := compacted.Update(func(dstTx *Tx) error {
-				dstBucket := dstTx.Bucket(name)
-				if dstBucket == nil {
-					return fmt.Errorf("bucket %s not found", string(name))
-				}
-				for i := 0; i < len(keyBatch); i++ {
-					if err := dstBucket.Put(keyBatch[i], valBatch[i]); err != nil {
-						return fmt.Errorf("failed to put key in bucket: %w", err)
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		return nil
+		return db.copyBucket(name, bucket, compacted, batchSize)
 	})
 	if err != nil {
 		db.log.Error("Failed to copy data during compaction", "error", err)
