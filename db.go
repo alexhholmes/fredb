@@ -356,37 +356,124 @@ func (db *DB) Compact(dst string) (*DB, error) {
 	compacted.readers = lifecycle.NewReaderSlots(compacted.options.MaxReaders)
 
 	// Walk the source database and copy live data to the new database.
-	// Open a write transaction on the compacted database.
-	err = compacted.Update(func(dstTx *Tx) error {
-		// Walk all keys in source __root__ using cursor
-		c := src.Cursor()
+	// Use batched transactions to prevent OOM on large databases.
+	const batchSize = 10000 // Keys per transaction
 
-		// Iterate through all key-value pairs in sorted order
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			// Insert into destination (rebuilds B+ tree with optimal packing)
-			if err := dstTx.Put(k, v); err != nil {
-				return fmt.Errorf("failed to put key during compaction: %w", err)
-			}
-		}
+	// Copy __root__ keys in batches
+	cursor := src.Cursor()
+	keyBatch := make([][]byte, 0, batchSize)
+	valBatch := make([][]byte, 0, batchSize)
 
-		// Iterate through all buckets and copy their contents
-		err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
-			dstBucket, err := dstTx.CreateBucket(name)
+	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+		// Accumulate batch
+		keyCopy := make([]byte, len(k))
+		valCopy := make([]byte, len(v))
+		copy(keyCopy, k)
+		copy(valCopy, v)
+		keyBatch = append(keyBatch, keyCopy)
+		valBatch = append(valBatch, valCopy)
+
+		// Commit batch when full
+		if len(keyBatch) >= batchSize {
+			err := compacted.Update(func(dstTx *Tx) error {
+				for i := 0; i < len(keyBatch); i++ {
+					if err := dstTx.Put(keyBatch[i], valBatch[i]); err != nil {
+						return fmt.Errorf("failed to put key during compaction: %w", err)
+					}
+				}
+				return nil
+			})
 			if err != nil {
-				return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
+				db.log.Error("Failed to copy batch during compaction", "error", err)
+				_ = compacted.Close()
+				_ = os.Remove(dst)
+				return nil, fmt.Errorf("compaction failed: %w", err)
 			}
+			keyBatch = keyBatch[:0]
+			valBatch = valBatch[:0]
+		}
+	}
 
-			bc := bucket.Cursor()
-			for k, v := bc.First(); k != nil; k, v = bc.Next() {
-				if err = dstBucket.Put(k, v); err != nil {
-					return fmt.Errorf("failed to put key in bucket %s during compaction: %w", string(name), err)
+	// Commit remaining keys
+	if len(keyBatch) > 0 {
+		err := compacted.Update(func(dstTx *Tx) error {
+			for i := 0; i < len(keyBatch); i++ {
+				if err := dstTx.Put(keyBatch[i], valBatch[i]); err != nil {
+					return fmt.Errorf("failed to put key during compaction: %w", err)
 				}
 			}
-
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("failed to iterate buckets during compaction: %w", err)
+			db.log.Error("Failed to copy final batch during compaction", "error", err)
+			_ = compacted.Close()
+			_ = os.Remove(dst)
+			return nil, fmt.Errorf("compaction failed: %w", err)
+		}
+	}
+
+	// Copy buckets in batches
+	err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
+		// Create bucket first
+		err := compacted.Update(func(dstTx *Tx) error {
+			_, err := dstTx.CreateBucket(name)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
+		}
+
+		// Copy bucket contents in batches
+		bc := bucket.Cursor()
+		keyBatch := make([][]byte, 0, batchSize)
+		valBatch := make([][]byte, 0, batchSize)
+
+		for k, v := bc.First(); k != nil; k, v = bc.Next() {
+			keyCopy := make([]byte, len(k))
+			valCopy := make([]byte, len(v))
+			copy(keyCopy, k)
+			copy(valCopy, v)
+			keyBatch = append(keyBatch, keyCopy)
+			valBatch = append(valBatch, valCopy)
+
+			if len(keyBatch) >= batchSize {
+				err := compacted.Update(func(dstTx *Tx) error {
+					dstBucket := dstTx.Bucket(name)
+					if dstBucket == nil {
+						return fmt.Errorf("bucket %s not found", string(name))
+					}
+					for i := 0; i < len(keyBatch); i++ {
+						if err := dstBucket.Put(keyBatch[i], valBatch[i]); err != nil {
+							return fmt.Errorf("failed to put key in bucket: %w", err)
+						}
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				keyBatch = keyBatch[:0]
+				valBatch = valBatch[:0]
+			}
+		}
+
+		// Commit remaining bucket keys
+		if len(keyBatch) > 0 {
+			err := compacted.Update(func(dstTx *Tx) error {
+				dstBucket := dstTx.Bucket(name)
+				if dstBucket == nil {
+					return fmt.Errorf("bucket %s not found", string(name))
+				}
+				for i := 0; i < len(keyBatch); i++ {
+					if err := dstBucket.Put(keyBatch[i], valBatch[i]); err != nil {
+						return fmt.Errorf("failed to put key in bucket: %w", err)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -412,7 +499,7 @@ func (db *DB) Close() error {
 	// Release all pending pages
 	db.pager.Release(math.MaxUint64)
 
-	// Flush root if dirty (was algo.close logic)
+	// flush root if dirty (was algo.close logic)
 	snapshot := db.pager.GetSnapshot()
 	if snapshot.Root != nil && snapshot.Root.Dirty {
 		rootPage, _, err := snapshot.Root.Serialize(snapshot.Meta.TxID, db.pager.Allocate)
