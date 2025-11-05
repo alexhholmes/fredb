@@ -35,9 +35,9 @@ type DB struct {
 	store *storage.Storage
 	log   Logger
 
-	writer   atomic.Pointer[Tx]     // Current write transaction (nil if none)
+	writer   atomic.Pointer[Tx]    // Current write transaction (nil if none)
 	readers  *internal.ReaderSlots // Fixed-size slots (nil if MaxReaders == 0)
-	nextTxID atomic.Uint64          // Monotonic transaction ID counter (incremented for each write Tx)
+	nextTxID atomic.Uint64         // Monotonic transaction ID counter (incremented for each write Tx)
 
 	options Options        // Store options for reference
 	closed  atomic.Bool    // Database closed flag
@@ -363,7 +363,7 @@ func (db *DB) Compact(dst string) (*DB, error) {
 	err = internal.CopyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
 		return compacted.Update(func(dstTx *Tx) error {
 			for i := 0; i < len(keys); i++ {
-				if err := dstTx.Put(keys[i], values[i]); err != nil {
+				if err = dstTx.Put(keys[i], values[i]); err != nil {
 					return fmt.Errorf("failed to put key during compaction: %w", err)
 				}
 			}
@@ -380,15 +380,15 @@ func (db *DB) Compact(dst string) (*DB, error) {
 	// Copy buckets in batches
 	err = src.ForEachBucket(func(name []byte, bucket *Bucket) error {
 		// Create bucket first
-		if err := compacted.Update(func(dstTx *Tx) error {
-			_, err := dstTx.CreateBucket(name)
+		if err = compacted.Update(func(dstTx *Tx) error {
+			_, err = dstTx.CreateBucket(name)
 			return err
 		}); err != nil {
 			return fmt.Errorf("failed to create bucket %s during compaction: %w", string(name), err)
 		}
 
 		// Copy bucket contents in batches
-		cursor := bucket.Cursor()
+		cursor = bucket.Cursor()
 		return internal.CopyInBatches(cursor, batchSize, func(keys, values [][]byte) error {
 			return compacted.Update(func(dstTx *Tx) error {
 				dstBucket := dstTx.Bucket(name)
@@ -396,7 +396,7 @@ func (db *DB) Compact(dst string) (*DB, error) {
 					return fmt.Errorf("bucket %s not found", string(name))
 				}
 				for i := 0; i < len(keys); i++ {
-					if err := dstBucket.Put(keys[i], values[i]); err != nil {
+					if err = dstBucket.Put(keys[i], values[i]); err != nil {
 						return fmt.Errorf("failed to put key in bucket: %w", err)
 					}
 				}
