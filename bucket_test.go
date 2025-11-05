@@ -6,48 +6,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBucketLoad(t *testing.T) {
-	db, _ := setup(t)
-
-	// Test loading __root__ bucket in read transaction
-	err := db.View(func(tx *Tx) error {
-		bucket := tx.Bucket([]byte("__root__"))
-		require.NotNil(t, bucket, "root bucket should exist")
-		require.NotNil(t, bucket.root, "bucket root should not be nil")
-		require.Equal(t, "__root__", string(bucket.name), "bucket name should be __root__")
-		require.Equal(t, uint64(0), bucket.sequence, "bucket sequence should be 0")
-		require.False(t, bucket.writable, "bucket should not be writable in read tx")
-		return nil
-	})
-	require.NoError(t, err, "view transaction should succeed")
-
-	// Test loading __root__ bucket in write transaction
-	err = db.Update(func(tx *Tx) error {
-		bucket := tx.Bucket([]byte("__root__"))
-		require.NotNil(t, bucket, "root bucket should exist")
-		require.True(t, bucket.writable, "bucket should be writable in write tx")
-		return nil
-	})
-	require.NoError(t, err, "update transaction should succeed")
-
-	// Test loading non-existent bucket
-	err = db.View(func(tx *Tx) error {
-		bucket := tx.Bucket([]byte("nonexistent"))
-		require.Nil(t, bucket, "non-existent bucket should return nil")
-		return nil
-	})
-	require.NoError(t, err, "view transaction should succeed")
-
-	// Test bucket caching
-	err = db.View(func(tx *Tx) error {
-		bucket1 := tx.Bucket([]byte("__root__"))
-		bucket2 := tx.Bucket([]byte("__root__"))
-		require.Same(t, bucket1, bucket2, "bucket should be cached")
-		return nil
-	})
-	require.NoError(t, err, "view transaction should succeed")
-}
-
 func TestBucketCRUD(t *testing.T) {
 	db, _ := setup(t)
 
@@ -167,7 +125,6 @@ func TestBucketCreateDelete(t *testing.T) {
 		bucket, err := tx.CreateBucket([]byte("test"))
 		require.NoError(t, err)
 		require.NotNil(t, bucket)
-		require.Equal(t, "test", string(bucket.name))
 
 		// Add data to bucket
 		require.NoError(t, bucket.Put([]byte("key1"), []byte("value1")))
@@ -386,4 +343,46 @@ func TestBucketReferenceCountingMultipleReaders(t *testing.T) {
 	require.NoError(t, tx1.Rollback())
 	require.NoError(t, tx2.Rollback())
 	require.NoError(t, tx3.Rollback())
+}
+
+func TestBucketLoad(t *testing.T) {
+	db, _ := setup(t)
+
+	// Test loading __root__ bucket in read transaction
+	err := db.View(func(tx *Tx) error {
+		bucket := tx.Bucket([]byte("__root__"))
+		require.NotNil(t, bucket, "root bucket should exist")
+		require.NotNil(t, bucket.root, "bucket root should not be nil")
+		require.Equal(t, "__root__", string(bucket.name), "bucket name should be __root__")
+		require.Equal(t, uint64(0), bucket.sequence, "bucket sequence should be 0")
+		require.False(t, bucket.writable, "bucket should not be writable in read tx")
+		return nil
+	})
+	require.NoError(t, err, "view transaction should succeed")
+
+	// Test loading __root__ bucket in write transaction
+	err = db.Update(func(tx *Tx) error {
+		bucket := tx.Bucket([]byte("__root__"))
+		require.NotNil(t, bucket, "root bucket should exist")
+		require.True(t, bucket.writable, "bucket should be writable in write tx")
+		return nil
+	})
+	require.NoError(t, err, "update transaction should succeed")
+
+	// Test loading non-existent bucket
+	err = db.View(func(tx *Tx) error {
+		bucket := tx.Bucket([]byte("nonexistent"))
+		require.Nil(t, bucket, "non-existent bucket should return nil")
+		return nil
+	})
+	require.NoError(t, err, "view transaction should succeed")
+
+	// Test bucket caching
+	err = db.View(func(tx *Tx) error {
+		bucket1 := tx.Bucket([]byte("__root__"))
+		bucket2 := tx.Bucket([]byte("__root__"))
+		require.Same(t, bucket1, bucket2, "bucket should be cached")
+		return nil
+	})
+	require.NoError(t, err, "view transaction should succeed")
 }

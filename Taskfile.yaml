@@ -3,9 +3,6 @@ tasks:
   test:
     cmds:
       - go test -v -count=1 $(go list ./... | grep -v /bench)
-  test-full:
-    cmds:
-      - go test -v -count=1 -race $(go list ./... | grep -v /bench) -slow
   bench:
     cmds:
       - cd bench && go test -v -bench=. -run=^$

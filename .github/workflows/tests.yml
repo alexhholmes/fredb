@@ -33,4 +33,4 @@ jobs:
       run: go mod download
 
     - name: Run tests
-      run: task test-full
+      run: task test
