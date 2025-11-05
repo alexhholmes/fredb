@@ -11,11 +11,6 @@ infrastructure.
 pages, and direct 
 I/O are complete. Optimizations still in-progress.
 
-**TODO**:
-
-- Freelist persistence on DB close; currently only supports one freepage at Page ID 2
-- Compaction of freepages, either during runtime or on db startup
-
 ## Features
 
 - **B+ tree storage**: Full keys in branch nodes, efficient range scans
